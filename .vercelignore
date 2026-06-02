@@ -1,0 +1,10 @@
+# Local-only dev server — must NOT be deployed/built by Vercel.
+# (Vercel auto-treats root server.py/main.py/app.py as a Python entrypoint;
+#  localdev.py avoids that name, and this also keeps it out of the build entirely.)
+localdev.py
+
+# Local dev / archive cruft
+_archive_nextjs/
+__pycache__/
+*.pyc
+.env
