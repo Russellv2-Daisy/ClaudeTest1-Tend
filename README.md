@@ -27,7 +27,7 @@ Things-4-inspired, runs as a responsive web app + installable PWA (works on iPho
 
 - **Accounts + calendar:** see [`SETUP-ACCOUNTS.md`](SETUP-ACCOUNTS.md).
 - **AI key (optional):** add `ANTHROPIC_API_KEY` in Vercel → Settings → Environment Variables.
-- **Run locally:** `python server.py` → http://localhost:4178
+- **Run locally:** `python localdev.py` → http://localhost:4178 (local-only dev server; on Vercel the `api/*.py` serverless functions are used instead)
 
 ## Project layout
 

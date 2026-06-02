@@ -5,7 +5,12 @@ Serves the static app AND exposes POST /api/parse, which turns a line of
 natural language into a structured to-do using the Anthropic API. The API key
 stays server-side (read from .env), so it is never exposed to the browser.
 
-No third-party packages required — standard library only. Run:  python server.py
+No third-party packages required — standard library only. Run:  python localdev.py
+
+NOTE: LOCAL development only. On Vercel the endpoints are served by the individual
+serverless functions in api/parse.py and api/feed.py. This file must NOT be named
+server.py — Vercel treats server.py as a magic Python entrypoint and would deploy
+it as a single catch-all function, shadowing the api/ functions.
 """
 
 import json
