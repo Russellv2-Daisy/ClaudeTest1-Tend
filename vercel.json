@@ -2,9 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": true,
   "functions": {
-    "api/**/*.py": {
-      "excludeFiles": "{vendor/**,_archive_nextjs/**,supabase/**,*.md}"
-    }
+    "api/parse.py": { "maxDuration": 30 },
+    "api/calendar.py": { "maxDuration": 30 }
   },
   "rewrites": [{ "source": "/", "destination": "/index.html" }]
 }
