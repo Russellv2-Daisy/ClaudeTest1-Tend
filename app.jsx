@@ -487,7 +487,7 @@ function SettingsView({ state, up, accentColor, user, calendarToken }) {
   // The live subscription feed URL for Apple Calendar. webcal:// makes iOS/macOS
   // offer to subscribe directly. It auto-refreshes (Apple controls the interval).
   const origin = (typeof window !== "undefined" && window.location.origin) || "";
-  const httpsFeed = calendarToken ? `${origin}/api/calendar?token=${calendarToken}` : "";
+  const httpsFeed = calendarToken ? `${origin}/api/feed?token=${calendarToken}` : "";
   const webcalFeed = httpsFeed.replace(/^https?:\/\//, "webcal://");
 
   function copyFeed() {

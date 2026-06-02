@@ -8,6 +8,10 @@ _archive_nextjs/
 # Machine-local editor/harness config
 .claude/settings.local.json
 
+# Python
+__pycache__/
+*.pyc
+
 # OS / misc
 .DS_Store
 *.pem

@@ -21,7 +21,7 @@ Things-4-inspired, runs as a responsive web app + installable PWA (works on iPho
 
 - Single-file React app (in-browser Babel) + static hosting — no build step.
 - **Supabase** for auth + database (per-user row, Row-Level Security).
-- **Vercel** serverless Python functions: `api/parse.py` (AI) and `api/calendar.py` (calendar feed).
+- **Vercel** serverless Python functions: `api/parse.py` (AI) and `api/feed.py` (calendar feed).
 
 ## Setup
 
@@ -38,5 +38,5 @@ Things-4-inspired, runs as a responsive web app + installable PWA (works on iPho
 | `cloud.js` | Auth + cloud save/load |
 | `config.js` | Public Supabase URL + anon key |
 | `api/parse.py` | AI natural-language parsing |
-| `api/calendar.py` | Apple Calendar `.ics` feed |
+| `api/feed.py` | Apple Calendar `.ics` feed |
 | `supabase/schema.sql` | Database table + security |

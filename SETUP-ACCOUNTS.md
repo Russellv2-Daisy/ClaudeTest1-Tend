@@ -100,7 +100,7 @@ save to the cloud and sync across every device you log in on.
 - `config.js` — public Supabase URL + anon key (front-end login/data).
 - `cloud.js` — login + per-user cloud save/load, with offline cache.
 - `supabase/schema.sql` — the `user_state` table + Row-Level Security (privacy).
-- `api/calendar.py` — serverless feed that turns your tasks into a live `.ics`.
+- `api/feed.py` — serverless feed that turns your tasks into a live `.ics`.
 - Vercel env vars — your **secret** service-role key (calendar) + Anthropic key (AI).
 
 Your data is private per account: Row-Level Security means even though you share

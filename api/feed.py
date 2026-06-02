@@ -1,7 +1,9 @@
 """
 Vercel serverless function: live Apple Calendar feed for Tend.
 
-GET /api/calendar?token=<user's calendar_token>
+GET /api/feed?token=<user's calendar_token>
+(Named feed.py, not calendar.py: the name `calendar` collides with Python's
+ standard-library module and breaks Vercel's serverless-function detection.)
 
 Looks up that user's stored tasks via the Supabase REST API (using the SECRET
 service-role key, server-side only) and returns an .ics calendar of every task
