@@ -1,0 +1,2 @@
+# Tend uses only the Python standard library — no packages needed.
+# This empty file just helps hosts auto-detect the project as Python.

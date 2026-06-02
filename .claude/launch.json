@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tend",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["server.py", "4178"],
+      "port": 4178
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# Secrets — never commit
+.env
+.env*.local
+
+# Dormant Next.js attempt (kept locally, not needed to run or host)
+_archive_nextjs/
+
+# Machine-local editor/harness config
+.claude/settings.local.json
+
+# OS / misc
+.DS_Store
+*.pem
