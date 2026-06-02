@@ -38,13 +38,52 @@ function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
 const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), theme: "purple", streak: 0 };
 
-function load() { try { const d = localStorage.getItem("taskpro2"); return d ? { ...INIT, ...JSON.parse(d) } : INIT; } catch { return INIT; } }
-function persist(s) { try { localStorage.setItem("taskpro2", JSON.stringify(s)); } catch {} }
+// Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
+// INIT defaults, and saves changes back (debounced). Falls back to a local cache
+// so the app still opens if briefly offline.
+function useAppState(user) {
+  const seed = () => {
+    const c = window.TendCloud && window.TendCloud.cacheGet();
+    return c && c.data ? { ...INIT, ...c.data } : INIT;
+  };
+  const [state, setState] = useState(seed);
+  const [loaded, setLoaded] = useState(false);
+  const [calendarToken, setCalendarToken] = useState(
+    (window.TendCloud && (window.TendCloud.cacheGet() || {}).calendarToken) || ""
+  );
+  const saveTimer = useRef(null);
+  const dirty = useRef(false);
 
-function useAppState() {
-  const [state, setState] = useState(load);
-  const up = patch => setState(prev => { const next = { ...prev, ...patch }; persist(next); return next; });
-  return [state, up];
+  // Load this user's state whenever they log in.
+  useEffect(() => {
+    let alive = true;
+    if (!user || !window.TendCloud) { setLoaded(true); return; }
+    setLoaded(false);
+    window.TendCloud.load().then((res) => {
+      if (!alive || !res) { setLoaded(true); return; }
+      setState({ ...INIT, ...(res.data || {}) });
+      setCalendarToken(res.calendarToken || "");
+      setLoaded(true);
+    });
+    return () => { alive = false; };
+  }, [user && user.id]);
+
+  // Debounced save on change (only after initial load, only when logged in).
+  useEffect(() => {
+    if (!loaded || !user || !dirty.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      window.TendCloud.save(state);
+      dirty.current = false;
+    }, 600);
+    return () => saveTimer.current && clearTimeout(saveTimer.current);
+  }, [state, loaded, user && user.id]);
+
+  const up = (patch) => {
+    dirty.current = true;
+    setState((prev) => ({ ...prev, ...patch }));
+  };
+  return [state, up, { loaded, calendarToken }];
 }
 
 const accent = (theme) => THEMES[theme] || THEMES.purple;
@@ -440,9 +479,23 @@ function CalendarView({ tasks, importantDates, accentColor, onAddTask, onEditDat
 
 // ── Settings View ─────────────────────────────────────────────────────────────
 
-function SettingsView({ state, up, accentColor }) {
+function SettingsView({ state, up, accentColor, user, calendarToken }) {
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState(TAG_COLORS[0]);
+  const [copied, setCopied] = useState(false);
+
+  // The live subscription feed URL for Apple Calendar. webcal:// makes iOS/macOS
+  // offer to subscribe directly. It auto-refreshes (Apple controls the interval).
+  const origin = (typeof window !== "undefined" && window.location.origin) || "";
+  const httpsFeed = calendarToken ? `${origin}/api/calendar?token=${calendarToken}` : "";
+  const webcalFeed = httpsFeed.replace(/^https?:\/\//, "webcal://");
+
+  function copyFeed() {
+    if (!httpsFeed) return;
+    navigator.clipboard.writeText(httpsFeed).then(() => {
+      setCopied(true); setTimeout(() => setCopied(false), 1800);
+    });
+  }
 
   function addTag() {
     if (!newTagName.trim()) return;
@@ -506,10 +559,46 @@ function SettingsView({ state, up, accentColor }) {
         </div>
       </div>
 
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>🗓 Sync to Apple Calendar</h3>
+        <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--color-text-secondary)" }}>
+          Subscribe once and your tasks with dates appear in Apple Calendar automatically,
+          refreshing in the background. (One-way: tasks show up here, you manage them in Tend.)
+        </p>
+        {httpsFeed ? (
+          <div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <a href={webcalFeed} style={{ flex: 1, textAlign: "center", padding: "10px 16px", background: accentColor, color: "#fff", borderRadius: 9, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>
+                ＋ Subscribe in Apple Calendar
+              </a>
+              <button onClick={copyFeed} style={{ padding: "10px 16px", fontSize: 13, borderRadius: 9, cursor: "pointer" }}>
+                {copied ? "✓ Copied" : "Copy link"}
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+              <strong>On iPhone:</strong> tap “Subscribe” above → Add.<br />
+              <strong>On Mac:</strong> Calendar → File → New Calendar Subscription → paste the copied link.<br />
+              Keep this link private — anyone with it can see your task dates.
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <button onClick={exportAll} style={{ padding: "8px 14px", fontSize: 12, borderRadius: 8, cursor: "pointer" }}>
+                Or download a one-time .ics file
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Calendar link will appear once your account finishes syncing.</p>
+        )}
+      </div>
+
       <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20 }}>
-        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>Apple Calendar export</h3>
-        <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--color-text-secondary)" }}>Export all tasks with deadlines as an .ics file, compatible with Apple Calendar and iCloud</p>
-        <button onClick={exportAll} style={{ padding: "9px 18px", fontSize: 13, borderRadius: 9, cursor: "pointer" }}>📅 Export all tasks to Calendar</button>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>Account</h3>
+        <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--color-text-secondary)" }}>
+          Signed in as <strong>{user && (user.email || user.user_metadata?.name || "you")}</strong>
+        </p>
+        <button onClick={() => window.TendCloud.signOut()} style={{ padding: "9px 18px", fontSize: 13, borderRadius: 9, cursor: "pointer", color: "#E24B4A" }}>
+          Sign out
+        </button>
       </div>
     </div>
   );
@@ -713,10 +802,124 @@ function QuickAdd({ ctx, accentColor, defaults, onAdd }) {
   );
 }
 
+// ── Login screen ──────────────────────────────────────────────────────────────
+
+function LoginScreen() {
+  const [mode, setMode] = useState("signin"); // signin | signup
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const ac = THEMES.purple;
+
+  async function emailAuth() {
+    if (!email.trim() || !pw) { setMsg({ t: "err", m: "Enter your email and password." }); return; }
+    setBusy(true); setMsg(null);
+    try {
+      const fn = mode === "signup" ? "signUpWithEmail" : "signInWithEmail";
+      const { data, error } = await window.TendCloud[fn](email.trim(), pw);
+      if (error) { setMsg({ t: "err", m: error.message }); }
+      else if (mode === "signup" && data && data.user && !data.session) {
+        setMsg({ t: "ok", m: "Check your email to confirm your account, then sign in." });
+      }
+      // On success with a session, onAuth fires and the app swaps in automatically.
+    } catch (e) {
+      setMsg({ t: "err", m: String(e) });
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, background: "var(--color-background-tertiary)" }}>
+      <div style={{ width: "100%", maxWidth: 380, background: "var(--color-background-primary)", borderRadius: 18, padding: 28, boxShadow: "0 10px 40px rgba(0,0,0,0.10)" }}>
+        <div style={{ textAlign: "center", marginBottom: 22 }}>
+          <div style={{ fontSize: 40, marginBottom: 6 }}>🌱</div>
+          <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>Tend</div>
+          <div style={{ fontSize: 14, color: "var(--color-text-secondary)", marginTop: 4 }}>
+            Sign in to your task manager
+          </div>
+        </div>
+
+        <button
+          onClick={() => window.TendCloud.signInWithGoogle()}
+          style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "11px 14px", borderRadius: 11, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)", fontSize: 15, fontWeight: 500, marginBottom: 16 }}
+        >
+          <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.6 2.4 30.1 0 24 0 14.6 0 6.4 5.4 2.5 13.3l7.9 6.1C12.3 13.2 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.6c0-1.6-.1-3.1-.4-4.6H24v9.1h12.4c-.5 2.9-2.1 5.3-4.6 7l7.1 5.5c4.2-3.9 6.6-9.6 6.6-16z"/><path fill="#FBBC05" d="M10.4 28.6c-.5-1.5-.8-3-.8-4.6s.3-3.1.8-4.6l-7.9-6.1C.9 16.5 0 20.1 0 24s.9 7.5 2.5 10.7l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.1 0 11.3-2 15-5.5l-7.1-5.5c-2 1.3-4.6 2.1-7.9 2.1-6.4 0-11.7-3.7-13.6-9.4l-7.9 6.1C6.4 42.6 14.6 48 24 48z"/></svg>
+          Continue with Google
+        </button>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "4px 0 16px", color: "var(--color-text-secondary)", fontSize: 12 }}>
+          <div style={{ flex: 1, height: 1, background: "var(--color-border-tertiary)" }} /> or <div style={{ flex: 1, height: 1, background: "var(--color-border-tertiary)" }} />
+        </div>
+
+        <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)}
+          style={{ width: "100%", marginBottom: 10, padding: "11px 12px", fontSize: 15 }} />
+        <input type="password" placeholder="Password" value={pw} onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && emailAuth()}
+          style={{ width: "100%", marginBottom: 14, padding: "11px 12px", fontSize: 15 }} />
+
+        <button onClick={emailAuth} disabled={busy}
+          style={{ width: "100%", padding: "11px 14px", borderRadius: 11, border: "none", background: ac, color: "#fff", fontSize: 15, fontWeight: 600, opacity: busy ? 0.6 : 1 }}>
+          {busy ? "…" : mode === "signup" ? "Create account" : "Sign in"}
+        </button>
+
+        {msg && (
+          <div style={{ marginTop: 12, fontSize: 13, color: msg.t === "err" ? "#E24B4A" : "#1D9E75", textAlign: "center" }}>
+            {msg.m}
+          </div>
+        )}
+
+        <div style={{ marginTop: 16, textAlign: "center", fontSize: 13, color: "var(--color-text-secondary)" }}>
+          {mode === "signup" ? "Already have an account? " : "New here? "}
+          <span onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setMsg(null); }}
+            style={{ color: ac, cursor: "pointer", fontWeight: 500 }}>
+            {mode === "signup" ? "Sign in" : "Create one"}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Friendly screen if Supabase isn't configured yet.
+function SetupNeeded() {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center" }}>
+      <div style={{ maxWidth: 460 }}>
+        <div style={{ fontSize: 40, marginBottom: 10 }}>🌱</div>
+        <h2 style={{ margin: "0 0 8px" }}>Tend — almost ready</h2>
+        <p style={{ color: "var(--color-text-secondary)", fontSize: 15, lineHeight: 1.5 }}>
+          Accounts aren't connected yet. Add your Supabase URL and anon key in
+          <code style={{ background: "var(--color-background-tertiary)", padding: "2px 6px", borderRadius: 6, margin: "0 4px" }}>config.js</code>
+          (see <strong>SETUP-ACCOUNTS.md</strong>), then redeploy.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Auth gate ─────────────────────────────────────────────────────────────────
+
+function AuthGate() {
+  const [user, setUser] = useState(undefined); // undefined = checking
+  useEffect(() => {
+    if (!window.TendCloud || !window.TendCloud.isConfigured) { setUser(null); return; }
+    const off = window.TendCloud.onAuth((u) => setUser(u));
+    return off;
+  }, []);
+
+  if (window.TendCloud && !window.TendCloud.isConfigured) return <SetupNeeded />;
+  if (user === undefined) {
+    return <div className="boot-msg" style={{ paddingTop: 80 }}>Loading Tend…</div>;
+  }
+  if (!user) return <LoginScreen />;
+  return <App user={user} />;
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
-function App() {
-  const [state, up] = useAppState();
+function App({ user }) {
+  const [state, up, meta] = useAppState(user);
   const [view, setView] = useState("today");
   const [modal, setModal] = useState(null);
   const [groupModal, setGroupModal] = useState(null);
@@ -730,6 +933,12 @@ function App() {
 
   const ac = accent(state.theme);
   const today = todayStr();
+
+  // While the user's cloud data is loading for the first time, show a spinner
+  // so we never flash empty lists or overwrite cloud data with defaults.
+  if (!meta.loaded) {
+    return <div className="boot-msg" style={{ paddingTop: 80 }}>Syncing your tasks…</div>;
+  }
 
   function saveTask(task) {
     const exists = state.tasks.find(t => t.id === task.id);
@@ -1052,7 +1261,7 @@ function App() {
           )}
 
           {/* Settings */}
-          {view === "settings" && <SettingsView state={state} up={up} accentColor={ac} />}
+          {view === "settings" && <SettingsView state={state} up={up} accentColor={ac} user={user} calendarToken={meta.calendarToken} />}
 
         </div>
       </div>
@@ -1061,8 +1270,5 @@ function App() {
 }
 
 // ── Mount ───────────────────────────────────────────────────────────────────
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-
-// -- Mount --
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+ReactDOM.createRoot(document.getElementById("root")).render(<AuthGate />);
 
