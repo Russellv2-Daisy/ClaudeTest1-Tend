@@ -10,6 +10,6 @@
 //
 // If left blank, the app shows a friendly "setup needed" screen.
 window.TEND_CONFIG = {
-  SUPABASE_URL: "",
-  SUPABASE_ANON_KEY: "",
+  SUPABASE_URL: "https://sapowtetcppfnlqcpjim.supabase.co",
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhcG93dGV0Y3BwZm5scWNwamltIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0MjUyMjYsImV4cCI6MjA5NjAwMTIyNn0.jXbl06KIcZbQlDUPROCIPE61dCVsq5cZDX_Bp0PeCys",
 };
