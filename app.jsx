@@ -50,13 +50,11 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["today","upcoming","someday","groups","calendar","important-dates","people","finance","insights","settings"];
+const VIEWS = ["today","someday","groups","important-dates","people","finance","insights","settings"];
 const VIEW_META = {
   today: { icon: "☀️", label: "Today" },
-  upcoming: { icon: "📆", label: "Upcoming" },
   someday: { icon: "🌂", label: "Rainy Day" },
   groups: { icon: "📁", label: "Groups" },
-  calendar: { icon: "🗓", label: "Calendar" },
   "important-dates": { icon: "🎂", label: "Important Dates" },
   people: { icon: "🎁", label: "People" },
   finance: { icon: "💷", label: "Finance" },
@@ -72,7 +70,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], savingsAccounts: [], people: [], theme: "purple", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, people: [], theme: "purple", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1275,11 +1273,54 @@ const FINANCE_TABS = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
   { id: "plan", icon: "🎯", label: "Plan" },
   { id: "savings", icon: "🐖", label: "Savings" },
+  { id: "subs", icon: "🔁", label: "Subscriptions" },
   { id: "trends", icon: "📈", label: "Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
   { id: "categories", icon: "🏷", label: "Categories" },
   { id: "connect", icon: "🏦", label: "Connect bank" }
 ];
+
+// Detect likely recurring payments from transactions: same (normalised) description
+// appearing in 2+ distinct months. Returns [{name, amount, lastDate, months, categoryId}].
+function detectSubscriptions(state) {
+  const norm = s => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const byName = {};
+  (state.transactions || []).forEach(t => {
+    if (t.type === "income") return;
+    const k = norm(t.description);
+    if (!k) return;
+    (byName[k] = byName[k] || { name: (t.description || "").trim(), amounts: [], months: new Set(), lastDate: "", categoryId: t.categoryId }).amounts.push(Number(t.amount) || 0);
+    byName[k].months.add((t.date || "").slice(0, 7));
+    if ((t.date || "") > byName[k].lastDate) { byName[k].lastDate = t.date || ""; byName[k].categoryId = t.categoryId; }
+  });
+  return Object.values(byName).filter(x => x.months.size >= 2).map(x => ({
+    name: x.name, amount: Math.round((x.amounts.reduce((a, b) => a + b, 0) / x.amounts.length) * 100) / 100,
+    lastDate: x.lastDate, months: x.months.size, categoryId: x.categoryId, auto: true
+  })).sort((a, b) => b.amount - a.amount);
+}
+// Parse a Lloyds (or generic) bank CSV into transactions.
+function parseBankCSV(text, cats) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return [];
+  const splitRow = l => { const out = []; let cur = "", q = false; for (let i = 0; i < l.length; i++) { const c = l[i]; if (c === '"') q = !q; else if (c === "," && !q) { out.push(cur); cur = ""; } else cur += c; } out.push(cur); return out.map(s => s.trim().replace(/^"|"$/g, "")); };
+  const header = splitRow(lines[0]).map(h => h.toLowerCase());
+  const idx = (...names) => { for (const n of names) { const i = header.findIndex(h => h.includes(n)); if (i >= 0) return i; } return -1; };
+  const di = idx("transaction date", "date"), de = idx("description", "details", "reference"), dr = idx("debit"), cr = idx("credit"), am = idx("amount"), ty = idx("type");
+  const toISO = s => { const m = (s || "").match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/); if (m) { let y = m[3]; if (y.length === 2) y = "20" + y; return y + "-" + m[2].padStart(2, "0") + "-" + m[1].padStart(2, "0"); } const m2 = (s || "").match(/(\d{4})-(\d{2})-(\d{2})/); return m2 ? m2[0] : ""; };
+  const guessCat = desc => { const d = (desc || "").toLowerCase(); const map = [["g_food", ["tesco", "sainsbury", "asda", "aldi", "lidl", "co-op", "coop", "morrisons", "waitrose", "deliveroo", "uber eats", "just eat", "greggs", "pret", "mcdonald", "costa", "starbucks", "restaurant", "cafe"]], ["g_transport", ["shell", "bp", "esso", "texaco", "fuel", "petrol", "tfl", "trainline", "uber", "rail", "parking", "national rail"]], ["g_ent", ["spotify", "netflix", "disney", "cinema", "starlink", "steam", "playstation", "xbox", "prime video"]], ["g_housing", ["mortgage", "rent", "british gas", "octopus", "water", "council tax", "thames"]], ["g_loans", ["club lloyds", "loan", "finance", "credit"]], ["g_personal", ["boots", "superdrug", "gym", "pharmacy", "apple.com", "phone"]]]; for (const [cid, kws] of map) { if ((cats || []).some(c => c.id === cid) && kws.some(k => d.includes(k))) return cid; } return ""; };
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    const r = splitRow(lines[i]); if (!r.length || r.every(c => !c)) continue;
+    const date = toISO(di >= 0 ? r[di] : r[0]); if (!date) continue;
+    const desc = de >= 0 ? r[de] : (r[1] || "Transaction");
+    let amount = 0, type = "spend";
+    if (dr >= 0 || cr >= 0) { const d = parseFloat((r[dr] || "").replace(/[^\d.\-]/g, "")) || 0; const c = parseFloat((r[cr] || "").replace(/[^\d.\-]/g, "")) || 0; if (c > 0) { amount = c; type = "income"; } else { amount = d; type = "spend"; } }
+    else if (am >= 0) { const v = parseFloat((r[am] || "").replace(/[^\d.\-]/g, "")) || 0; amount = Math.abs(v); type = v >= 0 ? "income" : "spend"; }
+    if (!amount) continue;
+    out.push({ id: genId(), date, description: desc, amount: Math.round(amount * 100) / 100, type, categoryId: type === "spend" ? guessCat(desc) : "", source: "csv" });
+  }
+  return out;
+}
 
 function StatCard({ label, value, color, sub }) {
   return (
@@ -1335,6 +1376,59 @@ function SavingsModal({ account, accentColor, onSave, onClose }) {
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
         <button onClick={() => { if (a.name.trim()) onSave({ id: account?.id || genId(), name: a.name.trim(), institution: a.institution, balance: parseFloat(a.balance) || 0, contribution: parseFloat(a.contribution) || 0, rate: parseFloat(a.rate) || 0, target: parseFloat(a.target) || 0, targetDate: a.targetDate || "" }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{account?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function SubModal({ sub, cats, accentColor, onSave, onClose }) {
+  const [s, setS] = useState({ name: "", amount: "", day: 1, categoryId: "", ...(sub || {}) });
+  const up = (k, v) => setS(x => ({ ...x, [k]: v }));
+  const ac = accentColor;
+  return (
+    <Modal onClose={onClose} width={380}>
+      <ModalHeader title={sub?.id ? "Edit subscription" : "New subscription"} onClose={onClose} />
+      <Field label="Name"><input placeholder="e.g. Spotify" value={s.name} onChange={e => up("name", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} autoFocus /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Amount / month (£)"><input type="number" step="0.01" placeholder="0.00" value={s.amount} onChange={e => up("amount", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Billing day"><input type="number" min="1" max="28" placeholder="1" value={s.day} onChange={e => up("day", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      </div>
+      <Field label="Category">
+        <select value={s.categoryId || ""} onChange={e => up("categoryId", e.target.value)} style={{ width: "100%" }}>
+          <option value="">Uncategorised</option>
+          {(cats || []).map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+        </select>
+      </Field>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (s.name.trim()) onSave({ id: sub?.id || genId(), name: s.name.trim(), amount: parseFloat(s.amount) || 0, day: Math.min(28, Math.max(1, parseInt(s.day, 10) || 1)), categoryId: s.categoryId }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{sub?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+// Sinking-fund "pot" inside a savings account, optionally tied to an Important Date.
+function PotModal({ pot, importantDates, accentColor, onSave, onClose }) {
+  const [p, setP] = useState({ label: "", target: "", dueDate: "", importantDateId: "", ...(pot || {}) });
+  const up = (k, v) => setP(x => ({ ...x, [k]: v }));
+  const ac = accentColor;
+  const dated = (importantDates || []).filter(d => d.date);
+  return (
+    <Modal onClose={onClose} width={400}>
+      <ModalHeader title={pot?.id ? "Edit pot" : "New sinking fund / pot"} onClose={onClose} />
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Earmark part of this account for an irregular cost (e.g. car insurance) and we'll work out the monthly amount to set aside.</div>
+      <Field label="What for?"><input placeholder="e.g. Car insurance" value={p.label} onChange={e => up("label", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} autoFocus /></Field>
+      <Field label="Target amount (£)"><input type="number" step="0.01" placeholder="e.g. 600" value={p.target} onChange={e => up("target", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      <Field label="Link to an important date (sets the due date)">
+        <select value={p.importantDateId || ""} onChange={e => { const d = dated.find(x => x.id === e.target.value); up("importantDateId", e.target.value); if (d) up("dueDate", nextOccurrence(d.date) || d.date); }} style={{ width: "100%" }}>
+          <option value="">— none —</option>
+          {dated.map(d => <option key={d.id} value={d.id}>{d.title} ({fmtShort(d.date)})</option>)}
+        </select>
+      </Field>
+      <Field label="Due date"><input type="date" value={p.dueDate || ""} onChange={e => up("dueDate", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (p.label.trim()) onSave({ id: pot?.id || genId(), label: p.label.trim(), target: parseFloat(p.target) || 0, dueDate: p.dueDate || "", importantDateId: p.importantDateId || "" }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{pot?.id ? "Save" : "Add pot"}</button>
       </div>
     </Modal>
   );
@@ -1422,14 +1516,65 @@ function MoneyInsights({ state, accentColor }) {
   );
 }
 
+// Net worth = savings (assets) − debts, with a monthly snapshot history that builds over time.
+function NetWorth({ state, up, accentColor }) {
+  const ac = accentColor;
+  const debts = state.debts || [];
+  const assets = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const debtTotal = debts.reduce((s, d) => s + (Number(d.balance) || 0), 0);
+  const nw = assets - debtTotal;
+  const [dn, setDn] = useState(""); const [db, setDb] = useState("");
+  const mk = curMonthKey();
+  useEffect(() => {
+    const hist = state.netWorthHistory || {};
+    if (hist[mk] !== nw) up({ netWorthHistory: { ...hist, [mk]: nw } });
+  }, [nw]);
+  const hist = state.netWorthHistory || {};
+  const months = Object.keys(hist).sort().slice(-6);
+  const bars = months.map(m => ({ label: monthShort(m), value: Math.max(0, hist[m]), color: "#7F77DD" }));
+  const addDebt = () => { if (!dn.trim()) return; up({ debts: [...debts, { id: genId(), name: dn.trim(), balance: parseFloat(db) || 0 }] }); setDn(""); setDb(""); };
+  return (
+    <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>📈 Net worth</div>
+        <div style={{ fontSize: 24, fontWeight: 700, color: nw >= 0 ? "#1D9E75" : "#E24B4A" }}>{fmtMoney(nw)}</div>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Assets {fmtMoney(assets, true)} − Debts {fmtMoney(debtTotal, true)}</div>
+      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 6 }}>DEBTS (credit cards, loans…)</div>
+      {debts.map(d => (
+        <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 5 }}>
+          <span style={{ flex: 1 }}>💳 {d.name}</span>
+          <span style={{ color: "#E24B4A" }}>−{fmtMoney(d.balance, true)}</span>
+          <button onClick={() => up({ debts: debts.filter(x => x.id !== d.id) })} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "var(--color-text-secondary)" }}>×</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        <input placeholder="Debt name (e.g. Visa)" value={dn} onChange={e => setDn(e.target.value)} onKeyDown={e => e.key === "Enter" && addDebt()} style={{ flex: 1, fontSize: 13 }} />
+        <input type="number" placeholder="£ owed" value={db} onChange={e => setDb(e.target.value)} style={{ width: 90, fontSize: 13 }} />
+        <button onClick={addDebt} style={{ padding: "0 14px", fontSize: 13 }}>+</button>
+      </div>
+      {bars.length >= 2 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8 }}>Net worth over time</div>
+          <BarsChart data={bars} money height={110} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FinanceView({ state, up, accentColor }) {
   const [tab, setTab] = useState("dashboard");
   const [month, setMonth] = useState(curMonthKey());
   const [txnModal, setTxnModal] = useState(null);
   const [catModal, setCatModal] = useState(null);
   const [savModal, setSavModal] = useState(null);
+  const [potModal, setPotModal] = useState(null);
+  const [subModal, setSubModal] = useState(null);
   const [planText, setPlanText] = useState("");
   const [txnFilter, setTxnFilter] = useState("");
+  const [txnSearch, setTxnSearch] = useState("");
+  const csvRef = useRef(null);
 
   const ac = accentColor;
   const cats = state.financeCategories || [];
@@ -1513,6 +1658,25 @@ function FinanceView({ state, up, accentColor }) {
     setSavModal(null);
   }
   function deleteSav(id) { if (confirm("Delete this savings account?")) up({ savingsAccounts: savings.filter(s => s.id !== id) }); }
+  function savePot(accId, pot) {
+    up({ savingsAccounts: savings.map(s => s.id === accId ? { ...s, pots: (s.pots || []).some(p => p.id === pot.id) ? (s.pots || []).map(p => p.id === pot.id ? pot : p) : [...(s.pots || []), pot] } : s) });
+    setPotModal(null);
+  }
+  function deletePot(accId, potId) { up({ savingsAccounts: savings.map(s => s.id === accId ? { ...s, pots: (s.pots || []).filter(p => p.id !== potId) } : s) }); }
+  const subs = state.subscriptions || [];
+  function saveSub(s) { up({ subscriptions: subs.some(x => x.id === s.id) ? subs.map(x => x.id === s.id ? s : x) : [...subs, s] }); setSubModal(null); }
+  function deleteSub(id) { up({ subscriptions: subs.filter(s => s.id !== id) }); }
+  function importCSV(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      const rows = parseBankCSV(String(e.target.result || ""), cats);
+      if (!rows.length) { alert("Couldn't find any transactions in that CSV. Expecting a Lloyds export (Date, Description, Debit/Credit amounts)."); return; }
+      up({ transactions: [...rows, ...(state.transactions || [])] });
+      alert(`Imported ${rows.length} transaction${rows.length !== 1 ? "s" : ""}. Auto-categorised where possible — review under each row.`);
+    };
+    reader.readAsText(file);
+  }
 
   // ── month switcher ──
   const MonthNav = () => (
@@ -1532,6 +1696,8 @@ function FinanceView({ state, up, accentColor }) {
       {txnModal !== null && <TxnModal txn={txnModal === "new" ? null : txnModal} cats={cats} accentColor={ac} onSave={saveTxn} onClose={() => setTxnModal(null)} />}
       {catModal !== null && <FinanceCatModal cat={catModal === "new" ? null : catModal} accentColor={ac} onSave={saveCat} onClose={() => setCatModal(null)} />}
       {savModal !== null && <SavingsModal account={savModal === "new" ? null : savModal} accentColor={ac} onSave={saveSav} onClose={() => setSavModal(null)} />}
+      {potModal && <PotModal pot={potModal.pot} importantDates={state.importantDates || []} accentColor={ac} onSave={p => savePot(potModal.accId, p)} onClose={() => setPotModal(null)} />}
+      {subModal !== null && <SubModal sub={subModal === "new" ? null : subModal} cats={cats} accentColor={ac} onSave={saveSub} onClose={() => setSubModal(null)} />}
 
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
@@ -1556,6 +1722,28 @@ function FinanceView({ state, up, accentColor }) {
             </div>
           ) : (
             <>
+              {(() => {
+                const savContrib = savings.reduce((s, a) => s + (Number(a.contribution) || 0), 0);
+                const buffer = Number(state.safetyBuffer) || 0;
+                const expIncome = stats.incomeActual > 0 ? stats.incomeActual : stats.incomeProjected;
+                const safe = expIncome - stats.plannedTotal - savContrib - buffer;
+                const col = safe >= 0 ? "#1D9E75" : "#E24B4A";
+                return (
+                  <div style={{ background: hex2rgba(col, 0.08), border: `1px solid ${hex2rgba(col, 0.3)}`, borderRadius: 14, padding: "16px 18px", marginBottom: 16, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 4 }}>💸 Safe to spend this month</div>
+                      <div style={{ fontSize: 30, fontWeight: 700, color: col }}>{fmtMoney(safe)}</div>
+                      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 4 }}>after your plan, savings{buffer > 0 ? " & buffer" : ""} — {safe >= 0 ? "free to spend" : "over budget; trim the plan"}</div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
+                      <div>Income <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(expIncome, true)}</b></div>
+                      <div>− Planned outgoings <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(stats.plannedTotal, true)}</b></div>
+                      <div>− Savings contributions <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(savContrib, true)}</b></div>
+                      <div>− Safety buffer <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(buffer, true)}</b></div>
+                    </div>
+                  </div>
+                );
+              })()}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 16 }}>
                 <StatCard label="Spent" value={fmtMoney(stats.spend)} color="#E24B4A" sub={`of ${fmtMoney(stats.plannedTotal)} planned`} />
                 <StatCard label="Remaining in plan" value={fmtMoney(stats.plannedTotal - stats.spend)} color={stats.plannedTotal - stats.spend >= 0 ? "#639922" : "#E24B4A"} sub={stats.plannedTotal ? `${Math.round(stats.spend / stats.plannedTotal * 100)}% used` : "no plan set"} />
@@ -1704,7 +1892,11 @@ function FinanceView({ state, up, accentColor }) {
           <div style={{ background: hex2rgba(ac, 0.06), borderRadius: 12, padding: 18, border: `1px solid ${hex2rgba(ac, 0.25)}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><span>Total projected cost</span><b>{fmtMoney(stats.plannedTotal)}</b></div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><span>Total actual cost</span><b>{fmtMoney(stats.manualActualTotal)}</b></div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingTop: 10, borderTop: `0.5px solid ${hex2rgba(ac, 0.25)}` }}><span style={{ fontWeight: 600 }}>Projected balance</span><b style={{ color: (stats.incomeProjected - stats.plannedTotal) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeProjected - stats.plannedTotal)}</b></div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, marginBottom: 8 }}>
+              <span title="A cushion held back from your plan in case you overspend">🛟 Safety buffer</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ color: "var(--color-text-secondary)" }}>£</span><input type="number" step="1" value={state.safetyBuffer || ""} onChange={e => up({ safetyBuffer: parseFloat(e.target.value) || 0 })} placeholder="0" style={{ width: 90, textAlign: "right" }} /></div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingTop: 10, borderTop: `0.5px solid ${hex2rgba(ac, 0.25)}` }}><span style={{ fontWeight: 600 }}>Projected balance <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)" }}>after buffer</span></span><b style={{ color: (stats.incomeProjected - stats.plannedTotal - (Number(state.safetyBuffer) || 0)) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeProjected - stats.plannedTotal - (Number(state.safetyBuffer) || 0))}</b></div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginTop: 8 }}><span style={{ fontWeight: 600 }}>Actual balance</span><b style={{ color: (stats.incomeManualActual - stats.manualActualTotal) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeManualActual - stats.manualActualTotal)}</b></div>
           </div>
         </div>
@@ -1776,6 +1968,76 @@ function FinanceView({ state, up, accentColor }) {
                         </div>
                       )}
                       {forecast && <div style={{ fontSize: 12.5, color: forecast.color, fontWeight: 500 }}>{forecast.txt}</div>}
+                      {(a.pots && a.pots.length > 0) && (
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 6 }}>SINKING FUNDS / POTS</div>
+                          {a.pots.map(pot => {
+                            const m = pot.dueDate ? monthsBetweenToday(pot.dueDate) : null;
+                            const needed = (m && m > 0) ? (Number(pot.target) || 0) / m : null;
+                            return (
+                              <div key={pot.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 5 }}>
+                                <span style={{ flex: 1 }}>🎯 {pot.label}{pot.dueDate ? ` · by ${fmtShort(pot.dueDate)}` : ""}</span>
+                                <span style={{ color: "var(--color-text-secondary)" }}>{fmtMoney(pot.target, true)}{needed != null ? ` · ${fmtMoney(needed, true)}/mo` : " · set due date"}</span>
+                                <button onClick={() => setPotModal({ accId: a.id, pot })} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12 }}>✏️</button>
+                                <button onClick={() => deletePot(a.id, pot.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "var(--color-text-secondary)" }}>×</button>
+                              </div>
+                            );
+                          })}
+                          {(() => { const totalNeed = a.pots.reduce((s, pot) => { const m = pot.dueDate ? monthsBetweenToday(pot.dueDate) : null; return s + ((m && m > 0) ? (Number(pot.target) || 0) / m : 0); }, 0); if (totalNeed <= 0) return null; const ok = (Number(a.contribution) || 0) >= totalNeed; return <div style={{ fontSize: 11, color: ok ? "#639922" : "#E24B4A", marginTop: 4 }}>Pots need {fmtMoney(totalNeed, true)}/mo {ok ? "— covered by your contribution" : `— more than your ${fmtMoney(a.contribution, true)}/mo`}</div>; })()}
+                        </div>
+                      )}
+                      <button onClick={() => setPotModal({ accId: a.id, pot: null })} style={{ marginTop: 8, fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", color: ac }}>+ Add a pot / sinking fund</button>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+            <NetWorth state={state} up={up} accentColor={ac} />
+          </div>
+        );
+      })()}
+
+      {/* ── Subscriptions ── */}
+      {tab === "subs" && (() => {
+        const ymd = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+        const nextFromDay = day => { const t = new Date(); t.setHours(0, 0, 0, 0); const mk2 = (yy, mm) => { const dim = new Date(yy, mm + 1, 0).getDate(); return new Date(yy, mm, Math.min(day || 1, dim)); }; let d = mk2(t.getFullYear(), t.getMonth()); if (d < t) d = mk2(t.getFullYear(), t.getMonth() + 1); return ymd(d); };
+        const manual = subs.map(s => ({ id: s.id, name: s.name, amount: Number(s.amount) || 0, next: nextFromDay(Number(s.day) || 1), categoryId: s.categoryId, auto: false }));
+        const auto = detectSubscriptions(state).filter(a => !manual.some(m => m.name.toLowerCase() === a.name.toLowerCase())).map(a => ({ id: "auto_" + a.name, name: a.name, amount: a.amount, next: a.lastDate ? (() => { const d = new Date(a.lastDate + "T00:00:00"); d.setMonth(d.getMonth() + 1); return ymd(d); })() : "", categoryId: a.categoryId, auto: true }));
+        const items = [...manual, ...auto].sort((x, y) => (x.next || "z").localeCompare(y.next || "z"));
+        const totalM = items.reduce((s, i) => s + i.amount, 0);
+        return (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Recurring payments — auto-detected from transactions plus any you add.</div>
+              <button onClick={() => setSubModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Subscription</button>
+            </div>
+            {items.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>🔁</div>
+                <div style={{ fontSize: 14, marginBottom: 6 }}>No subscriptions found yet</div>
+                <div style={{ fontSize: 12, marginBottom: 16 }}>Add one, or import transactions so we can spot recurring payments.</div>
+                <button onClick={() => setSubModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a subscription</button>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+                  <StatCard label="Per month" value={fmtMoney(totalM)} color={ac} />
+                  <StatCard label="Per year" value={fmtMoney(totalM * 12)} color="#E24B4A" sub="potential saving if cancelled" />
+                  <StatCard label="Active" value={String(items.length)} color="var(--color-text-primary)" sub="recurring payments" />
+                </div>
+                {items.map(it => {
+                  const c = cats.find(x => x.id === it.categoryId);
+                  return (
+                    <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: "var(--color-background-primary)", borderRadius: 10, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 7 }}>
+                      <span style={{ fontSize: 20, width: 26, textAlign: "center" }}>{c?.emoji || "🔁"}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 500 }}>{it.name} {it.auto && <span style={{ fontSize: 10, background: hex2rgba(ac, 0.12), color: ac, padding: "1px 7px", borderRadius: 10 }}>auto</span>}</div>
+                        <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{it.next ? `next ~${fmtShort(it.next)}` : "—"} · {fmtMoney(it.amount * 12, true)}/yr</div>
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 600, width: 90, textAlign: "right" }}>{fmtMoney(it.amount)}<span style={{ fontSize: 11, color: "var(--color-text-secondary)", fontWeight: 400 }}>/mo</span></div>
+                      {!it.auto && <button onClick={() => setSubModal(subs.find(s => s.id === it.id))} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>✏️</button>}
+                      {!it.auto && <button onClick={() => deleteSub(it.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>🗑</button>}
+                      {it.auto && <button onClick={() => setSubModal({ name: it.name, amount: it.amount, day: 1, categoryId: it.categoryId })} title="Save as tracked subscription" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>＋</button>}
                     </div>
                   );
                 })}
@@ -1814,6 +2076,23 @@ function FinanceView({ state, up, accentColor }) {
                 <BarsChart data={savBars} money />
               </div>
             )}
+            {(() => {
+              const variance = cats.map(c => { let planned = 0, spent = 0, n = 0; series.forEach(s => { const b = s.st.byCat[c.id]; if (b && (b.planned > 0 || b.spent > 0)) { planned += b.planned; spent += b.spent; n++; } }); return { c, ap: n ? planned / n : 0, asp: n ? spent / n : 0, n }; }).filter(v => v.n > 0 && (v.ap > 0 || v.asp > 0));
+              if (!variance.length) return null;
+              return (
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
+                  <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Budget vs actual</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Average per month — where you consistently over/under-spend.</div>
+                  {variance.sort((a, b) => (b.asp - b.ap) - (a.asp - a.ap)).map(v => { const over = v.asp > v.ap * 1.05, under = v.ap > 0 && v.asp < v.ap * 0.95; const col = over ? "#E24B4A" : under ? "#639922" : "var(--color-text-secondary)"; return (
+                    <div key={v.c.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "6px 0", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                      <span style={{ flex: 1 }}>{v.c.emoji} {v.c.name}</span>
+                      <span style={{ color: "var(--color-text-secondary)", fontSize: 12 }}>plan {fmtMoney(v.ap, true)} · actual {fmtMoney(v.asp, true)}</span>
+                      <span style={{ color: col, fontWeight: 500, width: 92, textAlign: "right" }}>{over ? `over ${fmtMoney(v.asp - v.ap, true)}` : under ? `under ${fmtMoney(v.ap - v.asp, true)}` : "on track"}</span>
+                    </div>
+                  ); })}
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
@@ -1822,19 +2101,26 @@ function FinanceView({ state, up, accentColor }) {
       {tab === "transactions" && (() => {
         let list = (state.transactions || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
         if (txnFilter) list = list.filter(t => t.categoryId === txnFilter);
+        if (txnSearch.trim()) { const q = txnSearch.toLowerCase(); list = list.filter(t => (t.description || "").toLowerCase().includes(q)); }
         return (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
-              <select value={txnFilter} onChange={e => setTxnFilter(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
-                <option value="">All categories</option>
-                {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
-              </select>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <input placeholder="Search…" value={txnSearch} onChange={e => setTxnSearch(e.target.value)} style={{ fontSize: 13, width: 150 }} />
+                <select value={txnFilter} onChange={e => setTxnFilter(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
+                  <option value="">All categories</option>
+                  {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+                </select>
+              </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={loadSample} style={{ fontSize: 13, padding: "7px 14px", borderRadius: 9, cursor: "pointer" }}>✨ Sample data</button>
+                <input ref={csvRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={e => { importCSV(e.target.files[0]); e.target.value = ""; }} />
+                <button onClick={() => csvRef.current && csvRef.current.click()} style={{ fontSize: 13, padding: "7px 14px", borderRadius: 9, cursor: "pointer" }}>⬆ Import CSV</button>
+                <button onClick={loadSample} style={{ fontSize: 13, padding: "7px 14px", borderRadius: 9, cursor: "pointer" }}>✨ Sample</button>
                 <button onClick={() => setTxnModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Transaction</button>
               </div>
             </div>
-            {list.length === 0 && <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 36, marginBottom: 10 }}>💳</div><div style={{ fontSize: 14 }}>No transactions yet</div></div>}
+            {(state.transactions || []).length > 0 && list.length === 0 && <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>No transactions match your search/filter.</div>}
+            {(state.transactions || []).length === 0 && <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 36, marginBottom: 10 }}>💳</div><div style={{ fontSize: 14, marginBottom: 6 }}>No transactions yet</div><div style={{ fontSize: 12 }}>Import a Lloyds CSV export, add manually, or load sample data.</div></div>}
             {list.map(t => {
               const c = catById(t.categoryId);
               const income = t.type === "income";
@@ -2221,11 +2507,20 @@ function App({ user }) {
   const [filterTag, setFilterTag] = useState("");
   const [filterPriority, setFilterPriority] = useState("");
   const [focusMode, setFocusMode] = useState(false);
+  const [todayMode, setTodayMode] = useState("list"); // Today hub: "list" | "calendar"
   const [collapsed, setCollapsed] = useState(false);
   const [weeklyReview, setWeeklyReview] = useState(false);
+  const [narrow, setNarrow] = useState(typeof window !== "undefined" && window.innerWidth < 760);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  useEffect(() => {
+    const onR = () => setNarrow(window.innerWidth < 760);
+    window.addEventListener("resize", onR);
+    return () => window.removeEventListener("resize", onR);
+  }, []);
 
   const ac = accent(state.theme);
   const today = todayStr();
+  const sidebarCollapsed = narrow ? false : collapsed; // on phones the drawer always shows full labels
 
   // While the user's cloud data is loading for the first time, show a spinner
   // so we never flash empty lists or overwrite cloud data with defaults.
@@ -2273,10 +2568,12 @@ function App({ user }) {
   let viewTasks = [];
   if (view === "today") viewTasks = filterTasks(allTasks.filter(t => !t.done && (t.scheduledDate === today || t.deadline === today)));
   else if (view === "someday") viewTasks = filterTasks(allTasks.filter(t => t.someday && !t.done));
-  else if (view === "upcoming") viewTasks = filterTasks(allTasks.filter(t => !t.done && t.deadline && t.deadline > today).sort((a, b) => a.deadline.localeCompare(b.deadline)));
   // "Unsorted" (shown under Today): ungrouped, not-someday, not-done tasks that no dated
   // view surfaces — so nothing captured ever gets lost now that Inbox is merged in.
   const unsortedTasks = filterTasks(allTasks.filter(t => !t.done && !t.someday && !t.groupId && t.scheduledDate !== today && t.deadline !== today && !(t.deadline && t.deadline > today)));
+  // Upcoming (future-dated) — shown in the Today hub's list under "Upcoming".
+  const upcomingDate = t => t.scheduledDate && t.scheduledDate > today ? (t.deadline && t.deadline > today ? (t.scheduledDate < t.deadline ? t.scheduledDate : t.deadline) : t.scheduledDate) : (t.deadline && t.deadline > today ? t.deadline : null);
+  const upcomingTasks = filterTasks(allTasks.filter(t => !t.done && !t.someday && upcomingDate(t))).sort((a, b) => upcomingDate(a).localeCompare(upcomingDate(b)));
 
   const done = allTasks.filter(t => t.done).length;
   const total = allTasks.length;
@@ -2315,28 +2612,33 @@ function App({ user }) {
         </Modal>
       )}
 
+      {/* Mobile drawer overlay */}
+      {narrow && drawerOpen && <div onClick={() => setDrawerOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1090 }} />}
+
       {/* Sidebar */}
-      <div style={{ width: collapsed ? 56 : 210, background: "var(--color-background-primary)", borderRight: "0.5px solid var(--color-border-tertiary)", display: "flex", flexDirection: "column", flexShrink: 0, transition: "width 0.2s" }}>
-        <div style={{ padding: collapsed ? "14px 10px" : "16px 14px", display: "flex", alignItems: "center", justifyContent: collapsed ? "center" : "space-between", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-          {!collapsed && <span style={{ fontWeight: 600, fontSize: 16, color: ac, letterSpacing: "-0.01em" }}>Tend</span>}
-          <button onClick={() => setCollapsed(!collapsed)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 17, color: "var(--color-text-secondary)", padding: 2 }}>☰</button>
+      <div style={narrow
+        ? { position: "fixed", top: 0, left: 0, bottom: 0, width: 230, background: "var(--color-background-primary)", borderRight: "0.5px solid var(--color-border-tertiary)", display: "flex", flexDirection: "column", zIndex: 1100, transform: drawerOpen ? "translateX(0)" : "translateX(-100%)", transition: "transform 0.22s", boxShadow: drawerOpen ? "2px 0 18px rgba(0,0,0,0.25)" : "none" }
+        : { width: collapsed ? 56 : 210, background: "var(--color-background-primary)", borderRight: "0.5px solid var(--color-border-tertiary)", display: "flex", flexDirection: "column", flexShrink: 0, transition: "width 0.2s" }}>
+        <div style={{ padding: sidebarCollapsed ? "14px 10px" : "16px 14px", display: "flex", alignItems: "center", justifyContent: sidebarCollapsed ? "center" : "space-between", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+          {!sidebarCollapsed && <span style={{ fontWeight: 600, fontSize: 16, color: ac, letterSpacing: "-0.01em" }}>Tend</span>}
+          <button onClick={() => narrow ? setDrawerOpen(false) : setCollapsed(!collapsed)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 17, color: "var(--color-text-secondary)", padding: 2 }}>{narrow ? "✕" : "☰"}</button>
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: "8px 6px" }}>
           {VIEWS.map(v => {
             const meta = VIEW_META[v];
             const isActive = view === v;
             return (
-              <div key={v} onClick={() => setView(v)} title={collapsed ? meta.label : ""} style={{ display: "flex", alignItems: "center", gap: 9, padding: collapsed ? "9px" : "9px 10px", cursor: "pointer", borderRadius: 9, margin: "1px 0", background: isActive ? hex2rgba(ac, 0.1) : "transparent", color: isActive ? ac : "var(--color-text-secondary)", fontWeight: isActive ? 500 : 400, fontSize: 13, justifyContent: collapsed ? "center" : "flex-start", transition: "background 0.12s" }}>
+              <div key={v} onClick={() => { setView(v); if (narrow) setDrawerOpen(false); }} title={sidebarCollapsed ? meta.label : ""} style={{ display: "flex", alignItems: "center", gap: 9, padding: sidebarCollapsed ? "9px" : "9px 10px", cursor: "pointer", borderRadius: 9, margin: "1px 0", background: isActive ? hex2rgba(ac, 0.1) : "transparent", color: isActive ? ac : "var(--color-text-secondary)", fontWeight: isActive ? 500 : 400, fontSize: 13, justifyContent: sidebarCollapsed ? "center" : "flex-start", transition: "background 0.12s" }}>
                 <span style={{ fontSize: 15, flexShrink: 0 }}>{meta.icon}</span>
-                {!collapsed && <span>{meta.label}</span>}
-                {!collapsed && v === "today" && allTasks.filter(t => !t.done && (t.scheduledDate === today || t.deadline === today)).length > 0 && (
+                {!sidebarCollapsed && <span>{meta.label}</span>}
+                {!sidebarCollapsed && v === "today" && allTasks.filter(t => !t.done && (t.scheduledDate === today || t.deadline === today)).length > 0 && (
                   <span style={{ marginLeft: "auto", background: ac, color: "#fff", borderRadius: 10, fontSize: 10, padding: "1px 6px", fontWeight: 500 }}>{allTasks.filter(t => !t.done && (t.scheduledDate === today || t.deadline === today)).length}</span>
                 )}
               </div>
             );
           })}
         </div>
-        {!collapsed && (
+        {!sidebarCollapsed && (
           <div style={{ padding: "10px 12px 14px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
             <button onClick={() => setWeeklyReview(true)} style={{ width: "100%", fontSize: 12, padding: "7px 0", borderRadius: 8, cursor: "pointer", marginBottom: 5, color: "var(--color-text-secondary)" }}>📋 Weekly review</button>
           </div>
@@ -2347,11 +2649,12 @@ function App({ user }) {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {/* Topbar */}
         <div style={{ padding: "12px 20px", background: "var(--color-background-primary)", borderBottom: "0.5px solid var(--color-border-tertiary)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {narrow && <button onClick={() => setDrawerOpen(true)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, padding: "0 4px", color: "var(--color-text-secondary)" }}>☰</button>}
           <h1 style={{ margin: 0, fontSize: 17, fontWeight: 500, flex: 1 }}>{VIEW_META[view].icon} {VIEW_META[view].label}</h1>
           {overdueTasks.length > 0 && (
             <div style={{ fontSize: 12, background: "#FCEBEB", color: "#A32D2D", padding: "4px 10px", borderRadius: 20, fontWeight: 500 }}>⚠ {overdueTasks.length} overdue</div>
           )}
-          {["today","upcoming","someday"].includes(view) && (
+          {["today","someday"].includes(view) && (
             <>
               <input placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 150, fontSize: 13 }} />
               <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
@@ -2373,41 +2676,74 @@ function App({ user }) {
         {/* Body */}
         <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
 
-          {/* Task list views */}
-          {["today","upcoming","someday"].includes(view) && (
+          {/* Today hub — List (Today + Unsorted + Upcoming) or Calendar */}
+          {view === "today" && (
             <div>
-              <QuickAdd
-                ctx={{ tags: state.tags, groups: state.groups }}
-                accentColor={ac}
-                defaults={view === "today" ? { scheduledToday: true } : view === "someday" ? { someday: true } : {}}
-                onAdd={saveTask}
-              />
-              {focusMode && view === "today" && <div style={{ background: hex2rgba(ac, 0.08), borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: ac, fontWeight: 500 }}>🎯 Focus mode — stay on today</div>}
-              {viewTasks.length === 0 && !(view === "today" && unsortedTasks.length > 0) && (
+              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                {[["list", "📋 List"], ["calendar", "🗓 Calendar"]].map(([m, l]) => (
+                  <button key={m} onClick={() => setTodayMode(m)} style={{ fontSize: 13, padding: "7px 14px", borderRadius: 9, cursor: "pointer", border: "none", background: todayMode === m ? ac : "var(--color-background-secondary)", color: todayMode === m ? "#fff" : "var(--color-text-secondary)", fontWeight: todayMode === m ? 500 : 400 }}>{l}</button>
+                ))}
+              </div>
+
+              {todayMode === "list" && (
+                <div>
+                  <QuickAdd ctx={{ tags: state.tags, groups: state.groups }} accentColor={ac} defaults={{ scheduledToday: true }} onAdd={saveTask} />
+                  {focusMode && <div style={{ background: hex2rgba(ac, 0.08), borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: ac, fontWeight: 500 }}>🎯 Focus mode — stay on today</div>}
+                  {viewTasks.length === 0 && unsortedTasks.length === 0 && upcomingTasks.length === 0 && (
+                    <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-secondary)" }}>
+                      <div style={{ fontSize: 36, marginBottom: 10 }}>☀️</div>
+                      <div style={{ fontSize: 15, marginBottom: 14 }}>Nothing scheduled — you're all clear ✨</div>
+                      <button onClick={() => setModal("new")} style={{ fontSize: 13, padding: "8px 20px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add task</button>
+                    </div>
+                  )}
+                  {viewTasks.length > 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600, marginBottom: 8 }}>☀️ Today</div>}
+                  {viewTasks.length === 0 && (unsortedTasks.length > 0 || upcomingTasks.length > 0) && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>Nothing scheduled for today.</div>}
+                  {viewTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+                  {!focusMode && unsortedTasks.length > 0 && (
+                    <>
+                      <Divider />
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
+                        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600 }}>📥 Unsorted</span>
+                        <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>no day set — schedule it or file into a group</span>
+                      </div>
+                      {unsortedTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+                    </>
+                  )}
+                  {!focusMode && upcomingTasks.length > 0 && (
+                    <>
+                      <Divider />
+                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600, marginBottom: 8 }}>📆 Upcoming</div>
+                      {upcomingTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+                    </>
+                  )}
+                  {allTasks.filter(t => t.done && t.completedDate === today).length > 0 && (
+                    <>
+                      <Divider />
+                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, fontWeight: 500 }}>Completed today</div>
+                      {allTasks.filter(t => t.done && t.completedDate === today).map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {todayMode === "calendar" && (
+                <CalendarView tasks={allTasks} importantDates={state.importantDates} accentColor={ac} onAddTask={(date) => setModal({ prefill: date })} onEditDate={(d) => setDateModal(d)} />
+              )}
+            </div>
+          )}
+
+          {/* Rainy Day (someday) */}
+          {view === "someday" && (
+            <div>
+              <QuickAdd ctx={{ tags: state.tags, groups: state.groups }} accentColor={ac} defaults={{ someday: true }} onAdd={saveTask} />
+              {viewTasks.length === 0 && (
                 <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-secondary)" }}>
-                  <div style={{ fontSize: 36, marginBottom: 10 }}>{VIEW_META[view].icon}</div>
-                  <div style={{ fontSize: 15, marginBottom: 14 }}>{view === "today" ? "Nothing for today — you're all clear ✨" : "Nothing here"}</div>
+                  <div style={{ fontSize: 36, marginBottom: 10 }}>🌂</div>
+                  <div style={{ fontSize: 15, marginBottom: 14 }}>Nothing saved for a rainy day</div>
                   <button onClick={() => setModal("new")} style={{ fontSize: 13, padding: "8px 20px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add task</button>
                 </div>
               )}
               {viewTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
-              {view === "today" && unsortedTasks.length > 0 && (
-                <>
-                  <Divider />
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
-                    <span style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600 }}>📥 Unsorted</span>
-                    <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>no day set — schedule it or file into a group</span>
-                  </div>
-                  {unsortedTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
-                </>
-              )}
-              {view === "today" && allTasks.filter(t => t.done && t.completedDate === today).length > 0 && (
-                <>
-                  <Divider />
-                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, fontWeight: 500 }}>Completed today</div>
-                  {allTasks.filter(t => t.done && t.completedDate === today).map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
-                </>
-              )}
             </div>
           )}
 
@@ -2446,17 +2782,6 @@ function App({ user }) {
                 );
               })}
             </div>
-          )}
-
-          {/* Calendar */}
-          {view === "calendar" && (
-            <CalendarView
-              tasks={allTasks}
-              importantDates={state.importantDates}
-              accentColor={ac}
-              onAddTask={(date) => setModal({ prefill: date })}
-              onEditDate={(d) => setDateModal(d)}
-            />
           )}
 
           {/* Important dates */}
