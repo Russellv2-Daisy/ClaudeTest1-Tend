@@ -50,7 +50,7 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["today","groups","important-dates","people","finance","insights","settings"];
+const VIEWS = ["today","groups","important-dates","people","finance","insights","audit","settings"];
 const VIEW_META = {
   today: { icon: "☀️", label: "Tasks" },
   groups: { icon: "📁", label: "Groups" },
@@ -58,6 +58,7 @@ const VIEW_META = {
   people: { icon: "🎁", label: "People" },
   finance: { icon: "💷", label: "Finance" },
   insights: { icon: "📊", label: "Insights" },
+  audit: { icon: "🛡️", label: "Life Audit" },
   settings: { icon: "⚙️", label: "Settings" }
 };
 
@@ -69,7 +70,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, people: [], theme: "purple", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, audit: {}, people: [], theme: "purple", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1074,6 +1075,70 @@ function investmentTotals(list) {
   return { value, cost, gain: value - cost, gainPct: cost > 0 ? (value - cost) / cost * 100 : 0 };
 }
 function holdingValue(h) { return (Number(h.units) || 0) * (Number(h.price) || 0); }
+
+// ── Digital Life Audit ───────────────────────────────────────────────────────
+const AUDIT_SECTIONS = [
+  { id: "security", icon: "🔐", title: "Security", items: [
+    { id: "sec_2fa_email", label: "Two-factor auth on your email" },
+    { id: "sec_2fa_key", label: "Two-factor auth on banking & key accounts" },
+    { id: "sec_pwmgr", label: "Using a password manager" },
+    { id: "sec_unique", label: "No reused passwords on important accounts" },
+    { id: "sec_hibp", label: "Checked haveibeenpwned.com for breaches" },
+    { id: "sec_recovery", label: "Recovery email / phone up to date" },
+    { id: "sec_lock", label: "Devices lock with PIN or biometrics" },
+    { id: "sec_updates", label: "Phone & computer software up to date" },
+  ] },
+  { id: "hygiene", icon: "🧹", title: "Data hygiene", items: [
+    { id: "hyg_unused", label: "Closed or deleted unused accounts" },
+    { id: "hyg_apps", label: "Reviewed third-party app permissions (Google/Apple/Facebook logins)" },
+    { id: "hyg_backup", label: "Photos & key documents backed up" },
+    { id: "hyg_inbox", label: "Cleared old emails / downloads" },
+    { id: "hyg_privacy", label: "Reviewed privacy settings on social media" },
+    { id: "hyg_spam", label: "Unsubscribed from junk newsletters" },
+  ] },
+];
+const AUDIT_STATUS_COLOR = { good: "#1D9E75", warn: "#BA7517", bad: "#E24B4A" };
+
+// Total monthly subscription spend (manual + auto-detected, de-duplicated).
+function auditSubsMonthly(state) {
+  const manual = state.subscriptions || [];
+  const manualTotal = manual.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const autoTotal = detectSubscriptions(state)
+    .filter(a => !manual.some(m => (m.name || "").toLowerCase() === a.name.toLowerCase()))
+    .reduce((s, a) => s + a.amount, 0);
+  return manualTotal + autoTotal;
+}
+// Derive a financial-health scorecard from existing finance state. Pure, no input.
+function financialHealth(state) {
+  const stats = monthStats(state, curMonthKey());
+  const savings = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const investVal = investmentTotals(state.investments).value;
+  const debtTotal = (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0);
+  const netWorth = savings + investVal - debtTotal;
+  const income = stats.income || stats.incomeProjected || 0;
+  const monthlySpend = stats.spend || stats.plannedTotal || 0;
+  const contrib = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.contribution) || 0), 0);
+  const efMonths = monthlySpend > 0 ? savings / monthlySpend : null;
+  const savingsRate = income > 0 ? contrib / income * 100 : null;
+  const subs = auditSubsMonthly(state);
+  const subsPct = income > 0 ? subs / income * 100 : null;
+  const monthNet = income - monthlySpend;
+  const indicators = [
+    { label: "Net worth", value: fmtMoney(netWorth, true), status: netWorth > 0 ? "good" : netWorth === 0 ? "warn" : "bad",
+      note: `Savings ${fmtMoney(savings, true)}${investVal > 0 ? ` + investments ${fmtMoney(investVal, true)}` : ""}${debtTotal > 0 ? ` − debts ${fmtMoney(debtTotal, true)}` : ""}` },
+    { label: "Emergency fund", value: efMonths == null ? "—" : `${efMonths.toFixed(1)} mo`, status: efMonths == null ? "warn" : efMonths >= 6 ? "good" : efMonths >= 3 ? "warn" : "bad",
+      note: efMonths == null ? "Add savings & spending to gauge this" : "Months of spending your savings would cover (aim 3–6)" },
+    { label: "Savings rate", value: savingsRate == null ? "—" : `${savingsRate.toFixed(0)}%`, status: savingsRate == null ? "warn" : savingsRate >= 20 ? "good" : savingsRate >= 10 ? "warn" : "bad",
+      note: "Monthly savings as a share of income (aim 20%+)" },
+    { label: "This month", value: `${monthNet >= 0 ? "+" : "−"}${fmtMoney(Math.abs(monthNet), true)}`, status: monthNet >= 0 ? "good" : "bad",
+      note: `Income ${fmtMoney(income, true)} − spend ${fmtMoney(monthlySpend, true)}` },
+    { label: "Debt", value: fmtMoney(debtTotal, true), status: debtTotal <= 0 ? "good" : "warn",
+      note: debtTotal <= 0 ? "No tracked debts — nice" : "Tracked in Finance → Savings → Net worth" },
+    { label: "Subscriptions", value: `${fmtMoney(subs, true)}/mo`, status: subsPct == null ? "warn" : subsPct < 5 ? "good" : subsPct <= 10 ? "warn" : "bad",
+      note: `${fmtMoney(subs * 12, true)}/yr${subsPct != null ? ` · ${subsPct.toFixed(0)}% of income` : ""}` },
+  ];
+  return { netWorth, indicators };
+}
 
 // Sum spend/income/by-category over an inclusive date range [from, to] (YYYY-MM-DD).
 function rangeStats(state, from, to) {
@@ -2459,6 +2524,141 @@ function FinanceView({ state, up, accentColor }) {
   );
 }
 
+// ── Digital Life Audit: the view ─────────────────────────────────────────────
+
+function AuditDot({ status }) {
+  return <span style={{ width: 9, height: 9, borderRadius: "50%", background: AUDIT_STATUS_COLOR[status] || "var(--color-text-secondary)", flexShrink: 0, display: "inline-block" }} />;
+}
+function CheckRow({ checked, label, accentColor, onToggle, onDelete }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0" }}>
+      <button onClick={onToggle} aria-pressed={checked} style={{ width: 20, height: 20, borderRadius: 6, flexShrink: 0, cursor: "pointer", border: `1.5px solid ${checked ? accentColor : "var(--color-border-tertiary)"}`, background: checked ? accentColor : "transparent", color: "#fff", fontSize: 12, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>{checked ? "✓" : ""}</button>
+      <span style={{ flex: 1, fontSize: 13.5, color: checked ? "var(--color-text-secondary)" : "var(--color-text-primary)", textDecoration: checked ? "line-through" : "none" }}>{label}</span>
+      {onDelete && <button onClick={onDelete} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "var(--color-text-secondary)" }}>×</button>}
+    </div>
+  );
+}
+
+function AuditView({ state, up, accentColor, goFinance }) {
+  const ac = accentColor;
+  const audit = state.audit || {};
+  const freq = Number(audit.frequencyDays) || 90;
+  const checks = audit.checks || {};
+  const custom = audit.customItems || {};
+  const last = audit.lastCompleted || "";
+  const daysSince = last ? Math.round((new Date(new Date().toDateString()) - new Date(last + "T00:00:00")) / 86400000) : null;
+  const daysLeft = last ? freq - daysSince : null;
+  let statusTxt, statusColor;
+  if (!last) { statusTxt = "Never reviewed — run your first audit"; statusColor = ac; }
+  else if (daysLeft > 0) { statusTxt = `Up to date · next due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`; statusColor = "#1D9E75"; }
+  else if (daysLeft === 0) { statusTxt = "Review due today"; statusColor = "#BA7517"; }
+  else { statusTxt = `Overdue by ${-daysLeft} day${-daysLeft !== 1 ? "s" : ""}`; statusColor = "#E24B4A"; }
+
+  const sections = AUDIT_SECTIONS.map(s => ({ ...s, items: [...s.items, ...(custom[s.id] || [])] }));
+  const allItems = sections.flatMap(s => s.items);
+  const doneCount = allItems.filter(it => checks[it.id]).length;
+  const pct = allItems.length ? Math.round(doneCount / allItems.length * 100) : 0;
+
+  const toggle = id => up({ audit: { ...audit, checks: { ...checks, [id]: !checks[id] } } });
+  const addCustom = (sec, label) => { const id = "cust_" + genId(); up({ audit: { ...audit, customItems: { ...custom, [sec]: [...(custom[sec] || []), { id, label }] } } }); };
+  const delCustom = (sec, id) => { const c = { ...checks }; delete c[id]; up({ audit: { ...audit, checks: c, customItems: { ...custom, [sec]: (custom[sec] || []).filter(i => i.id !== id) } } }); };
+  const setFreq = v => up({ audit: { ...audit, frequencyDays: Number(v) || 90 } });
+  const complete = () => { const today = todayStr(); up({ audit: { ...audit, lastCompleted: today, history: [...(audit.history || []), today], checks: {} } }); };
+
+  const fh = financialHealth(state);
+  const manual = state.subscriptions || [];
+  const allSubs = [
+    ...manual.map(m => ({ name: m.name, amount: Number(m.amount) || 0 })),
+    ...detectSubscriptions(state).filter(a => !manual.some(m => (m.name || "").toLowerCase() === a.name.toLowerCase())).map(a => ({ name: a.name, amount: a.amount })),
+  ].filter(s => s.name).sort((a, b) => b.amount - a.amount);
+  const subsReviewed = audit.subsReviewed || {};
+  const toggleSub = name => up({ audit: { ...audit, subsReviewed: { ...subsReviewed, [name]: !subsReviewed[name] } } });
+
+  const card = { background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 };
+  const sectionTitle = (icon, title, right) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+      <span style={{ fontSize: 16 }}>{icon}</span>
+      <span style={{ fontSize: 15, fontWeight: 600, flex: 1 }}>{title}</span>
+      {right}
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>🛡️ Digital Life Audit</h1>
+      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>A periodic review of your accounts, subscriptions, security, data hygiene and financial health.</p>
+
+      {/* Status / cadence */}
+      <div style={{ ...card, background: hex2rgba(statusColor, 0.08), borderColor: hex2rgba(statusColor, 0.3) }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: statusColor }}>{statusTxt}</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{last ? `Last reviewed ${fmtDate(last)} (${daysSince} day${daysSince !== 1 ? "s" : ""} ago)` : "Tick off the checks below, then mark your audit complete."}</div>
+          </div>
+          <button onClick={complete} style={{ fontSize: 13, padding: "9px 18px", background: ac, color: "#fff", border: "none", borderRadius: 10, cursor: "pointer", fontWeight: 500 }}>✓ Mark audit complete</button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
+          <div style={{ flex: 1, height: 8, background: "var(--color-background-secondary)", borderRadius: 5, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${pct}%`, background: statusColor, borderRadius: 5, transition: "width 0.4s" }} />
+          </div>
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>{doneCount}/{allItems.length} checks · {pct}%</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 12.5, color: "var(--color-text-secondary)" }}>
+          <span>Review every</span>
+          <select value={freq} onChange={e => setFreq(e.target.value)} style={{ fontSize: 12.5, padding: "4px 6px" }}>
+            <option value={30}>month</option>
+            <option value={90}>3 months</option>
+            <option value={180}>6 months</option>
+            <option value={365}>year</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Financial health */}
+      <div style={card}>
+        {sectionTitle("🏦", "Financial health")}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>
+          {fh.indicators.map(ind => (
+            <div key={ind.label} style={{ display: "flex", gap: 10, padding: "10px 12px", background: "var(--color-background-secondary)", borderRadius: 10 }}>
+              <div style={{ paddingTop: 5 }}><AuditDot status={ind.status} /></div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>{ind.label}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600 }}>{ind.value}</span>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 2 }}>{ind.note}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <button onClick={goFinance} style={{ marginTop: 12, fontSize: 12.5, padding: "6px 14px", borderRadius: 8, cursor: "pointer", color: ac }}>Open Finance →</button>
+      </div>
+
+      {/* Subscriptions review */}
+      <div style={card}>
+        {sectionTitle("🔁", "Subscriptions review", <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>{fmtMoney(auditSubsMonthly(state), true)}/mo</span>)}
+        {allSubs.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "6px 0" }}>No subscriptions found yet. Add them in Finance → Subscriptions, or import a bank CSV, and they'll appear here to review.</div>}
+        {allSubs.map(s => (
+          <CheckRow key={s.name} checked={!!subsReviewed[s.name]} accentColor={ac} onToggle={() => toggleSub(s.name)}
+            label={<span style={{ display: "inline-flex", width: "100%", justifyContent: "space-between", gap: 8 }}><span>{s.name}</span><span style={{ color: "var(--color-text-secondary)" }}>{fmtMoney(s.amount, true)}/mo</span></span>} />
+        ))}
+        {allSubs.length > 0 && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>Tick each one you've confirmed you still want. Cancel the rest in Finance → Subscriptions.</div>}
+      </div>
+
+      {/* Checklists */}
+      {sections.map(sec => (
+        <div key={sec.id} style={card}>
+          {sectionTitle(sec.icon, sec.title, <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>{sec.items.filter(i => checks[i.id]).length}/{sec.items.length}</span>)}
+          {sec.items.map(it => (
+            <CheckRow key={it.id} checked={!!checks[it.id]} label={it.label} accentColor={ac} onToggle={() => toggle(it.id)} onDelete={it.id.startsWith("cust_") ? () => delCustom(sec.id, it.id) : null} />
+          ))}
+          <AddItemRow accentColor={ac} onAdd={label => addCustom(sec.id, label)} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── People / Personas: helpers ───────────────────────────────────────────────
 
 // Next upcoming occurrence (YYYY-MM-DD) of a yearly date, given "YYYY-MM-DD" or "MM-DD".
@@ -3143,6 +3343,9 @@ function App({ user }) {
 
           {/* Finance */}
           {view === "finance" && <FinanceView state={state} up={up} accentColor={ac} />}
+
+          {/* Digital Life Audit */}
+          {view === "audit" && <AuditView state={state} up={up} accentColor={ac} goFinance={() => setView("finance")} />}
 
           {/* Settings */}
           {view === "settings" && <SettingsView state={state} up={up} accentColor={ac} user={user} calendarToken={meta.calendarToken} />}
