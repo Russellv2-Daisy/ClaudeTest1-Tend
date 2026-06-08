@@ -63,7 +63,14 @@
     },
 
     async signUpWithEmail(email, password) {
-      return sb.auth.signUp({ email, password });
+      return sb.auth.signUp({
+        email,
+        password,
+        // Return to wherever the app is served from (prod or localhost dev).
+        // Note: this target must also be allow-listed in Supabase →
+        // Authentication → URL Configuration → Redirect URLs.
+        options: { emailRedirectTo: window.location.origin },
+      });
     },
 
     async signOut() {
