@@ -50,10 +50,9 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["today","inbox","upcoming","someday","groups","calendar","important-dates","people","finance","insights","settings"];
+const VIEWS = ["today","upcoming","someday","groups","calendar","important-dates","people","finance","insights","settings"];
 const VIEW_META = {
   today: { icon: "☀️", label: "Today" },
-  inbox: { icon: "📥", label: "Inbox" },
   upcoming: { icon: "📆", label: "Upcoming" },
   someday: { icon: "🌂", label: "Rainy Day" },
   groups: { icon: "📁", label: "Groups" },
@@ -2272,10 +2271,12 @@ function App({ user }) {
 
   const allTasks = state.tasks;
   let viewTasks = [];
-  if (view === "inbox") viewTasks = filterTasks(allTasks.filter(t => !t.groupId && !t.someday));
-  else if (view === "today") viewTasks = filterTasks(allTasks.filter(t => !t.done && (t.scheduledDate === today || t.deadline === today)));
+  if (view === "today") viewTasks = filterTasks(allTasks.filter(t => !t.done && (t.scheduledDate === today || t.deadline === today)));
   else if (view === "someday") viewTasks = filterTasks(allTasks.filter(t => t.someday && !t.done));
   else if (view === "upcoming") viewTasks = filterTasks(allTasks.filter(t => !t.done && t.deadline && t.deadline > today).sort((a, b) => a.deadline.localeCompare(b.deadline)));
+  // "Unsorted" (shown under Today): ungrouped, not-someday, not-done tasks that no dated
+  // view surfaces — so nothing captured ever gets lost now that Inbox is merged in.
+  const unsortedTasks = filterTasks(allTasks.filter(t => !t.done && !t.someday && !t.groupId && t.scheduledDate !== today && t.deadline !== today && !(t.deadline && t.deadline > today)));
 
   const done = allTasks.filter(t => t.done).length;
   const total = allTasks.length;
@@ -2350,7 +2351,7 @@ function App({ user }) {
           {overdueTasks.length > 0 && (
             <div style={{ fontSize: 12, background: "#FCEBEB", color: "#A32D2D", padding: "4px 10px", borderRadius: 20, fontWeight: 500 }}>⚠ {overdueTasks.length} overdue</div>
           )}
-          {["inbox","today","upcoming","someday"].includes(view) && (
+          {["today","upcoming","someday"].includes(view) && (
             <>
               <input placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 150, fontSize: 13 }} />
               <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
@@ -2373,7 +2374,7 @@ function App({ user }) {
         <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
 
           {/* Task list views */}
-          {["inbox","today","upcoming","someday"].includes(view) && (
+          {["today","upcoming","someday"].includes(view) && (
             <div>
               <QuickAdd
                 ctx={{ tags: state.tags, groups: state.groups }}
@@ -2382,14 +2383,24 @@ function App({ user }) {
                 onAdd={saveTask}
               />
               {focusMode && view === "today" && <div style={{ background: hex2rgba(ac, 0.08), borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: ac, fontWeight: 500 }}>🎯 Focus mode — stay on today</div>}
-              {viewTasks.length === 0 && (
+              {viewTasks.length === 0 && !(view === "today" && unsortedTasks.length > 0) && (
                 <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-secondary)" }}>
                   <div style={{ fontSize: 36, marginBottom: 10 }}>{VIEW_META[view].icon}</div>
-                  <div style={{ fontSize: 15, marginBottom: 14 }}>Nothing here</div>
+                  <div style={{ fontSize: 15, marginBottom: 14 }}>{view === "today" ? "Nothing for today — you're all clear ✨" : "Nothing here"}</div>
                   <button onClick={() => setModal("new")} style={{ fontSize: 13, padding: "8px 20px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add task</button>
                 </div>
               )}
               {viewTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+              {view === "today" && unsortedTasks.length > 0 && (
+                <>
+                  <Divider />
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600 }}>📥 Unsorted</span>
+                    <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>no day set — schedule it or file into a group</span>
+                  </div>
+                  {unsortedTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+                </>
+              )}
               {view === "today" && allTasks.filter(t => t.done && t.completedDate === today).length > 0 && (
                 <>
                   <Divider />
