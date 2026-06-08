@@ -73,7 +73,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], people: [], theme: "purple", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], savingsAccounts: [], people: [], theme: "purple", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -990,6 +990,59 @@ function monthShort(k) { const [y, m] = k.split("-").map(Number); return new Dat
 // Pure year/month arithmetic — no Date object, so timezone can never shift the result.
 function shiftMonth(k, delta) { const [y, m] = k.split("-").map(Number); const t = y * 12 + (m - 1) + delta; return Math.floor(t / 12) + "-" + String((t % 12) + 1).padStart(2, "0"); }
 
+// ── Savings forecasts ────────────────────────────────────────────────────────
+// Months until a balance + monthly contribution (compounded at an annual %) reaches target.
+function monthsToGoal(balance, monthly, annualRatePct, target) {
+  balance = Number(balance) || 0; monthly = Number(monthly) || 0; target = Number(target) || 0;
+  if (target <= balance) return 0;
+  const i = (Number(annualRatePct) || 0) / 100 / 12;
+  if (monthly <= 0 && i <= 0) return null; // never grows
+  let b = balance, n = 0;
+  while (b < target && n < 1200) { b = b * (1 + i) + monthly; n++; }
+  return n >= 1200 ? null : n;
+}
+function projectBalance(balance, monthly, annualRatePct, months) {
+  let b = Number(balance) || 0; const i = (Number(annualRatePct) || 0) / 100 / 12, m = Number(monthly) || 0;
+  for (let k = 0; k < months; k++) b = b * (1 + i) + m;
+  return b;
+}
+// Monthly contribution needed to reach target in `months`.
+function requiredMonthly(balance, annualRatePct, target, months) {
+  balance = Number(balance) || 0; target = Number(target) || 0; months = Number(months) || 0;
+  if (months <= 0) return target > balance ? Infinity : 0;
+  const i = (Number(annualRatePct) || 0) / 100 / 12;
+  if (i === 0) return Math.max(0, (target - balance) / months);
+  const f = Math.pow(1 + i, months);
+  return Math.max(0, (target - balance * f) / ((f - 1) / i));
+}
+function monthsBetweenToday(dateStr) {
+  if (!dateStr) return null;
+  const t = new Date(); const d = new Date(dateStr + "T00:00:00");
+  return (d.getFullYear() - t.getFullYear()) * 12 + (d.getMonth() - t.getMonth());
+}
+function monthsFromNowLabel(months) {
+  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + Math.round(months));
+  return d.toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+}
+
+// Sum spend/income/by-category over an inclusive date range [from, to] (YYYY-MM-DD).
+function rangeStats(state, from, to) {
+  const cats = state.financeCategories || [];
+  const txns = (state.transactions || []).filter(t => { const d = t.date || ""; return d >= from && d <= to; });
+  let spent = 0, earnt = 0; const byCat = {}; const merchants = {};
+  cats.forEach(c => { byCat[c.id] = 0; });
+  txns.forEach(t => {
+    const amt = Number(t.amount) || 0;
+    if (t.type === "income") { earnt += amt; return; }
+    spent += amt;
+    if (byCat[t.categoryId] != null) byCat[t.categoryId] += amt;
+    const m = (t.description || "Other").trim(); merchants[m] = (merchants[m] || 0) + amt;
+  });
+  const days = Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1);
+  const topMerchants = Object.entries(merchants).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  return { txns, spent, earnt, net: earnt - spent, byCat, days, count: txns.length, topMerchants };
+}
+
 // Roll up one month's budget + transactions into the numbers every finance view needs.
 // Projected = the plan. Actual = real transactions for a group when present, otherwise the
 // manually-typed Actual column (which the Lloyds link will replace in Phase B).
@@ -1222,6 +1275,7 @@ function FinanceCatModal({ cat, accentColor, onSave, onClose }) {
 const FINANCE_TABS = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
   { id: "plan", icon: "🎯", label: "Plan" },
+  { id: "savings", icon: "🐖", label: "Savings" },
   { id: "trends", icon: "📈", label: "Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
   { id: "categories", icon: "🏷", label: "Categories" },
@@ -1261,11 +1315,120 @@ function AddItemRow({ accentColor, onAdd }) {
   );
 }
 
+function SavingsModal({ account, accentColor, onSave, onClose }) {
+  const blank = { name: "", institution: "", balance: "", contribution: "", rate: "", target: "", targetDate: "" };
+  const [a, setA] = useState({ ...blank, ...(account || {}) });
+  const up = (k, v) => setA(x => ({ ...x, [k]: v }));
+  const ac = accentColor;
+  return (
+    <Modal onClose={onClose} width={420}>
+      <ModalHeader title={account?.id ? "Edit savings account" : "New savings account"} onClose={onClose} />
+      <Field label="Name"><input placeholder="e.g. Emergency fund, House deposit" value={a.name} onChange={e => up("name", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} autoFocus /></Field>
+      <Field label="Provider / institution"><input placeholder="e.g. Club Lloyds Monthly Saver" value={a.institution} onChange={e => up("institution", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Current balance (£)"><input type="number" step="0.01" placeholder="0.00" value={a.balance} onChange={e => up("balance", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Monthly contribution (£)"><input type="number" step="0.01" placeholder="0.00" value={a.contribution} onChange={e => up("contribution", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Interest rate (% AER)"><input type="number" step="0.01" placeholder="e.g. 4.5" value={a.rate} onChange={e => up("rate", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Goal target (£)"><input type="number" step="0.01" placeholder="optional" value={a.target} onChange={e => up("target", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      </div>
+      <Field label="Target date (optional)"><input type="date" value={a.targetDate || ""} onChange={e => up("targetDate", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: -4 }}>🔒 Balances will sync automatically once your bank is linked. For now, enter them manually.</div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (a.name.trim()) onSave({ id: account?.id || genId(), name: a.name.trim(), institution: a.institution, balance: parseFloat(a.balance) || 0, contribution: parseFloat(a.contribution) || 0, rate: parseFloat(a.rate) || 0, target: parseFloat(a.target) || 0, targetDate: a.targetDate || "" }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{account?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+// Money insights with a flexible date range — lives in the Insights tab.
+function MoneyInsights({ state, accentColor }) {
+  const ac = accentColor;
+  const cats = state.financeCategories || [];
+  const ymd = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const [preset, setPreset] = useState("this-month");
+  const [cf, setCf] = useState(todayStr());
+  const [ct, setCt] = useState(todayStr());
+  const PRESETS = [["this-month", "This month"], ["last-month", "Last month"], ["last-3", "Last 3 months"], ["this-year", "This year"], ["all", "All time"], ["custom", "Custom"]];
+  function range() {
+    const d = new Date(); const today = todayStr();
+    if (preset === "this-month") return { from: ymd(new Date(d.getFullYear(), d.getMonth(), 1)), to: today };
+    if (preset === "last-month") return { from: ymd(new Date(d.getFullYear(), d.getMonth() - 1, 1)), to: ymd(new Date(d.getFullYear(), d.getMonth(), 0)) };
+    if (preset === "last-3") return { from: ymd(new Date(d.getFullYear(), d.getMonth() - 2, 1)), to: today };
+    if (preset === "this-year") return { from: d.getFullYear() + "-01-01", to: today };
+    if (preset === "all") return { from: "2000-01-01", to: "2999-12-31" };
+    return { from: cf, to: ct };
+  }
+  const { from, to } = range();
+  const r = rangeStats(state, from, to);
+  const maxCat = Math.max(1, ...cats.map(c => r.byCat[c.id] || 0));
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>💷 Money</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {PRESETS.map(([v, l]) => (
+          <button key={v} onClick={() => setPreset(v)} style={{ fontSize: 12, padding: "6px 12px", borderRadius: 20, border: "none", cursor: "pointer", background: preset === v ? ac : "var(--color-background-secondary)", color: preset === v ? "#fff" : "var(--color-text-secondary)", fontWeight: preset === v ? 500 : 400 }}>{l}</button>
+        ))}
+      </div>
+      {preset === "custom" && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, fontSize: 13 }}>
+          <span style={{ color: "var(--color-text-secondary)" }}>From</span>
+          <input type="date" value={cf} onChange={e => setCf(e.target.value)} />
+          <span style={{ color: "var(--color-text-secondary)" }}>to</span>
+          <input type="date" value={ct} onChange={e => setCt(e.target.value)} />
+        </div>
+      )}
+      {preset !== "all" && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>{fmtDate(from)} → {fmtDate(to)} · {r.count} transaction{r.count !== 1 ? "s" : ""}</div>}
+
+      {r.count === 0 ? (
+        <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 30, border: "0.5px solid var(--color-border-tertiary)", textAlign: "center", color: "var(--color-text-secondary)", fontSize: 13 }}>
+          No transactions in this range yet. Add them in Finance → Transactions (or load sample data), and they'll appear here. Real transactions arrive once your bank is linked.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 14 }}>
+            <StatCard label="Money spent" value={fmtMoney(r.spent)} color="#E24B4A" sub={`${fmtMoney(r.spent / r.days, true)}/day avg`} />
+            <StatCard label="Money earnt" value={fmtMoney(r.earnt)} color="#1D9E75" />
+            <StatCard label="Net" value={fmtMoney(r.net)} color={r.net >= 0 ? "#639922" : "#E24B4A"} sub={r.net >= 0 ? "saved" : "overspent"} />
+          </div>
+          <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Spending by category</div>
+            {cats.filter(c => (r.byCat[c.id] || 0) > 0).sort((a, b) => r.byCat[b.id] - r.byCat[a.id]).map(c => (
+              <div key={c.id} style={{ marginBottom: 11 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                  <span>{c.emoji} {c.name}</span>
+                  <span style={{ color: "var(--color-text-secondary)" }}>{fmtMoney(r.byCat[c.id])} · {Math.round(r.byCat[c.id] / r.spent * 100)}%</span>
+                </div>
+                <div style={{ height: 7, background: "var(--color-background-secondary)", borderRadius: 4 }}>
+                  <div style={{ height: "100%", width: `${(r.byCat[c.id] / maxCat) * 100}%`, background: c.color, borderRadius: 4 }} />
+                </div>
+              </div>
+            ))}
+            {!cats.some(c => (r.byCat[c.id] || 0) > 0) && <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>No categorised spending in this range.</div>}
+          </div>
+          {r.topMerchants.length > 0 && (
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
+              <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>Top merchants</div>
+              {r.topMerchants.map(([name, amt], i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0", borderBottom: i < r.topMerchants.length - 1 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                  <span>{name}</span><span style={{ color: "var(--color-text-secondary)" }}>{fmtMoney(amt)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function FinanceView({ state, up, accentColor }) {
   const [tab, setTab] = useState("dashboard");
   const [month, setMonth] = useState(curMonthKey());
   const [txnModal, setTxnModal] = useState(null);
   const [catModal, setCatModal] = useState(null);
+  const [savModal, setSavModal] = useState(null);
   const [planText, setPlanText] = useState("");
   const [txnFilter, setTxnFilter] = useState("");
 
@@ -1344,6 +1507,13 @@ function FinanceView({ state, up, accentColor }) {
     up({ transactions: [...makeSampleTransactions(cats), ...(state.transactions || [])] });
     setMonth(curMonthKey());
   }
+  const savings = state.savingsAccounts || [];
+  function saveSav(s) {
+    const exists = savings.some(x => x.id === s.id);
+    up({ savingsAccounts: exists ? savings.map(x => x.id === s.id ? s : x) : [...savings, s] });
+    setSavModal(null);
+  }
+  function deleteSav(id) { if (confirm("Delete this savings account?")) up({ savingsAccounts: savings.filter(s => s.id !== id) }); }
 
   // ── month switcher ──
   const MonthNav = () => (
@@ -1362,6 +1532,7 @@ function FinanceView({ state, up, accentColor }) {
     <div style={{ maxWidth: 760 }}>
       {txnModal !== null && <TxnModal txn={txnModal === "new" ? null : txnModal} cats={cats} accentColor={ac} onSave={saveTxn} onClose={() => setTxnModal(null)} />}
       {catModal !== null && <FinanceCatModal cat={catModal === "new" ? null : catModal} accentColor={ac} onSave={saveCat} onClose={() => setCatModal(null)} />}
+      {savModal !== null && <SavingsModal account={savModal === "new" ? null : savModal} accentColor={ac} onSave={saveSav} onClose={() => setSavModal(null)} />}
 
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
@@ -1539,6 +1710,81 @@ function FinanceView({ state, up, accentColor }) {
           </div>
         </div>
       )}
+
+      {/* ── Savings ── */}
+      {tab === "savings" && (() => {
+        const totalBal = savings.reduce((s, a) => s + (Number(a.balance) || 0), 0);
+        const totalContrib = savings.reduce((s, a) => s + (Number(a.contribution) || 0), 0);
+        const proj = [0, 6, 12, 18, 24].map(m => ({ label: m === 0 ? "Now" : "+" + m + "m", value: savings.reduce((s, a) => s + projectBalance(a.balance, a.contribution, a.rate, m), 0), color: "#1D9E75" }));
+        return (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Track balances, goals and how long until you reach them. Balances sync once your bank is linked.</div>
+              <button onClick={() => setSavModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Account</button>
+            </div>
+
+            {savings.length === 0 && (
+              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>🐖</div>
+                <div style={{ fontSize: 15, marginBottom: 6 }}>No savings accounts yet</div>
+                <div style={{ fontSize: 13, marginBottom: 18 }}>Add one to set goals and forecast when you'll hit them.</div>
+                <button onClick={() => setSavModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a savings account</button>
+              </div>
+            )}
+
+            {savings.length > 0 && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+                  <StatCard label="Total saved" value={fmtMoney(totalBal)} color="#1D9E75" />
+                  <StatCard label="Saving / month" value={fmtMoney(totalContrib)} color={ac} />
+                  <StatCard label="In 12 months" value={fmtMoney(proj[2].value)} color="#1D9E75" sub="at current pace" />
+                </div>
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 16 }}>Projected total savings</div>
+                  <BarsChart data={proj} money />
+                </div>
+                {savings.map(a => {
+                  const bal = Number(a.balance) || 0, target = Number(a.target) || 0;
+                  const pct = target ? Math.min(100, Math.round(bal / target * 100)) : 0;
+                  let forecast = null;
+                  if (target && bal >= target) forecast = { txt: "🎉 Goal reached!", color: "#639922" };
+                  else if (target && a.targetDate) {
+                    const m = monthsBetweenToday(a.targetDate);
+                    if (m != null && m > 0) { const need = requiredMonthly(bal, a.rate, target, m); const ok = (Number(a.contribution) || 0) >= need; forecast = { txt: `${ok ? "On track" : "Behind"} — need ${fmtMoney(need, true)}/mo to hit ${fmtMoney(target, true)} by ${fmtDate(a.targetDate)} (you save ${fmtMoney(a.contribution, true)}/mo)`, color: ok ? "#639922" : "#E24B4A" }; }
+                    else forecast = { txt: "Target date is in the past", color: "#E24B4A" };
+                  } else if (target) {
+                    const m = monthsToGoal(bal, a.contribution, a.rate, target);
+                    forecast = m == null ? { txt: "Add a monthly contribution to forecast a date", color: "var(--color-text-secondary)" } : { txt: `Reach ${fmtMoney(target, true)} in ${m} month${m !== 1 ? "s" : ""} (~${monthsFromNowLabel(m)})`, color: ac };
+                  }
+                  return (
+                    <div key={a.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                        <span style={{ fontSize: 22 }}>🐖</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 600, fontSize: 15 }}>{a.name}</div>
+                          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{a.institution || "Savings"}{a.rate ? ` · ${a.rate}% AER` : ""}{a.contribution ? ` · ${fmtMoney(a.contribution, true)}/mo` : ""}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 17, fontWeight: 600, color: "#1D9E75" }}>{fmtMoney(bal)}</div>
+                          {target > 0 && <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>of {fmtMoney(target, true)}</div>}
+                        </div>
+                        <button onClick={() => setSavModal(a)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+                        <button onClick={() => deleteSav(a.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                      </div>
+                      {target > 0 && (
+                        <div style={{ height: 8, background: "var(--color-background-secondary)", borderRadius: 5, overflow: "hidden", marginBottom: 8 }}>
+                          <div style={{ height: "100%", width: `${pct}%`, background: "#1D9E75", borderRadius: 5, transition: "width 0.4s" }} />
+                        </div>
+                      )}
+                      {forecast && <div style={{ fontSize: 12.5, color: forecast.color, fontWeight: 500 }}>{forecast.txt}</div>}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ── Trends ── */}
       {tab === "trends" && (() => {
@@ -2305,6 +2551,7 @@ function App({ user }) {
                   );
                 })}
               </div>
+              <MoneyInsights state={state} accentColor={ac} />
             </div>
           )}
 
