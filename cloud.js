@@ -7,7 +7,10 @@
 (function () {
   const cfg = window.TEND_CONFIG || {};
   const configured = !!(cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY);
-  const CACHE_KEY = "tend_cache_v1";
+  // Cache is namespaced PER USER so two accounts on one browser can never see
+  // each other's data. (The old global "tend_cache_v1" key is purged below.)
+  const CACHE_PREFIX = "tend_cache_v2_";
+  const OLD_GLOBAL_KEY = "tend_cache_v1";
 
   let sb = null;
   if (configured && window.supabase) {
@@ -24,12 +27,22 @@
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
 
-  function cacheGet() {
-    try { return JSON.parse(localStorage.getItem(CACHE_KEY)); } catch { return null; }
+  function cacheKey(uid) { return CACHE_PREFIX + (uid || "anon"); }
+  function cacheGet(uid) {
+    try { return JSON.parse(localStorage.getItem(cacheKey(uid))); } catch { return null; }
   }
-  function cacheSet(data) {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch {}
+  function cacheSet(uid, data) {
+    try { localStorage.setItem(cacheKey(uid), JSON.stringify(data)); } catch {}
   }
+  // Remove every cached blob (all users + the legacy global key). Used on sign-out.
+  function cacheClearAll() {
+    try {
+      localStorage.removeItem(OLD_GLOBAL_KEY);
+      Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX)).forEach(k => localStorage.removeItem(k));
+    } catch {}
+  }
+  // One-time purge of the old shared cache that could leak between accounts.
+  try { localStorage.removeItem(OLD_GLOBAL_KEY); } catch {}
 
   const TendCloud = {
     isConfigured: configured,
@@ -75,43 +88,46 @@
 
     async signOut() {
       if (sb) await sb.auth.signOut();
-      try { localStorage.removeItem(CACHE_KEY); } catch {}
+      cacheClearAll();
     },
 
     // Load the current user's state blob. Returns { data, calendarToken } or null.
     async load() {
       if (!sb || !this._user) return null;
+      const uid = this._user.id;
       const { data, error } = await sb
         .from("user_state")
         .select("data, calendar_token")
-        .eq("user_id", this._user.id)
+        .eq("user_id", uid)
         .maybeSingle();
-      if (error) { console.warn("load error", error); return cacheGet(); }
+      // On error, only fall back to THIS user's own cache — never another account's.
+      if (error) { console.warn("load error", error); return cacheGet(uid); }
 
       if (!data) {
         // First login — create the user's row with a fresh calendar token.
         const token = makeToken();
         const { error: insErr } = await sb
           .from("user_state")
-          .insert({ user_id: this._user.id, data: {}, calendar_token: token });
+          .insert({ user_id: uid, data: {}, calendar_token: token });
         if (insErr) console.warn("init row error", insErr);
         const fresh = { data: {}, calendarToken: token };
-        cacheSet(fresh);
+        cacheSet(uid, fresh);
         return fresh;
       }
       const result = { data: data.data || {}, calendarToken: data.calendar_token };
-      cacheSet(result);
+      cacheSet(uid, result);
       return result;
     },
 
     // Save the state blob (debounced by the caller).
     async save(stateData) {
-      cacheSet({ data: stateData, calendarToken: (cacheGet() || {}).calendarToken });
       if (!sb || !this._user) return;
+      const uid = this._user.id;
+      cacheSet(uid, { data: stateData, calendarToken: (cacheGet(uid) || {}).calendarToken });
       const { error } = await sb
         .from("user_state")
         .update({ data: stateData, updated_at: new Date().toISOString() })
-        .eq("user_id", this._user.id);
+        .eq("user_id", uid);
       if (error) console.warn("save error", error);
     },
 

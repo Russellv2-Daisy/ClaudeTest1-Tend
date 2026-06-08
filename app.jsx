@@ -76,14 +76,15 @@ const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", colo
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
 // so the app still opens if briefly offline.
 function useAppState(user) {
+  const uid = user && user.id;
   const seed = () => {
-    const c = window.TendCloud && window.TendCloud.cacheGet();
+    const c = uid && window.TendCloud && window.TendCloud.cacheGet(uid);
     return c && c.data ? { ...INIT, ...c.data } : INIT;
   };
   const [state, setState] = useState(seed);
   const [loaded, setLoaded] = useState(false);
   const [calendarToken, setCalendarToken] = useState(
-    (window.TendCloud && (window.TendCloud.cacheGet() || {}).calendarToken) || ""
+    (uid && window.TendCloud && (window.TendCloud.cacheGet(uid) || {}).calendarToken) || ""
   );
   const saveTimer = useRef(null);
   const dirty = useRef(false);
