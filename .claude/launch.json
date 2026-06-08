@@ -4,7 +4,7 @@
     {
       "name": "tend",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["localdev.py", "4178"],
+      "runtimeArgs": ["-m", "http.server", "4178"],
       "port": 4178
     }
   ]

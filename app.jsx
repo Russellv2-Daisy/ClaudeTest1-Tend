@@ -69,7 +69,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, people: [], theme: "purple", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, people: [], theme: "purple", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1021,6 +1021,60 @@ function monthsFromNowLabel(months) {
   return d.toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 }
 
+// ── Pension forecast ─────────────────────────────────────────────────────────
+// Projects a pension pot year-by-year to retirement. Contributions are a % of
+// salary (employee + employer); salary grows with inflation; the pot compounds at
+// `growthPct`. Returns nominal + real (today's money) figures plus a 4%-rule income.
+function pensionForecast(p) {
+  p = p || {};
+  const pot0 = Number(p.currentPot) || 0;
+  const empPct = (Number(p.employeePct) || 0) / 100;
+  const erPct = (Number(p.employerPct) || 0) / 100;
+  const growth = (Number(p.growthPct) || 0) / 100;
+  const infl = (Number(p.inflationPct) || 0) / 100;
+  const age = Number(p.currentAge) || 0;
+  const retire = Number(p.retireAge) || 0;
+  const years = Math.max(0, retire - age);
+  let pot = pot0, salary = Number(p.salary) || 0, totalContrib = 0;
+  const series = [{ age, pot }];
+  for (let y = 0; y < years; y++) {
+    const contrib = salary * (empPct + erPct);
+    totalContrib += contrib;
+    pot = pot * (1 + growth) + contrib;
+    salary = salary * (1 + infl);
+    series.push({ age: age + y + 1, pot });
+  }
+  const realFactor = years > 0 ? Math.pow(1 + infl, years) : 1;
+  const potReal = pot / realFactor;
+  return {
+    years, finalPot: pot, finalPotReal: potReal,
+    totalContributions: totalContrib, growthEarned: pot - pot0 - totalContrib,
+    annualIncome4: pot * 0.04, annualIncome4Real: potReal * 0.04, series,
+  };
+}
+// How many years a pot lasts drawing `annualDraw`, compounding at `growthPct`.
+function potLastsYears(pot, annualDraw, growthPct) {
+  pot = Number(pot) || 0; annualDraw = Number(annualDraw) || 0;
+  const g = (Number(growthPct) || 0) / 100;
+  if (annualDraw <= 0) return Infinity;
+  let y = 0, b = pot;
+  while (b > 0 && y < 100) { b = b * (1 + g) - annualDraw; y++; }
+  return y >= 100 ? Infinity : y;
+}
+
+// ── Investments ──────────────────────────────────────────────────────────────
+// Roll a list of holdings into portfolio value, cost basis and gain.
+function investmentTotals(list) {
+  let value = 0, cost = 0;
+  (list || []).forEach(h => {
+    const u = Number(h.units) || 0;
+    value += u * (Number(h.price) || 0);
+    cost += u * (Number(h.avgCost) || 0);
+  });
+  return { value, cost, gain: value - cost, gainPct: cost > 0 ? (value - cost) / cost * 100 : 0 };
+}
+function holdingValue(h) { return (Number(h.units) || 0) * (Number(h.price) || 0); }
+
 // Sum spend/income/by-category over an inclusive date range [from, to] (YYYY-MM-DD).
 function rangeStats(state, from, to) {
   const cats = state.financeCategories || [];
@@ -1272,6 +1326,8 @@ const FINANCE_TABS = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
   { id: "plan", icon: "🎯", label: "Plan" },
   { id: "savings", icon: "🐖", label: "Savings" },
+  { id: "investments", icon: "💹", label: "Investments" },
+  { id: "pension", icon: "🏖", label: "Pension" },
   { id: "subs", icon: "🔁", label: "Subscriptions" },
   { id: "trends", icon: "📈", label: "Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
@@ -1375,6 +1431,42 @@ function SavingsModal({ account, accentColor, onSave, onClose }) {
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
         <button onClick={() => { if (a.name.trim()) onSave({ id: account?.id || genId(), name: a.name.trim(), institution: a.institution, balance: parseFloat(a.balance) || 0, contribution: parseFloat(a.contribution) || 0, rate: parseFloat(a.rate) || 0, target: parseFloat(a.target) || 0, targetDate: a.targetDate || "" }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{account?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function InvestmentModal({ holding, accentColor, onSave, onClose }) {
+  const blank = { name: "", ticker: "", account: "", units: "", avgCost: "", price: "", contribution: "" };
+  const [h, setH] = useState({ ...blank, ...(holding || {}) });
+  const up = (k, v) => setH(x => ({ ...x, [k]: v }));
+  const ac = accentColor;
+  const value = (parseFloat(h.units) || 0) * (parseFloat(h.price) || 0);
+  const cost = (parseFloat(h.units) || 0) * (parseFloat(h.avgCost) || 0);
+  const gain = value - cost;
+  return (
+    <Modal onClose={onClose} width={440}>
+      <ModalHeader title={holding?.id ? "Edit holding" : "New holding"} onClose={onClose} />
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
+        <Field label="Name"><input placeholder="e.g. Vanguard S&P 500" value={h.name} onChange={e => up("name", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} autoFocus /></Field>
+        <Field label="Ticker"><input placeholder="VUSA" value={h.ticker} onChange={e => up("ticker", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      </div>
+      <Field label="Account / platform"><input placeholder="e.g. Trading 212 ISA, Vanguard SIPP" value={h.account} onChange={e => up("account", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <Field label="Units / shares"><input type="number" step="any" placeholder="0" value={h.units} onChange={e => up("units", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Avg cost (£)"><input type="number" step="any" placeholder="0.00" value={h.avgCost} onChange={e => up("avgCost", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Price now (£)"><input type="number" step="any" placeholder="0.00" value={h.price} onChange={e => up("price", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      </div>
+      <Field label="Monthly contribution (£, optional)"><input type="number" step="0.01" placeholder="0.00" value={h.contribution} onChange={e => up("contribution", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      {value > 0 && (
+        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: -2 }}>
+          Value {fmtMoney(value)} · {gain >= 0 ? "up" : "down"} <span style={{ color: gain >= 0 ? "#1D9E75" : "#E24B4A", fontWeight: 600 }}>{fmtMoney(Math.abs(gain))}</span>{cost > 0 ? ` (${gain >= 0 ? "+" : "−"}${Math.abs(gain / cost * 100).toFixed(1)}%)` : ""}
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 6 }}>🔒 Live prices &amp; balances will sync once Trading 212 is linked. For now, update prices manually.</div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (h.name.trim()) onSave({ id: holding?.id || genId(), name: h.name.trim(), ticker: (h.ticker || "").trim().toUpperCase(), account: h.account.trim(), units: parseFloat(h.units) || 0, avgCost: parseFloat(h.avgCost) || 0, price: parseFloat(h.price) || 0, contribution: parseFloat(h.contribution) || 0 }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{holding?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -1519,7 +1611,9 @@ function MoneyInsights({ state, accentColor }) {
 function NetWorth({ state, up, accentColor }) {
   const ac = accentColor;
   const debts = state.debts || [];
-  const assets = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const savingsTotal = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const investTotal = investmentTotals(state.investments).value;
+  const assets = savingsTotal + investTotal;
   const debtTotal = debts.reduce((s, d) => s + (Number(d.balance) || 0), 0);
   const nw = assets - debtTotal;
   const [dn, setDn] = useState(""); const [db, setDb] = useState("");
@@ -1538,7 +1632,7 @@ function NetWorth({ state, up, accentColor }) {
         <div style={{ fontSize: 14, fontWeight: 600 }}>📈 Net worth</div>
         <div style={{ fontSize: 24, fontWeight: 700, color: nw >= 0 ? "#1D9E75" : "#E24B4A" }}>{fmtMoney(nw)}</div>
       </div>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Assets {fmtMoney(assets, true)} − Debts {fmtMoney(debtTotal, true)}</div>
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Assets {fmtMoney(assets, true)} (savings {fmtMoney(savingsTotal, true)}{investTotal > 0 ? ` + investments ${fmtMoney(investTotal, true)}` : ""}) − Debts {fmtMoney(debtTotal, true)}</div>
       <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 6 }}>DEBTS (credit cards, loans…)</div>
       {debts.map(d => (
         <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 5 }}>
@@ -1568,6 +1662,7 @@ function FinanceView({ state, up, accentColor }) {
   const [txnModal, setTxnModal] = useState(null);
   const [catModal, setCatModal] = useState(null);
   const [savModal, setSavModal] = useState(null);
+  const [invModal, setInvModal] = useState(null);
   const [potModal, setPotModal] = useState(null);
   const [subModal, setSubModal] = useState(null);
   const [planText, setPlanText] = useState("");
@@ -1657,6 +1752,14 @@ function FinanceView({ state, up, accentColor }) {
     setSavModal(null);
   }
   function deleteSav(id) { if (confirm("Delete this savings account?")) up({ savingsAccounts: savings.filter(s => s.id !== id) }); }
+  const investments = state.investments || [];
+  function saveInvestment(h) {
+    const exists = investments.some(x => x.id === h.id);
+    up({ investments: exists ? investments.map(x => x.id === h.id ? h : x) : [...investments, h] });
+    setInvModal(null);
+  }
+  function deleteInvestment(id) { if (confirm("Delete this holding?")) up({ investments: investments.filter(h => h.id !== id) }); }
+  function setPensionField(k, v) { up({ pension: { ...(state.pension || {}), [k]: v } }); }
   function savePot(accId, pot) {
     up({ savingsAccounts: savings.map(s => s.id === accId ? { ...s, pots: (s.pots || []).some(p => p.id === pot.id) ? (s.pots || []).map(p => p.id === pot.id ? pot : p) : [...(s.pots || []), pot] } : s) });
     setPotModal(null);
@@ -1695,6 +1798,7 @@ function FinanceView({ state, up, accentColor }) {
       {txnModal !== null && <TxnModal txn={txnModal === "new" ? null : txnModal} cats={cats} accentColor={ac} onSave={saveTxn} onClose={() => setTxnModal(null)} />}
       {catModal !== null && <FinanceCatModal cat={catModal === "new" ? null : catModal} accentColor={ac} onSave={saveCat} onClose={() => setCatModal(null)} />}
       {savModal !== null && <SavingsModal account={savModal === "new" ? null : savModal} accentColor={ac} onSave={saveSav} onClose={() => setSavModal(null)} />}
+      {invModal !== null && <InvestmentModal holding={invModal === "new" ? null : invModal} accentColor={ac} onSave={saveInvestment} onClose={() => setInvModal(null)} />}
       {potModal && <PotModal pot={potModal.pot} importantDates={state.importantDates || []} accentColor={ac} onSave={p => savePot(potModal.accId, p)} onClose={() => setPotModal(null)} />}
       {subModal !== null && <SubModal sub={subModal === "new" ? null : subModal} cats={cats} accentColor={ac} onSave={saveSub} onClose={() => setSubModal(null)} />}
 
@@ -1992,6 +2096,164 @@ function FinanceView({ state, up, accentColor }) {
               </>
             )}
             <NetWorth state={state} up={up} accentColor={ac} />
+          </div>
+        );
+      })()}
+
+      {/* ── Investments ── */}
+      {tab === "investments" && (() => {
+        const t = investmentTotals(investments);
+        const monthlyInv = investments.reduce((s, h) => s + (Number(h.contribution) || 0), 0);
+        const segs = investments.map((h, i) => ({ value: holdingValue(h), color: TAG_COLORS[i % TAG_COLORS.length], label: h.name }))
+          .filter(s => s.value > 0).sort((a, b) => b.value - a.value);
+        return (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Track holdings, performance and diversification. Prices update manually until Trading 212 is linked.</div>
+              <button onClick={() => setInvModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Holding</button>
+            </div>
+
+            {investments.length === 0 && (
+              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>💹</div>
+                <div style={{ fontSize: 15, marginBottom: 6 }}>No investments yet</div>
+                <div style={{ fontSize: 13, marginBottom: 18 }}>Add a holding to track its value, gain/loss and how it diversifies your portfolio.</div>
+                <button onClick={() => setInvModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a holding</button>
+              </div>
+            )}
+
+            {investments.length > 0 && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+                  <StatCard label="Portfolio value" value={fmtMoney(t.value)} color={ac} />
+                  <StatCard label="Invested" value={fmtMoney(t.cost)} />
+                  <StatCard label="Gain / loss" value={`${t.gain >= 0 ? "+" : "−"}${fmtMoney(Math.abs(t.gain))}`} color={t.gain >= 0 ? "#1D9E75" : "#E24B4A"} sub={t.cost > 0 ? `${t.gain >= 0 ? "+" : "−"}${Math.abs(t.gainPct).toFixed(1)}%` : null} />
+                  {monthlyInv > 0 && <StatCard label="Investing / month" value={fmtMoney(monthlyInv)} />}
+                </div>
+
+                {segs.length > 0 && (
+                  <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, display: "flex", gap: 22, alignItems: "center", flexWrap: "wrap" }}>
+                    <Donut segments={segs} center={<div><div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>Total</div><div style={{ fontSize: 15, fontWeight: 700 }}>{fmtMoney(t.value, true)}</div></div>} />
+                    <div style={{ flex: 1, minWidth: 200 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 8 }}>DIVERSIFICATION</div>
+                      {segs.map(s => (
+                        <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 5 }}>
+                          <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }} />
+                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
+                          <span style={{ color: "var(--color-text-secondary)" }}>{t.value > 0 ? (s.value / t.value * 100).toFixed(0) : 0}%</span>
+                          <span style={{ fontWeight: 500, minWidth: 64, textAlign: "right" }}>{fmtMoney(s.value, true)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {investments.map(h => {
+                  const val = holdingValue(h), cost = (Number(h.units) || 0) * (Number(h.avgCost) || 0), gain = val - cost;
+                  const pct = cost > 0 ? gain / cost * 100 : 0;
+                  return (
+                    <div key={h.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 15 }}>{h.name}{h.ticker ? <span style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 400 }}> · {h.ticker}</span> : null}</div>
+                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{(Number(h.units) || 0)} units{h.account ? ` · ${h.account}` : ""}{h.contribution ? ` · ${fmtMoney(h.contribution, true)}/mo` : ""}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>{fmtMoney(val)}</div>
+                        <div style={{ fontSize: 12, color: gain >= 0 ? "#1D9E75" : "#E24B4A", fontWeight: 500 }}>{gain >= 0 ? "+" : "−"}{fmtMoney(Math.abs(gain), true)}{cost > 0 ? ` (${gain >= 0 ? "+" : "−"}${Math.abs(pct).toFixed(1)}%)` : ""}</div>
+                      </div>
+                      <button onClick={() => setInvModal(h)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+                      <button onClick={() => deleteInvestment(h.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 20, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14, textAlign: "center" }}>
+              <div style={{ fontSize: 30, marginBottom: 8 }}>🔗</div>
+              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Auto-sync from Trading 212</div>
+              <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 14, maxWidth: 460, marginInline: "auto" }}>Pull live balances, holdings and prices straight from Trading 212 via its API (read-only). Needs your personal API key and a small server endpoint — arriving in Phase B alongside bank linking.</div>
+              <button disabled style={{ fontSize: 13, padding: "9px 20px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect Trading 212 — coming in Phase B</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Pension ── */}
+      {tab === "pension" && (() => {
+        const p = state.pension || {};
+        const f = pensionForecast(p);
+        const ready = (Number(p.retireAge) || 0) > (Number(p.currentAge) || 0) && (Number(p.salary) || 0) > 0;
+        const step = Math.max(1, Math.round((f.series.length - 1) / 7) || 1);
+        const bars = f.series.filter((s, i) => i % step === 0 || i === f.series.length - 1).map(s => ({ label: String(s.age), value: Math.max(0, s.pot), color: "#7F77DD" }));
+        const scenarios = [["Cautious", -2, "#D85A30"], ["Your estimate", 0, "#7F77DD"], ["Optimistic", 2, "#1D9E75"]].map(([lbl, delta, col]) => {
+          const sf = pensionForecast({ ...p, growthPct: (Number(p.growthPct) || 0) + delta });
+          return { lbl, col, pot: sf.finalPot, income: sf.annualIncome4Real };
+        });
+        const fld = (label, key, opts) => (
+          <Field label={label}>
+            <input type="number" step={opts?.step || "any"} placeholder={opts?.ph || ""} value={p[key] === 0 || p[key] ? p[key] : ""} onChange={e => setPensionField(key, e.target.value === "" ? "" : (parseFloat(e.target.value) || 0))} style={{ width: "100%", boxSizing: "border-box" }} />
+          </Field>
+        );
+        return (
+          <div>
+            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 14 }}>Project your pension pot to retirement, see it in today's money, and estimate the income it could provide.</div>
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {fld("Current age", "currentAge", { step: "1", ph: "e.g. 30" })}
+                {fld("Retirement age", "retireAge", { step: "1", ph: "e.g. 67" })}
+                {fld("Current pot (£)", "currentPot", { ph: "0" })}
+                {fld("Annual salary (£)", "salary", { ph: "e.g. 35000" })}
+                {fld("Your contribution (% of salary)", "employeePct", { ph: "e.g. 5" })}
+                {fld("Employer match (% of salary)", "employerPct", { ph: "e.g. 3" })}
+                {fld("Investment growth (%/yr)", "growthPct", { ph: "e.g. 5" })}
+                {fld("Inflation (%/yr)", "inflationPct", { ph: "e.g. 2.5" })}
+              </div>
+            </div>
+
+            {!ready && (
+              <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>
+                Fill in your age, retirement age and salary above to see your forecast.
+              </div>
+            )}
+
+            {ready && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+                  <StatCard label={`Pot at ${p.retireAge}`} value={fmtMoney(f.finalPot, true)} color={ac} sub={`in ${f.years} years`} />
+                  <StatCard label="In today's money" value={fmtMoney(f.finalPotReal, true)} sub="adjusted for inflation" />
+                  <StatCard label="You'll contribute" value={fmtMoney(f.totalContributions, true)} />
+                  <StatCard label="Growth earned" value={fmtMoney(f.growthEarned, true)} color="#1D9E75" />
+                </div>
+
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 16 }}>Projected pot by age</div>
+                  <BarsChart data={bars} money />
+                </div>
+
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Retirement income</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>A sustainable ~4% drawdown could give you roughly:</div>
+                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+                    <div><div style={{ fontSize: 22, fontWeight: 700, color: ac }}>{fmtMoney(f.annualIncome4Real, true)}<span style={{ fontSize: 13, fontWeight: 400, color: "var(--color-text-secondary)" }}>/yr</span></div><div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>in today's money</div></div>
+                    <div><div style={{ fontSize: 22, fontWeight: 700 }}>{fmtMoney(f.annualIncome4Real / 12, true)}<span style={{ fontSize: 13, fontWeight: 400, color: "var(--color-text-secondary)" }}>/mo</span></div><div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>in today's money</div></div>
+                  </div>
+                </div>
+
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Scenarios</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>If growth is ±2% from your estimate (income in today's money):</div>
+                  {scenarios.map(s => (
+                    <div key={s.lbl} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 7 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 3, background: s.col, flexShrink: 0 }} />
+                      <span style={{ flex: 1 }}>{s.lbl}</span>
+                      <span style={{ color: "var(--color-text-secondary)", minWidth: 90, textAlign: "right" }}>{fmtMoney(s.pot, true)} pot</span>
+                      <span style={{ fontWeight: 600, minWidth: 90, textAlign: "right" }}>{fmtMoney(s.income, true)}/yr</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         );
       })()}
