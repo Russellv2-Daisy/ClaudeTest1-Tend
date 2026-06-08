@@ -1,15 +1,13 @@
-# Local-only dev server — must NOT be deployed/built by Vercel.
-# (Vercel auto-treats root server.py/main.py/app.py as a Python entrypoint;
-#  localdev.py avoids that name, and this also keeps it out of the build entirely.)
-localdev.py
-
-# Python serverless functions — temporarily excluded so Vercel deploys as a clean
-# STATIC site. Vercel's newer Python builder tries to treat /api as a single app
-# (one entrypoint) and fails on our 3 separate handler files. The app needs none of
-# these to run: login/cloud-sync are client-side (Supabase), and the AI endpoints
-# require ANTHROPIC_API_KEY (not set) and already fall back to an offline parser.
-# Re-enable with a single consolidated entrypoint when wiring up live Claude AI.
-api/
+# Tend deploys as a pure static site (no build step, no serverless functions).
+#
+# The Python serverless API (AI parse/gifts + calendar feed) lives on the
+# `serverless-api` branch, NOT on main. It was removed from main because
+# Vercel's Python builder auto-detects any .py in the source tree and fails
+# the build looking for a single entrypoint — even when .vercelignore lists it.
+# Re-enable by merging serverless-api with a single consolidated entrypoint.
+#
+# The app needs none of it to run: login/cloud-sync are client-side (Supabase),
+# and the AI endpoints fall back to an offline parser when unavailable.
 
 # Local dev / archive cruft
 _archive_nextjs/
