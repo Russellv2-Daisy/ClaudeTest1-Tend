@@ -50,10 +50,9 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["today","someday","groups","important-dates","people","finance","insights","settings"];
+const VIEWS = ["today","groups","important-dates","people","finance","insights","settings"];
 const VIEW_META = {
   today: { icon: "☀️", label: "Today" },
-  someday: { icon: "🌂", label: "Rainy Day" },
   groups: { icon: "📁", label: "Groups" },
   "important-dates": { icon: "🎂", label: "Important Dates" },
   people: { icon: "🎁", label: "People" },
@@ -2565,15 +2564,15 @@ function App({ user }) {
   }
 
   const allTasks = state.tasks;
-  let viewTasks = [];
-  if (view === "today") viewTasks = filterTasks(allTasks.filter(t => !t.done && (t.scheduledDate === today || t.deadline === today)));
-  else if (view === "someday") viewTasks = filterTasks(allTasks.filter(t => t.someday && !t.done));
-  // "Unsorted" (shown under Today): ungrouped, not-someday, not-done tasks that no dated
-  // view surfaces — so nothing captured ever gets lost now that Inbox is merged in.
+  // All these feed the Today hub's List mode as separate sections.
+  const viewTasks = filterTasks(allTasks.filter(t => !t.done && (t.scheduledDate === today || t.deadline === today))); // Today Tasks
+  // "Unsorted": ungrouped, not-someday, not-done tasks that no dated section surfaces — so nothing captured is ever lost.
   const unsortedTasks = filterTasks(allTasks.filter(t => !t.done && !t.someday && !t.groupId && t.scheduledDate !== today && t.deadline !== today && !(t.deadline && t.deadline > today)));
-  // Upcoming (future-dated) — shown in the Today hub's list under "Upcoming".
+  // Upcoming (future-dated).
   const upcomingDate = t => t.scheduledDate && t.scheduledDate > today ? (t.deadline && t.deadline > today ? (t.scheduledDate < t.deadline ? t.scheduledDate : t.deadline) : t.scheduledDate) : (t.deadline && t.deadline > today ? t.deadline : null);
   const upcomingTasks = filterTasks(allTasks.filter(t => !t.done && !t.someday && upcomingDate(t))).sort((a, b) => upcomingDate(a).localeCompare(upcomingDate(b)));
+  // Rainy day (someday).
+  const somedayTasks = filterTasks(allTasks.filter(t => t.someday && !t.done));
 
   const done = allTasks.filter(t => t.done).length;
   const total = allTasks.length;
@@ -2654,7 +2653,7 @@ function App({ user }) {
           {overdueTasks.length > 0 && (
             <div style={{ fontSize: 12, background: "#FCEBEB", color: "#A32D2D", padding: "4px 10px", borderRadius: 20, fontWeight: 500 }}>⚠ {overdueTasks.length} overdue</div>
           )}
-          {["today","someday"].includes(view) && (
+          {view === "today" && (
             <>
               <input placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 150, fontSize: 13 }} />
               <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
@@ -2685,65 +2684,51 @@ function App({ user }) {
                 ))}
               </div>
 
-              {todayMode === "list" && (
-                <div>
-                  <QuickAdd ctx={{ tags: state.tags, groups: state.groups }} accentColor={ac} defaults={{ scheduledToday: true }} onAdd={saveTask} />
-                  {focusMode && <div style={{ background: hex2rgba(ac, 0.08), borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: ac, fontWeight: 500 }}>🎯 Focus mode — stay on today</div>}
-                  {viewTasks.length === 0 && unsortedTasks.length === 0 && upcomingTasks.length === 0 && (
-                    <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-secondary)" }}>
-                      <div style={{ fontSize: 36, marginBottom: 10 }}>☀️</div>
-                      <div style={{ fontSize: 15, marginBottom: 14 }}>Nothing scheduled — you're all clear ✨</div>
-                      <button onClick={() => setModal("new")} style={{ fontSize: 13, padding: "8px 20px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add task</button>
+              {todayMode === "list" && (() => {
+                const Section = ({ icon, label, hint, tasks }) => tasks.length === 0 ? null : (
+                  <>
+                    <Divider />
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
+                      <span style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600 }}>{icon} {label}</span>
+                      {hint && <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{hint}</span>}
                     </div>
-                  )}
-                  {viewTasks.length > 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600, marginBottom: 8 }}>☀️ Today</div>}
-                  {viewTasks.length === 0 && (unsortedTasks.length > 0 || upcomingTasks.length > 0) && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>Nothing scheduled for today.</div>}
-                  {viewTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
-                  {!focusMode && unsortedTasks.length > 0 && (
-                    <>
-                      <Divider />
-                      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
-                        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600 }}>📥 Unsorted</span>
-                        <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>no day set — schedule it or file into a group</span>
+                    {tasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+                  </>
+                );
+                const completed = allTasks.filter(t => t.done && t.completedDate === today);
+                const allEmpty = viewTasks.length === 0 && upcomingTasks.length === 0 && unsortedTasks.length === 0 && somedayTasks.length === 0;
+                return (
+                  <div>
+                    <QuickAdd ctx={{ tags: state.tags, groups: state.groups }} accentColor={ac} defaults={{ scheduledToday: true }} onAdd={saveTask} />
+                    {focusMode && <div style={{ background: hex2rgba(ac, 0.08), borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: ac, fontWeight: 500 }}>🎯 Focus mode — stay on today</div>}
+                    {allEmpty && (
+                      <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-secondary)" }}>
+                        <div style={{ fontSize: 36, marginBottom: 10 }}>☀️</div>
+                        <div style={{ fontSize: 15, marginBottom: 14 }}>Nothing scheduled — you're all clear ✨</div>
+                        <button onClick={() => setModal("new")} style={{ fontSize: 13, padding: "8px 20px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add task</button>
                       </div>
-                      {unsortedTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
-                    </>
-                  )}
-                  {!focusMode && upcomingTasks.length > 0 && (
-                    <>
-                      <Divider />
-                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600, marginBottom: 8 }}>📆 Upcoming</div>
-                      {upcomingTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
-                    </>
-                  )}
-                  {allTasks.filter(t => t.done && t.completedDate === today).length > 0 && (
-                    <>
-                      <Divider />
-                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, fontWeight: 500 }}>Completed today</div>
-                      {allTasks.filter(t => t.done && t.completedDate === today).map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
-                    </>
-                  )}
-                </div>
-              )}
+                    )}
+                    {/* Today Tasks */}
+                    {viewTasks.length > 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600, marginBottom: 8 }}>☀️ Today Tasks</div>}
+                    {!allEmpty && viewTasks.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 4 }}>Nothing scheduled for today.</div>}
+                    {viewTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+                    {!focusMode && <Section icon="📆" label="Upcoming" tasks={upcomingTasks} />}
+                    {!focusMode && <Section icon="📥" label="Unsorted" hint="no day set — schedule it or file into a group" tasks={unsortedTasks} />}
+                    {!focusMode && <Section icon="🌂" label="Rainy Day" hint="for when you have free time" tasks={somedayTasks} />}
+                    {completed.length > 0 && (
+                      <>
+                        <Divider />
+                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, fontWeight: 500 }}>Completed today</div>
+                        {completed.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
 
               {todayMode === "calendar" && (
                 <CalendarView tasks={allTasks} importantDates={state.importantDates} accentColor={ac} onAddTask={(date) => setModal({ prefill: date })} onEditDate={(d) => setDateModal(d)} />
               )}
-            </div>
-          )}
-
-          {/* Rainy Day (someday) */}
-          {view === "someday" && (
-            <div>
-              <QuickAdd ctx={{ tags: state.tags, groups: state.groups }} accentColor={ac} defaults={{ someday: true }} onAdd={saveTask} />
-              {viewTasks.length === 0 && (
-                <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-secondary)" }}>
-                  <div style={{ fontSize: 36, marginBottom: 10 }}>🌂</div>
-                  <div style={{ fontSize: 15, marginBottom: 14 }}>Nothing saved for a rainy day</div>
-                  <button onClick={() => setModal("new")} style={{ fontSize: 13, padding: "8px 20px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add task</button>
-                </div>
-              )}
-              {viewTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
             </div>
           )}
 
