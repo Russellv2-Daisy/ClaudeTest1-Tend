@@ -24,8 +24,11 @@ const DEFAULT_FINANCE_CATS = [
   { id: "g_food", name: "Food", emoji: "🍔", color: "#D85A30", kind: "spending", items: [
     { id: "i_groceries", name: "Groceries" }, { id: "i_dining", name: "Dining out" } ] },
   { id: "g_personal", name: "Personal Care", emoji: "🧴", color: "#1D9E75", kind: "spending", items: [
-    { id: "i_hair", name: "Hair/nails" }, { id: "i_apple", name: "Apple Storage" }, { id: "i_phone", name: "Phone" }, { id: "i_liquids", name: "Liquids" } ] }
+    { id: "i_hair", name: "Hair/nails" }, { id: "i_apple", name: "Apple Storage" }, { id: "i_phone", name: "Phone" }, { id: "i_liquids", name: "Liquids" } ] },
+  { id: "g_gifts", name: "Gifts", emoji: "🎁", color: "#BA7517", kind: "spending", items: [
+    { id: "i_gifts", name: "General gifts" } ] }
 ];
+const RELATIONSHIPS = ["Partner", "Family", "Friend", "Colleague", "Other"];
 // Current month key, computed once at load (timezone-safe). Used to pre-seed the budget.
 const SEED_MONTH = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); })();
 // Pre-filled budget values transcribed from "JR PERSONAL MONTHLY BUDGET - Jan 26".
@@ -47,7 +50,7 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["today","inbox","upcoming","someday","groups","calendar","important-dates","finance","insights","settings"];
+const VIEWS = ["today","inbox","upcoming","someday","groups","calendar","important-dates","people","finance","insights","settings"];
 const VIEW_META = {
   today: { icon: "☀️", label: "Today" },
   inbox: { icon: "📥", label: "Inbox" },
@@ -56,6 +59,7 @@ const VIEW_META = {
   groups: { icon: "📁", label: "Groups" },
   calendar: { icon: "🗓", label: "Calendar" },
   "important-dates": { icon: "🎂", label: "Important Dates" },
+  people: { icon: "🎁", label: "People" },
   finance: { icon: "💷", label: "Finance" },
   insights: { icon: "📊", label: "Insights" },
   settings: { icon: "⚙️", label: "Settings" }
@@ -69,7 +73,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], theme: "purple", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], people: [], theme: "purple", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1663,6 +1667,303 @@ function FinanceView({ state, up, accentColor }) {
   );
 }
 
+// ── People / Personas: helpers ───────────────────────────────────────────────
+
+// Next upcoming occurrence (YYYY-MM-DD) of a yearly date, given "YYYY-MM-DD" or "MM-DD".
+function nextOccurrence(dateStr) {
+  if (!dateStr) return null;
+  const mmdd = dateStr.length >= 10 ? dateStr.slice(5) : dateStr;
+  const [mm, dd] = mmdd.split("-").map(Number);
+  if (!mm || !dd) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  let occ = new Date(today.getFullYear(), mm - 1, dd);
+  if (occ < today) occ = new Date(today.getFullYear() + 1, mm - 1, dd);
+  return occ.getFullYear() + "-" + String(mm).padStart(2, "0") + "-" + String(dd).padStart(2, "0");
+}
+function dateMinusDays(dateStr, days) {
+  const d = new Date(dateStr + "T00:00:00"); d.setDate(d.getDate() - (days || 0));
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function personKeyDates(person) {
+  const out = [];
+  if (person.birthday) out.push({ label: "Birthday", icon: "🎂", date: nextOccurrence(person.birthday) });
+  if (person.anniversary) out.push({ label: "Anniversary", icon: "💍", date: nextOccurrence(person.anniversary) });
+  (person.otherDates || []).forEach(o => { if (o.date) out.push({ label: o.label || "Date", icon: "📅", date: nextOccurrence(o.date) }); });
+  return out.filter(d => d.date).sort((a, b) => a.date.localeCompare(b.date));
+}
+function nextKeyDate(person) {
+  const ks = personKeyDates(person);
+  if (!ks.length) return null;
+  return { ...ks[0], days: daysUntil(ks[0].date) };
+}
+function shopSearchUrl(q) { return "https://www.amazon.co.uk/s?k=" + encodeURIComponent(q || ""); }
+
+// Offline gift-idea generator (used when the Claude API key isn't set). Wishlist first.
+function localGiftIdeas(person, budget) {
+  const b = Number(budget) || Number(person.typicalBudget) || 30;
+  const ideas = [];
+  (person.wishlist || []).forEach(w => {
+    const text = typeof w === "string" ? w : w.text;
+    if (text) ideas.push({ title: text, description: "On their wishlist — they've mentioned wanting this.", price: (w && Number(w.price)) || b, search_query: text });
+  });
+  const split = s => String(s || "").split(/[,\n]/).map(x => x.trim()).filter(Boolean);
+  split(person.hobbies).slice(0, 4).forEach(h => ideas.push({ title: `${h} gift`, description: `Tied to their interest in ${h}.`, price: b, search_query: `${h} gift` }));
+  split(person.brands).slice(0, 2).forEach(br => ideas.push({ title: `${br} treat`, description: "A brand they love.", price: b, search_query: br }));
+  split(person.experiences).slice(0, 2).forEach(ex => ideas.push({ title: ex, description: "An experience they'd enjoy.", price: b, search_query: `${ex} experience gift` }));
+  if (!ideas.length) ideas.push({ title: "Gift card", description: "A safe choice when you're unsure.", price: b, search_query: "gift card" });
+  return ideas.slice(0, 8);
+}
+// Try Claude (/api/gifts) for tailored ideas; fall back to the offline generator.
+async function fetchGiftIdeas(person, occasion, budget) {
+  try {
+    const res = await fetch("/api/gifts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ person, occasion, budget }) });
+    const data = await res.json();
+    if (data && data.ai && data.result && Array.isArray(data.result.ideas) && data.result.ideas.length) return { ideas: data.result.ideas, ai: true };
+  } catch (e) { /* offline */ }
+  return { ideas: localGiftIdeas(person, budget), ai: false };
+}
+
+// ── People: Person profile modal ─────────────────────────────────────────────
+
+function PersonModal({ person, accentColor, onSave, onClose }) {
+  const blank = { name: "", relationship: "Friend", birthday: "", anniversary: "", otherDates: [], location: "", timezone: "", hobbies: "", brands: "", foods: "", experiences: "", wishlist: [], dislikes: "", typicalBudget: "", reminderLeadDays: 14, giftHistory: [] };
+  const [p, setP] = useState({ ...blank, ...(person || {}) });
+  const up = (k, v) => setP(x => ({ ...x, [k]: v }));
+  const [wl, setWl] = useState(""); const [wlPrice, setWlPrice] = useState("");
+  const [odLabel, setOdLabel] = useState(""); const [odDate, setOdDate] = useState("");
+  const ac = accentColor;
+  const addWish = () => { if (!wl.trim()) return; up("wishlist", [...(p.wishlist || []), { id: genId(), text: wl.trim(), price: parseFloat(wlPrice) || 0 }]); setWl(""); setWlPrice(""); };
+  const addOther = () => { if (!odLabel.trim() || !odDate) return; up("otherDates", [...(p.otherDates || []), { label: odLabel.trim(), date: odDate }]); setOdLabel(""); setOdDate(""); };
+  const setHistRating = (id, rating) => up("giftHistory", (p.giftHistory || []).map(h => h.id === id ? { ...h, rating: h.rating === rating ? "" : rating } : h));
+
+  return (
+    <Modal onClose={onClose} width={560}>
+      <ModalHeader title={person?.id ? "Edit person" : "New person"} onClose={onClose} />
+      <Field label="Name">
+        <input placeholder="e.g. Mum" value={p.name} onChange={e => up("name", e.target.value)} style={{ width: "100%", boxSizing: "border-box", fontSize: 15 }} autoFocus />
+      </Field>
+      <Field label="Relationship">
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {RELATIONSHIPS.map(r => (
+            <button key={r} onClick={() => up("relationship", r)} style={{ padding: "6px 13px", borderRadius: 20, border: `1.5px solid ${p.relationship === r ? ac : "var(--color-border-tertiary)"}`, background: p.relationship === r ? hex2rgba(ac, 0.1) : "transparent", color: p.relationship === r ? ac : "var(--color-text-secondary)", fontSize: 12, fontWeight: p.relationship === r ? 500 : 400, cursor: "pointer" }}>{r}</button>
+          ))}
+        </div>
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+        <Field label="Birthday"><input type="date" value={p.birthday || ""} onChange={e => up("birthday", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Anniversary"><input type="date" value={p.anniversary || ""} onChange={e => up("anniversary", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Location"><input placeholder="City / country" value={p.location} onChange={e => up("location", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Timezone"><input placeholder="e.g. GMT" value={p.timezone} onChange={e => up("timezone", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      </div>
+      <Field label="Other key dates">
+        {(p.otherDates || []).map((o, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, fontSize: 13 }}>
+            <span style={{ flex: 1 }}>📅 {o.label} — {fmtShort(o.date)}</span>
+            <button onClick={() => up("otherDates", p.otherDates.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-text-secondary)", fontSize: 16 }}>×</button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          <input placeholder="Label (e.g. Graduation)" value={odLabel} onChange={e => setOdLabel(e.target.value)} style={{ flex: 1, fontSize: 13 }} />
+          <input type="date" value={odDate} onChange={e => setOdDate(e.target.value)} style={{ fontSize: 13 }} />
+          <button onClick={addOther} style={{ padding: "0 12px" }}>+</button>
+        </div>
+      </Field>
+      <Divider />
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>Preferences</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+        <Field label="Hobbies & interests"><input placeholder="comma separated" value={p.hobbies} onChange={e => up("hobbies", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Favourite brands"><input placeholder="comma separated" value={p.brands} onChange={e => up("brands", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Favourite foods"><input placeholder="comma separated" value={p.foods} onChange={e => up("foods", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Experiences they'd love"><input placeholder="comma separated" value={p.experiences} onChange={e => up("experiences", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      </div>
+      <Field label="Wishlist — things they've mentioned wanting">
+        {(p.wishlist || []).map((w, i) => (
+          <div key={w.id || i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, padding: "6px 10px", background: "var(--color-background-secondary)", borderRadius: 8, fontSize: 13 }}>
+            <span style={{ flex: 1 }}>⭐ {w.text}</span>
+            {w.price > 0 && <span style={{ color: "var(--color-text-secondary)" }}>{fmtMoney(w.price, true)}</span>}
+            <button onClick={() => up("wishlist", p.wishlist.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-text-secondary)", fontSize: 16 }}>×</button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          <input placeholder="Add a wishlist item…" value={wl} onChange={e => setWl(e.target.value)} onKeyDown={e => e.key === "Enter" && addWish()} style={{ flex: 1, fontSize: 13 }} />
+          <input type="number" placeholder="£" value={wlPrice} onChange={e => setWlPrice(e.target.value)} style={{ width: 70, fontSize: 13 }} />
+          <button onClick={addWish} style={{ padding: "0 12px" }}>+</button>
+        </div>
+      </Field>
+      <Field label="Dislikes / allergies"><textarea placeholder="Things to avoid…" value={p.dislikes} onChange={e => up("dislikes", e.target.value)} rows={2} style={{ width: "100%", boxSizing: "border-box", resize: "vertical" }} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
+        <Field label="Typical budget (£)"><input type="number" step="0.01" placeholder="e.g. 40" value={p.typicalBudget} onChange={e => up("typicalBudget", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Remind me before">
+          <select value={p.reminderLeadDays} onChange={e => up("reminderLeadDays", parseInt(e.target.value, 10))} style={{ width: "100%" }}>
+            {[7, 14, 30, 60, 90].map(n => <option key={n} value={n}>{n} days before</option>)}
+          </select>
+        </Field>
+      </div>
+      {(p.giftHistory || []).length > 0 && (
+        <>
+          <Divider />
+          <Field label="Gift history">
+            {(p.giftHistory || []).map(h => (
+              <div key={h.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, fontSize: 13 }}>
+                <span style={{ flex: 1 }}>🎁 {h.item}{h.occasion ? ` · ${h.occasion}` : ""}{h.cost ? ` · ${fmtMoney(h.cost, true)}` : ""}</span>
+                <button onClick={() => setHistRating(h.id, "landed")} title="Landed well" style={{ background: h.rating === "landed" ? hex2rgba("#639922", 0.15) : "transparent", border: "none", cursor: "pointer", fontSize: 14, borderRadius: 6, padding: "2px 5px" }}>👍</button>
+                <button onClick={() => setHistRating(h.id, "flat")} title="Fell flat" style={{ background: h.rating === "flat" ? hex2rgba("#E24B4A", 0.15) : "transparent", border: "none", cursor: "pointer", fontSize: 14, borderRadius: 6, padding: "2px 5px" }}>👎</button>
+                <button onClick={() => up("giftHistory", p.giftHistory.filter(x => x.id !== h.id))} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-text-secondary)", fontSize: 16 }}>×</button>
+              </div>
+            ))}
+          </Field>
+        </>
+      )}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (p.name.trim()) onSave({ ...p, typicalBudget: parseFloat(p.typicalBudget) || 0 }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{person?.id ? "Save" : "Add person"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── People: AI gift-ideas modal ──────────────────────────────────────────────
+
+function GiftIdeasModal({ person, occasion, accentColor, onChoose, onClose }) {
+  const ac = accentColor;
+  const [budget, setBudget] = useState(person.typicalBudget || 30);
+  const [ideas, setIdeas] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [ai, setAi] = useState(false);
+  const [chosen, setChosen] = useState({});
+  const load = async () => { setLoading(true); const r = await fetchGiftIdeas(person, occasion ? occasion.label : "gift", budget); setIdeas(r.ideas); setAi(r.ai); setLoading(false); };
+  useEffect(() => { load(); }, []);
+  return (
+    <Modal onClose={onClose} width={520}>
+      <ModalHeader title={`🎁 Gift ideas for ${person.name}`} onClose={onClose} />
+      <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+        {occasion ? `${occasion.icon} ${occasion.label} · ${fmtDate(occasion.date)} (${occasion.days} days away)` : "Pick something thoughtful"}
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Budget £</span>
+        <input type="number" value={budget} onChange={e => setBudget(parseFloat(e.target.value) || 0)} style={{ width: 90 }} />
+        <button onClick={load} style={{ padding: "7px 14px", fontSize: 13, borderRadius: 9, cursor: "pointer" }}>↻ Refresh ideas</button>
+      </div>
+      {loading && <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 14 }}>✨ Finding ideas…</div>}
+      {!loading && ideas && ideas.map((idea, i) => (
+        <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px 14px", background: "var(--color-background-secondary)", borderRadius: 10, marginBottom: 8 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 500 }}>{idea.title}</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", margin: "2px 0 6px" }}>{idea.description}</div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: ac }}>{fmtMoney(idea.price)}</span>
+              <a href={shopSearchUrl(idea.search_query || idea.title)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: ac }}>View options ↗</a>
+            </div>
+          </div>
+          {chosen[i] ? (
+            <span style={{ fontSize: 12, color: "#639922", fontWeight: 500, whiteSpace: "nowrap", padding: "8px 0" }}>✓ Added</span>
+          ) : (
+            <button onClick={() => { onChoose(idea); setChosen(c => ({ ...c, [i]: true })); }} style={{ fontSize: 12, padding: "7px 13px", background: ac, color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 500, whiteSpace: "nowrap" }}>Choose this</button>
+          )}
+        </div>
+      ))}
+      {!loading && (
+        <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 8, lineHeight: 1.5 }}>
+          {ai ? "✨ Tailored by Claude from their profile." : "Generated from their profile (offline). Add an Anthropic API key for smarter, tailored ideas."} Choosing adds a to-do (with the cost on your Gifts budget) and puts it on your calendar.
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ── People: the view ─────────────────────────────────────────────────────────
+
+function PeopleView({ state, up, accentColor, onAddTask }) {
+  const ac = accentColor;
+  const people = state.people || [];
+  const [personModal, setPersonModal] = useState(null);
+  const [giftModal, setGiftModal] = useState(null);
+
+  function savePerson(pp) {
+    const id = pp.id || genId();
+    const withId = { ...pp, id };
+    up({ people: people.some(x => x.id === id) ? people.map(x => x.id === id ? withId : x) : [...people, withId] });
+    setPersonModal(null);
+  }
+  function deletePerson(id) { if (confirm("Delete this person?")) up({ people: people.filter(p => p.id !== id) }); }
+
+  function chooseGift(person, idea, occasion) {
+    const giftsCat = (state.financeCategories || []).find(c => c.id === "g_gifts") || (state.financeCategories || []).find(c => /gift/i.test(c.name));
+    const occDate = (occasion && occasion.date) || nextOccurrence(person.birthday) || todayStr();
+    const lead = person.reminderLeadDays || 14;
+    const price = Number(idea.price) || Number(person.typicalBudget) || 0;
+    const task = {
+      id: genId(), title: `Buy ${idea.title} for ${person.name}`,
+      notes: idea.search_query ? shopSearchUrl(idea.search_query) : "",
+      priority: "medium", groupId: "", deadline: occDate, scheduledDate: dateMinusDays(occDate, lead),
+      tags: [], subtasks: [], someday: false, repeat: "none", duration: "",
+      cost: price, costCategory: giftsCat ? giftsCat.id : "", done: false
+    };
+    onAddTask(task);
+    up({ people: people.map(p => p.id === person.id ? { ...p, giftHistory: [...(p.giftHistory || []), { id: genId(), item: idea.title, occasion: occasion ? occasion.label : "", date: occDate, cost: price, rating: "", taskId: task.id }] } : p) });
+  }
+
+  const reminders = people.map(p => ({ p, k: nextKeyDate(p) })).filter(x => x.k && x.k.days != null && x.k.days >= 0 && x.k.days <= (x.p.reminderLeadDays || 14)).sort((a, b) => a.k.days - b.k.days);
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      {personModal !== null && <PersonModal person={personModal === "new" ? null : personModal} accentColor={ac} onSave={savePerson} onClose={() => setPersonModal(null)} />}
+      {giftModal && <GiftIdeasModal person={giftModal.person} occasion={giftModal.occasion} accentColor={ac} onChoose={idea => chooseGift(giftModal.person, idea, giftModal.occasion)} onClose={() => setGiftModal(null)} />}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Important people — profiles power AI gift ideas, aligned to your dates & budget.</div>
+        <button onClick={() => setPersonModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ New person</button>
+      </div>
+
+      {reminders.length > 0 && (
+        <div style={{ background: hex2rgba(ac, 0.07), borderRadius: 12, padding: 14, border: `1px solid ${hex2rgba(ac, 0.2)}`, marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>🎁 Coming up</div>
+          {reminders.map(({ p, k }) => (
+            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", fontSize: 13 }}>
+              <span style={{ flex: 1 }}>{k.icon} <b>{p.name}</b>'s {k.label.toLowerCase()} in <b>{k.days}</b> day{k.days !== 1 ? "s" : ""} · {fmtShort(k.date)}</span>
+              <button onClick={() => setGiftModal({ person: p, occasion: k })} style={{ fontSize: 12, padding: "5px 12px", background: ac, color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 500 }}>See gift ideas</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {people.length === 0 && (
+        <div style={{ textAlign: "center", padding: 56, color: "var(--color-text-secondary)" }}>
+          <div style={{ fontSize: 38, marginBottom: 12 }}>🎁</div>
+          <div style={{ fontSize: 15, marginBottom: 6 }}>No people yet</div>
+          <div style={{ fontSize: 13, marginBottom: 18 }}>Add someone important to get AI gift ideas around their key dates.</div>
+          <button onClick={() => setPersonModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add your first person</button>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 12 }}>
+        {people.map(p => {
+          const k = nextKeyDate(p);
+          return (
+            <div key={p.id} style={{ background: "var(--color-background-primary)", borderRadius: 13, border: "0.5px solid var(--color-border-tertiary)", padding: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 10 }}>
+                <div style={{ width: 40, height: 40, borderRadius: "50%", background: hex2rgba(ac, 0.14), color: ac, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, fontWeight: 600, flexShrink: 0 }}>{(p.name || "?").slice(0, 1).toUpperCase()}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{p.relationship}{p.typicalBudget ? ` · ~${fmtMoney(p.typicalBudget, true)}` : ""}</div>
+                </div>
+              </div>
+              {k ? (
+                <div style={{ fontSize: 12, color: k.days <= (p.reminderLeadDays || 14) ? ac : "var(--color-text-secondary)", marginBottom: 12, fontWeight: k.days <= (p.reminderLeadDays || 14) ? 500 : 400 }}>{k.icon} {k.label} in {k.days} day{k.days !== 1 ? "s" : ""} · {fmtShort(k.date)}</div>
+              ) : <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>No key dates set</div>}
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setGiftModal({ person: p, occasion: k })} style={{ flex: 1, fontSize: 12, padding: "7px 0", background: ac, color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 500 }}>🎁 Gift ideas</button>
+                <button onClick={() => setPersonModal(p)} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 8, cursor: "pointer" }}>✏️</button>
+                <button onClick={() => deletePerson(p.id)} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 8, cursor: "pointer" }}>🗑</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 function App({ user }) {
@@ -1817,7 +2118,7 @@ function App({ user }) {
               {view === "today" && <button onClick={() => setFocusMode(!focusMode)} style={{ fontSize: 12, padding: "5px 12px", background: focusMode ? ac : "transparent", color: focusMode ? "#fff" : "var(--color-text-primary)", border: `1px solid ${ac}`, borderRadius: 7, cursor: "pointer" }}>🎯 Focus</button>}
             </>
           )}
-          {!["insights","settings","calendar","finance"].includes(view) && (
+          {!["insights","settings","calendar","finance","people"].includes(view) && (
             <button onClick={() => setModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ New task</button>
           )}
         </div>
@@ -2006,6 +2307,9 @@ function App({ user }) {
               </div>
             </div>
           )}
+
+          {/* People / Personas */}
+          {view === "people" && <PeopleView state={state} up={up} accentColor={ac} onAddTask={saveTask} />}
 
           {/* Finance */}
           {view === "finance" && <FinanceView state={state} up={up} accentColor={ac} />}

@@ -7,6 +7,7 @@ _archive_nextjs/
 
 # Machine-local editor/harness config
 .claude/settings.local.json
+_preview_finance.html
 
 # Python
 __pycache__/
