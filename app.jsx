@@ -52,7 +52,7 @@ const DATE_TYPES = [
 ];
 const VIEWS = ["today","groups","important-dates","people","finance","insights","settings"];
 const VIEW_META = {
-  today: { icon: "☀️", label: "Today" },
+  today: { icon: "☀️", label: "Tasks" },
   groups: { icon: "📁", label: "Groups" },
   "important-dates": { icon: "🎂", label: "Important Dates" },
   people: { icon: "🎁", label: "People" },
