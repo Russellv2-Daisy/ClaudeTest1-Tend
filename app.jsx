@@ -55,7 +55,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, audit: {}, people: [], theme: "purple", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], audit: {}, people: [], theme: "purple", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1174,6 +1174,13 @@ function monthStats(state, mk) {
     const amt = Number(d.cost) || 0;
     if (amt > 0 && d.costCategory && d.date && d.date.slice(5, 7) === mk.slice(5, 7)) pushAuto(d.costCategory, { label: d.title || "Important date", amount: amt, source: "date" });
   });
+  // Insurance premiums recur every month: monthly premium as-is; annual spread /12 (sinking fund).
+  (state.insurance || []).forEach(p => {
+    const prem = Number(p.premium) || 0;
+    if (prem <= 0 || !p.budgetCategory) return;
+    const monthly = p.frequency === "annual" ? prem / 12 : prem;
+    pushAuto(p.budgetCategory, { label: `${p.type || "Insurance"}${p.provider ? " · " + p.provider : ""}`, amount: monthly, source: "insurance" });
+  });
 
   const byCat = {};
   let plannedTotal = 0, manualActualTotal = 0;
@@ -1379,6 +1386,7 @@ const FINANCE_TABS = [
   { id: "savings", icon: "🐖", label: "Savings" },
   { id: "investments", icon: "💹", label: "Investments" },
   { id: "pension", icon: "🏖", label: "Pension" },
+  { id: "insurance", icon: "🛡", label: "Insurance" },
   { id: "subs", icon: "🔁", label: "Subscriptions" },
   { id: "trends", icon: "📈", label: "Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
@@ -1518,6 +1526,77 @@ function InvestmentModal({ holding, accentColor, onSave, onClose }) {
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
         <button onClick={() => { if (h.name.trim()) onSave({ id: holding?.id || genId(), name: h.name.trim(), ticker: (h.ticker || "").trim().toUpperCase(), account: h.account.trim(), units: parseFloat(h.units) || 0, avgCost: parseFloat(h.avgCost) || 0, price: parseFloat(h.price) || 0, contribution: parseFloat(h.contribution) || 0 }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{holding?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+const INSURANCE_TYPES = [
+  { v: "Car", icon: "🚗" }, { v: "Home", icon: "🏠" }, { v: "Phone / Gadget", icon: "📱" },
+  { v: "Travel", icon: "✈️" }, { v: "Life", icon: "❤️" }, { v: "Health", icon: "🩺" },
+  { v: "Pet", icon: "🐾" }, { v: "Other", icon: "📄" }
+];
+const insIcon = type => (INSURANCE_TYPES.find(t => t.v === type) || { icon: "📄" }).icon;
+function insMonthly(p) { const prem = Number(p.premium) || 0; return p.frequency === "annual" ? prem / 12 : prem; }
+function insAnnual(p) { const prem = Number(p.premium) || 0; return p.frequency === "annual" ? prem : prem * 12; }
+
+function InsuranceModal({ policy, cats, accentColor, onSave, onClose }) {
+  const blank = { type: "Car", provider: "", policyNumber: "", premium: "", frequency: "monthly", renewalDate: "", startDate: "", coverAmount: "", excess: "", autoRenew: false, contactPhone: "", website: "", notes: "", budgetCategory: "" };
+  const [p, setP] = useState({ ...blank, ...(policy || {}) });
+  const up = (k, v) => setP(x => ({ ...x, [k]: v }));
+  const ac = accentColor;
+  const inp = { width: "100%", boxSizing: "border-box" };
+  return (
+    <Modal onClose={onClose} width={520}>
+      <ModalHeader title={policy?.id ? "Edit policy" : "New insurance policy"} onClose={onClose} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12 }}>
+        <Field label="Type">
+          <select value={p.type} onChange={e => up("type", e.target.value)} style={inp}>
+            {INSURANCE_TYPES.map(t => <option key={t.v} value={t.v}>{t.icon} {t.v}</option>)}
+          </select>
+        </Field>
+        <Field label="Provider"><input placeholder="e.g. Aviva, Admiral" value={p.provider} onChange={e => up("provider", e.target.value)} style={inp} autoFocus /></Field>
+      </div>
+      <Field label="Policy number"><input placeholder="e.g. AB123456789" value={p.policyNumber} onChange={e => up("policyNumber", e.target.value)} style={inp} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Premium (£)"><input type="number" step="0.01" placeholder="0.00" value={p.premium} onChange={e => up("premium", e.target.value)} style={inp} /></Field>
+        <Field label="Paid">
+          <select value={p.frequency} onChange={e => up("frequency", e.target.value)} style={inp}>
+            <option value="monthly">Monthly</option>
+            <option value="annual">Annually</option>
+          </select>
+        </Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Renewal date"><input type="date" value={p.renewalDate} onChange={e => up("renewalDate", e.target.value)} style={inp} /></Field>
+        <Field label="Start date (optional)"><input type="date" value={p.startDate} onChange={e => up("startDate", e.target.value)} style={inp} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Cover / limit (optional)"><input placeholder="e.g. £50,000" value={p.coverAmount} onChange={e => up("coverAmount", e.target.value)} style={inp} /></Field>
+        <Field label="Excess (£, optional)"><input type="number" step="0.01" placeholder="0.00" value={p.excess} onChange={e => up("excess", e.target.value)} style={inp} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Claims / contact phone"><input placeholder="e.g. 0800 123 456" value={p.contactPhone} onChange={e => up("contactPhone", e.target.value)} style={inp} /></Field>
+        <Field label="Website / login"><input placeholder="e.g. aviva.co.uk" value={p.website} onChange={e => up("website", e.target.value)} style={inp} /></Field>
+      </div>
+      <Field label="Add to budget category">
+        <select value={p.budgetCategory} onChange={e => up("budgetCategory", e.target.value)} style={inp}>
+          <option value="">— Don't add to budget —</option>
+          {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+        </select>
+      </Field>
+      <Field label="Notes"><textarea placeholder="Cover details, exclusions, no-claims, anything useful…" value={p.notes} onChange={e => up("notes", e.target.value)} rows={2} style={{ ...inp, resize: "vertical" }} /></Field>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer" }}>
+        <input type="checkbox" checked={!!p.autoRenew} onChange={e => up("autoRenew", e.target.checked)} /> Auto-renews
+      </label>
+      {Number(p.premium) > 0 && (
+        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 8 }}>
+          {fmtMoney(insMonthly(p))}/mo · {fmtMoney(insAnnual(p))}/yr{p.budgetCategory ? " — added to your monthly budget" : ""}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => onSave({ ...p, id: policy?.id || genId(), premium: parseFloat(p.premium) || 0, excess: parseFloat(p.excess) || 0, provider: (p.provider || "").trim() })} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{policy?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -1714,6 +1793,7 @@ function FinanceView({ state, up, accentColor }) {
   const [catModal, setCatModal] = useState(null);
   const [savModal, setSavModal] = useState(null);
   const [invModal, setInvModal] = useState(null);
+  const [insModal, setInsModal] = useState(null);
   const [potModal, setPotModal] = useState(null);
   const [subModal, setSubModal] = useState(null);
   const [planText, setPlanText] = useState("");
@@ -1810,6 +1890,20 @@ function FinanceView({ state, up, accentColor }) {
     setInvModal(null);
   }
   function deleteInvestment(id) { if (confirm("Delete this holding?")) up({ investments: investments.filter(h => h.id !== id) }); }
+  const insurance = state.insurance || [];
+  function saveInsurance(p) {
+    const exists = insurance.some(x => x.id === p.id);
+    up({ insurance: exists ? insurance.map(x => x.id === p.id ? p : x) : [...insurance, p] });
+    setInsModal(null);
+  }
+  function deleteInsurance(id) { if (confirm("Delete this policy?")) up({ insurance: insurance.filter(p => p.id !== id) }); }
+  function addRenewalTask(p) {
+    if (!p.renewalDate) { alert("Add a renewal date to this policy first."); return; }
+    const note = [p.provider && `Provider: ${p.provider}`, p.policyNumber && `Policy: ${p.policyNumber}`, `Premium: ${fmtMoney(insAnnual(p), true)}/yr`, p.contactPhone && `Tel: ${p.contactPhone}`].filter(Boolean).join(" · ");
+    const task = { id: genId(), title: `Review ${p.type} insurance${p.provider ? " (" + p.provider + ")" : ""}`, priority: "medium", groupId: "", deadline: p.renewalDate, scheduledDate: "", notes: note, tags: [], subtasks: [], someday: false, repeat: "none", duration: "", cost: "", costCategory: "", done: false };
+    up({ tasks: [task, ...(state.tasks || [])] });
+    alert("Added a renewal reminder to your task list.");
+  }
   function setPensionField(k, v) { up({ pension: { ...(state.pension || {}), [k]: v } }); }
   function savePot(accId, pot) {
     up({ savingsAccounts: savings.map(s => s.id === accId ? { ...s, pots: (s.pots || []).some(p => p.id === pot.id) ? (s.pots || []).map(p => p.id === pot.id ? pot : p) : [...(s.pots || []), pot] } : s) });
@@ -1850,6 +1944,7 @@ function FinanceView({ state, up, accentColor }) {
       {catModal !== null && <FinanceCatModal cat={catModal === "new" ? null : catModal} accentColor={ac} onSave={saveCat} onClose={() => setCatModal(null)} />}
       {savModal !== null && <SavingsModal account={savModal === "new" ? null : savModal} accentColor={ac} onSave={saveSav} onClose={() => setSavModal(null)} />}
       {invModal !== null && <InvestmentModal holding={invModal === "new" ? null : invModal} accentColor={ac} onSave={saveInvestment} onClose={() => setInvModal(null)} />}
+      {insModal !== null && <InsuranceModal policy={insModal === "new" ? null : insModal} cats={cats} accentColor={ac} onSave={saveInsurance} onClose={() => setInsModal(null)} />}
       {potModal && <PotModal pot={potModal.pot} importantDates={state.importantDates || []} accentColor={ac} onSave={p => savePot(potModal.accId, p)} onClose={() => setPotModal(null)} />}
       {subModal !== null && <SubModal sub={subModal === "new" ? null : subModal} cats={cats} accentColor={ac} onSave={saveSub} onClose={() => setSubModal(null)} />}
 
@@ -2020,7 +2115,7 @@ function FinanceView({ state, up, accentColor }) {
                 {auto.map((a, i) => (
                   <div key={"auto" + i} style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
                     <div style={{ flex: 1, fontSize: 13, display: "flex", alignItems: "center", gap: 6, color: "var(--color-text-secondary)" }}>
-                      <span>{a.source === "date" ? "🎂" : "📋"}</span>
+                      <span>{a.source === "date" ? "🎂" : a.source === "insurance" ? "🛡" : "📋"}</span>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.label}</span>
                       <span style={{ fontSize: 10, background: hex2rgba(ac, 0.12), color: ac, padding: "1px 7px", borderRadius: 10, flexShrink: 0 }}>auto</span>
                     </div>
@@ -2226,6 +2321,73 @@ function FinanceView({ state, up, accentColor }) {
               <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 14, maxWidth: 460, marginInline: "auto" }}>Pull live balances, holdings and prices straight from Trading 212 via its API (read-only). Needs your personal API key and a small server endpoint — arriving in Phase B alongside bank linking.</div>
               <button disabled style={{ fontSize: 13, padding: "9px 20px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect Trading 212 — coming in Phase B</button>
             </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Insurance ── */}
+      {tab === "insurance" && (() => {
+        const totalMonthly = insurance.reduce((s, p) => s + insMonthly(p), 0);
+        const sorted = insurance.filter(p => p.renewalDate).sort((a, b) => a.renewalDate.localeCompare(b.renewalDate));
+        const next = sorted.find(p => (daysUntil(p.renewalDate) ?? -1) >= 0) || sorted[0];
+        return (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>All your policies in one place. Premiums feed your monthly budget (annual spread over 12); renewals can drop straight onto your to-do list.</div>
+              <button onClick={() => setInsModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Policy</button>
+            </div>
+
+            {insurance.length === 0 && (
+              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>🛡</div>
+                <div style={{ fontSize: 15, marginBottom: 6 }}>No policies yet</div>
+                <div style={{ fontSize: 13, marginBottom: 18 }}>Add car, home, phone, travel or any other insurance to track renewals, costs and cover.</div>
+                <button onClick={() => setInsModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a policy</button>
+              </div>
+            )}
+
+            {insurance.length > 0 && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+                  <StatCard label="Total / month" value={fmtMoney(totalMonthly)} color={ac} />
+                  <StatCard label="Total / year" value={fmtMoney(totalMonthly * 12)} />
+                  <StatCard label="Policies" value={String(insurance.length)} />
+                  {next && <StatCard label="Next renewal" value={insIcon(next.type) + " " + fmtShort(next.renewalDate)} sub={(() => { const d = daysUntil(next.renewalDate); return d == null ? null : d < 0 ? "overdue" : d === 0 ? "today" : `in ${d} day${d !== 1 ? "s" : ""}`; })()} />}
+                </div>
+
+                {insurance.map(p => {
+                  const d = p.renewalDate ? daysUntil(p.renewalDate) : null;
+                  const due = d != null && d <= 30;
+                  const cat = catById(p.budgetCategory);
+                  const info = [p.policyNumber && `#${p.policyNumber}`, (Number(p.excess) > 0) && `£${p.excess} excess`, p.coverAmount && `cover ${p.coverAmount}`, p.contactPhone && `☎ ${p.contactPhone}`, p.autoRenew && "auto-renews"].filter(Boolean).join("  ·  ");
+                  return (
+                    <div key={p.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ fontSize: 24, width: 30, textAlign: "center" }}>{insIcon(p.type)}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 15 }}>{p.type}{p.provider ? <span style={{ fontWeight: 400, color: "var(--color-text-secondary)" }}> · {p.provider}</span> : null}</div>
+                          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{fmtMoney(insMonthly(p), true)}/mo · {fmtMoney(insAnnual(p), true)}/yr ({p.frequency === "annual" ? "paid yearly" : "paid monthly"})</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          {p.renewalDate && <div style={{ fontSize: 13, fontWeight: 500, color: due ? "#BA7517" : "var(--color-text-primary)" }}>Renews {fmtShort(p.renewalDate)}</div>}
+                          {d != null && <div style={{ fontSize: 11.5, color: due ? "#BA7517" : "var(--color-text-secondary)" }}>{d < 0 ? "overdue" : d === 0 ? "today" : `in ${d} day${d !== 1 ? "s" : ""}`}</div>}
+                        </div>
+                      </div>
+                      {info && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>{info}</div>}
+                      {p.notes && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6, fontStyle: "italic" }}>{p.notes}</div>}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                        {cat && <span style={{ fontSize: 10.5, background: hex2rgba(cat.color, 0.14), color: cat.color, padding: "2px 8px", borderRadius: 10 }}>{cat.emoji} {cat.name}</span>}
+                        {!cat && <span style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>not in budget</span>}
+                        <div style={{ flex: 1 }} />
+                        <button onClick={() => addRenewalTask(p)} title="Add a renewal reminder to your tasks" style={{ fontSize: 12, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>🔔 Remind me</button>
+                        <button onClick={() => setInsModal(p)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+                        <button onClick={() => deleteInsurance(p.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         );
       })()}
