@@ -1046,6 +1046,27 @@ function loanSchedule(balance, ratePct, months) {
   const total = monthly * n;
   return { monthly, total, interest: total - P };
 }
+// Where you are in a debt and what's left, accounting for how many months
+// you've already paid plus any extra payments / payment breaks.
+//   - extra payment: reduces the balance.
+//   - break "extend": pause N months and push the end date out by N.
+//   - break "higher": pause N months but keep the end date (pay more, sooner end).
+function debtPlan(d) {
+  const bal = Number(d.balance) || 0, rate = Number(d.rate) || 0, term = Number(d.termMonths) || 0;
+  const paid = Math.max(0, Math.min(Number(d.monthsPaid) || 0, term || 9999));
+  const adj = d.adjustments || [];
+  const extra = adj.filter(a => a.kind === "extra").reduce((s, a) => s + (Number(a.value) || 0), 0);
+  const extendMonths = adj.filter(a => a.kind === "break" && a.mode === "extend").reduce((s, a) => s + (Number(a.value) || 0), 0);
+  const higherMonths = adj.filter(a => a.kind === "break" && a.mode === "higher").reduce((s, a) => s + (Number(a.value) || 0), 0);
+  const effBal = Math.max(0, bal - extra);
+  if (!term) return { hasTerm: false, effBal, extra };
+  const baseLeft = Math.max(0, term - paid);
+  const payMonths = Math.max(1, baseLeft - higherMonths);
+  const monthsToEnd = baseLeft + extendMonths;
+  const sched = loanSchedule(effBal, rate, payMonths);
+  return { hasTerm: true, paid, term, baseLeft, payMonths, monthsToEnd, extra, extendMonths, higherMonths,
+    monthly: sched.monthly, remainingPayable: sched.monthly * payMonths, interestLeft: sched.interest };
+}
 // Monthly contribution needed to reach target in `months`.
 function requiredMonthly(balance, annualRatePct, target, months) {
   balance = Number(balance) || 0; target = Number(target) || 0; months = Number(months) || 0;
@@ -1944,33 +1965,64 @@ function CashFlowForecast({ state, accentColor }) {
 }
 
 function DebtModal({ debt, accentColor, onSave, onClose }) {
-  const blank = { name: "", balance: "", rate: "", minPayment: "", termMonths: "" };
+  const blank = { name: "", balance: "", rate: "", minPayment: "", termMonths: "", monthsPaid: "", adjustments: [] };
   const [d, setD] = useState({ ...blank, ...(debt || {}) });
   const up = (k, v) => setD(x => ({ ...x, [k]: v }));
   const ac = accentColor;
   const inp = { width: "100%", boxSizing: "border-box" };
-  const term = Number(d.termMonths) || 0;
-  const sched = (Number(d.balance) > 0 && term > 0) ? loanSchedule(d.balance, d.rate, term) : null;
+  const adj = d.adjustments || [];
+  const [exVal, setExVal] = useState("");
+  const [brkVal, setBrkVal] = useState("");
+  const [brkMode, setBrkMode] = useState("extend");
+  const addExtra = () => { const v = parseFloat(exVal); if (!v) return; up("adjustments", [...adj, { id: genId(), kind: "extra", value: v }]); setExVal(""); };
+  const addBreak = () => { const v = parseInt(brkVal, 10); if (!v) return; up("adjustments", [...adj, { id: genId(), kind: "break", value: v, mode: brkMode }]); setBrkVal(""); };
+  const rmAdj = id => up("adjustments", adj.filter(a => a.id !== id));
+  const plan = debtPlan({ ...d, balance: Number(d.balance) || 0 });
   return (
-    <Modal onClose={onClose} width={440}>
+    <Modal onClose={onClose} width={470}>
       <ModalHeader title={debt?.id ? "Edit debt / loan" : "New debt / loan"} onClose={onClose} />
       <Field label="Name"><input placeholder="e.g. Visa, Car loan, Klarna" value={d.name} onChange={e => up("name", e.target.value)} style={inp} autoFocus /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Balance owed (£)"><input type="number" step="0.01" placeholder="0.00" value={d.balance} onChange={e => up("balance", e.target.value)} style={inp} /></Field>
+        <Field label="Balance owed now (£)"><input type="number" step="0.01" placeholder="0.00" value={d.balance} onChange={e => up("balance", e.target.value)} style={inp} /></Field>
         <Field label="Interest (% APR)"><input type="number" step="0.01" placeholder="e.g. 22.9" value={d.rate} onChange={e => up("rate", e.target.value)} style={inp} /></Field>
-        <Field label="Min payment (£/mo)"><input type="number" step="0.01" placeholder="0.00" value={d.minPayment} onChange={e => up("minPayment", e.target.value)} style={inp} /></Field>
-        <Field label="Term (months)"><input type="number" step="1" placeholder="e.g. 36" value={d.termMonths} onChange={e => up("termMonths", e.target.value)} style={inp} /></Field>
+        <Field label="Original term (months)"><input type="number" step="1" placeholder="e.g. 36" value={d.termMonths} onChange={e => up("termMonths", e.target.value)} style={inp} /></Field>
+        <Field label="Months already paid"><input type="number" step="1" placeholder="e.g. 12" value={d.monthsPaid} onChange={e => up("monthsPaid", e.target.value)} style={inp} /></Field>
       </div>
-      {sched ? (
-        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 2, lineHeight: 1.7, background: "var(--color-background-secondary)", borderRadius: 8, padding: "10px 12px" }}>
-          Over {term} months you'd pay about <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(sched.monthly)}/mo</b> · total payable <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(sched.total)}</b> (<b style={{ color: "#E24B4A" }}>{fmtMoney(sched.interest)}</b> interest).
+      <Field label="Min payment (£/mo, optional)"><input type="number" step="0.01" placeholder="0.00" value={d.minPayment} onChange={e => up("minPayment", e.target.value)} style={inp} /></Field>
+
+      <Divider />
+      <Field label="Extra payments & payment breaks">
+        {adj.map(a => (
+          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 6, padding: "6px 10px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
+            <span style={{ flex: 1 }}>{a.kind === "extra" ? `💷 Extra payment ${fmtMoney(a.value, true)}` : `⏸ ${a.value}-month break — ${a.mode === "extend" ? "push end date back" : "pay more, same end date"}`}</span>
+            <button onClick={() => rmAdj(a.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-text-secondary)", fontSize: 16 }}>×</button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 4, marginBottom: 8 }}>
+          <input type="number" placeholder="£ extra payment" value={exVal} onChange={e => setExVal(e.target.value)} style={{ flex: 1, fontSize: 13 }} />
+          <button onClick={addExtra} style={{ padding: "0 14px", fontSize: 13 }}>+ Extra</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input type="number" placeholder="break (months)" value={brkVal} onChange={e => setBrkVal(e.target.value)} style={{ width: 130, fontSize: 13 }} />
+          <select value={brkMode} onChange={e => setBrkMode(e.target.value)} style={{ fontSize: 12.5 }}>
+            <option value="extend">push loan back</option>
+            <option value="higher">pay more after</option>
+          </select>
+          <button onClick={addBreak} style={{ padding: "6px 14px", fontSize: 13 }}>+ Break</button>
+        </div>
+      </Field>
+
+      {plan.hasTerm ? (
+        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 4, lineHeight: 1.7, background: "var(--color-background-secondary)", borderRadius: 8, padding: "10px 12px" }}>
+          <b style={{ color: "var(--color-text-primary)" }}>{plan.paid}</b> of {plan.term} months paid · <b style={{ color: "var(--color-text-primary)" }}>{plan.monthsToEnd}</b> left{plan.extendMonths ? " (incl. break)" : ""}. Now about <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(plan.monthly)}/mo</b> · still payable <b style={{ color: "#E24B4A" }}>{fmtMoney(plan.remainingPayable)}</b>{plan.extra ? ` · ${fmtMoney(plan.extra, true)} extra applied` : ""}.
         </div>
       ) : (Number(d.balance) > 0 && Number(d.rate) > 0) ? (
-        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 2 }}>About {fmtMoney((Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12)} in interest per month. Add a term to see total payable.</div>
+        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 4 }}>About {fmtMoney((Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12)}/mo in interest. Add a term + months paid to track your progress.</div>
       ) : null}
+
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (d.name.trim()) onSave({ id: debt?.id || genId(), name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0, termMonths: parseInt(d.termMonths, 10) || 0 }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
+        <button onClick={() => { if (d.name.trim()) onSave({ id: debt?.id || genId(), name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0, termMonths: parseInt(d.termMonths, 10) || 0, monthsPaid: parseInt(d.monthsPaid, 10) || 0, adjustments: adj }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -2540,18 +2592,27 @@ function FinanceView({ state, up, accentColor }) {
                     {debts.map(d => {
                       const mi = (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12;
                       const term = Number(d.termMonths) || 0;
-                      const sched = term > 0 ? loanSchedule(d.balance, d.rate, term) : null;
+                      const plan = debtPlan(d);
+                      const pctPaid = term > 0 ? Math.min(100, Math.round((plan.paid / term) * 100)) : 0;
                       return (
-                        <div key={d.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
+                        <div key={d.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                           <span style={{ fontSize: 22 }}>💳</span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontWeight: 600, fontSize: 15 }}>{d.name}</div>
                             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR{term > 0 ? ` · ${term}-month term` : ""}{d.minPayment ? ` · min ${fmtMoney(d.minPayment, true)}/mo` : ""}{mi > 0 ? ` · ~${fmtMoney(mi, true)}/mo interest` : ""}</div>
-                            {sched && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>≈ {fmtMoney(sched.monthly, true)}/mo · total payable <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(sched.total, true)}</b> ({fmtMoney(sched.interest, true)} interest)</div>}
+                            {plan.hasTerm && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>{plan.paid}/{term} months paid · {plan.monthsToEnd} left · ≈ {fmtMoney(plan.monthly, true)}/mo · still payable <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(plan.remainingPayable, true)}</b></div>}
                           </div>
                           <div style={{ fontSize: 17, fontWeight: 600, color: "#E24B4A" }}>{fmtMoney(d.balance)}</div>
                           <button onClick={() => setDebtModal(d)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
                           <button onClick={() => deleteDebt(d.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                          </div>
+                          {plan.hasTerm && term > 0 && (
+                            <div style={{ height: 6, background: "var(--color-background-secondary)", borderRadius: 4, overflow: "hidden", marginTop: 10 }}>
+                              <div style={{ height: "100%", width: `${pctPaid}%`, background: "#1D9E75", borderRadius: 4 }} />
+                            </div>
+                          )}
+                          {(d.adjustments || []).length > 0 && <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 6 }}>{(d.adjustments || []).map(a => a.kind === "extra" ? `+${fmtMoney(a.value, true)} extra` : `${a.value}mo break (${a.mode === "extend" ? "pushed back" : "pay more"})`).join(" · ")}</div>}
                         </div>
                       );
                     })}
