@@ -53,7 +53,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1085,6 +1085,50 @@ function monthsFromNowLabel(months) {
   const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + Math.round(months));
   return d.toLocaleDateString("en-GB", { month: "short", year: "numeric" });
 }
+function monthsAgoKey(n) { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - n); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); }
+function ymdLocal(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function addDaysStr(ds, n) { const d = new Date(ds + "T00:00:00"); d.setDate(d.getDate() + n); return ymdLocal(d); }
+// Mon–Sun calendar week containing `anchor`, shifted by `offset` weeks.
+function weekBounds(anchor, offset) {
+  const d = new Date(anchor + "T00:00:00"); const dow = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - dow + offset * 7);
+  const from = ymdLocal(d), to = addDaysStr(from, 6);
+  return { from, to, label: `${fmtShort(from)} – ${fmtShort(to)}` };
+}
+// Calendar month containing `anchor`, shifted by `offset` months.
+function monthBoundsStr(anchor, offset) {
+  const d = new Date(anchor + "T00:00:00"); d.setDate(1); d.setMonth(d.getMonth() + offset);
+  const from = ymdLocal(d), to = ymdLocal(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+  return { from, to, label: d.toLocaleDateString("en-GB", { month: "long", year: "numeric" }) };
+}
+// Pay-period from a payday config (monthly day-of-month, or weekly weekday).
+function payPeriodBounds(payday, anchor, offset) {
+  payday = payday || { type: "monthly", day: 1 };
+  if (payday.type === "weekly") {
+    const w = Number(payday.day) || 5; // 0=Sun..6=Sat (default Fri)
+    const d = new Date(anchor + "T00:00:00");
+    const back = (d.getDay() - w + 7) % 7; d.setDate(d.getDate() - back + offset * 7);
+    const from = ymdLocal(d), to = addDaysStr(from, 6);
+    return { from, to, label: `Week of ${fmtShort(from)}` };
+  }
+  const day = Math.min(28, Math.max(1, Number(payday.day) || 1));
+  const d = new Date(anchor + "T00:00:00");
+  let start = new Date(d.getFullYear(), d.getMonth(), day);
+  if (d < start) start = new Date(d.getFullYear(), d.getMonth() - 1, day);
+  start = new Date(start.getFullYear(), start.getMonth() + offset, day);
+  const endD = new Date(start.getFullYear(), start.getMonth() + 1, day); endD.setDate(endD.getDate() - 1);
+  const from = ymdLocal(start), to = ymdLocal(endD);
+  return { from, to, label: day === 1 ? start.toLocaleDateString("en-GB", { month: "long", year: "numeric" }) : `${fmtShort(from)} – ${fmtShort(to)}` };
+}
+// One month's report snapshot (persisted so it survives the 6-month txn prune).
+function computeMonthReport(state, mk) {
+  const st = monthStats(state, mk);
+  const giftsCat = (state.financeCategories || []).find(c => c.id === "g_gifts") || (state.financeCategories || []).find(c => /gift/i.test(c.name));
+  const giftId = giftsCat && giftsCat.id;
+  const gifts = (state.transactions || []).filter(t => t.type !== "income" && (t.date || "").slice(0, 7) === mk && t.categoryId === giftId).length;
+  return { forecast: st.plannedTotal, actual: st.spend, income: st.income, saved: Math.max(0, st.income - st.spend),
+    debt: (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0), gifts };
+}
 
 // ── Pension forecast ─────────────────────────────────────────────────────────
 // Projects a pension pot year-by-year to retirement. Contributions are a % of
@@ -1473,6 +1517,7 @@ const FINANCE_TABS = [
   { id: "subs", icon: "🔁", label: "Subscriptions" },
   { id: "trends", icon: "📈", label: "Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
+  { id: "reports", icon: "📅", label: "Reports" },
   { id: "categories", icon: "🏷", label: "Categories" },
   { id: "connect", icon: "🏦", label: "Connect bank" }
 ];
@@ -2045,6 +2090,11 @@ function FinanceView({ state, up, accentColor }) {
   const [planText, setPlanText] = useState("");
   const [txnFilter, setTxnFilter] = useState("");
   const [txnSearch, setTxnSearch] = useState("");
+  const [txnMode, setTxnMode] = useState("payperiod"); // payperiod | week | month | range
+  const [txnOffset, setTxnOffset] = useState(0);
+  const [txnFrom, setTxnFrom] = useState("");
+  const [txnTo, setTxnTo] = useState("");
+  const [paydayEdit, setPaydayEdit] = useState(false);
   const csvRef = useRef(null);
 
   const ac = accentColor;
@@ -2956,14 +3006,66 @@ function FinanceView({ state, up, accentColor }) {
 
       {/* ── Transactions ── */}
       {tab === "transactions" && (() => {
-        let list = (state.transactions || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+        const payday = state.payday || { type: "monthly", day: 1 };
+        const bounds = txnMode === "range" ? { from: txnFrom || "0000-01-01", to: txnTo || "9999-12-31", label: (txnFrom && txnTo) ? `${fmtShort(txnFrom)} – ${fmtShort(txnTo)}` : "Pick a date range" }
+          : txnMode === "week" ? weekBounds(todayStr(), txnOffset)
+          : txnMode === "month" ? monthBoundsStr(todayStr(), txnOffset)
+          : payPeriodBounds(payday, todayStr(), txnOffset);
+        let list = (state.transactions || []).filter(t => (t.date || "") >= bounds.from && (t.date || "") <= bounds.to).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
         if (txnFilter) list = list.filter(t => t.categoryId === txnFilter);
         if (txnSearch.trim()) { const q = txnSearch.toLowerCase(); list = list.filter(t => (t.description || "").toLowerCase().includes(q)); }
+        const pSpent = list.filter(t => t.type !== "income").reduce((s, t) => s + (Number(t.amount) || 0), 0);
+        const pEarnt = list.filter(t => t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0);
+        const modeBtn = (m, l) => <button key={m} onClick={() => { setTxnMode(m); setTxnOffset(0); }} style={{ fontSize: 12.5, padding: "6px 12px", borderRadius: 20, border: "none", cursor: "pointer", background: txnMode === m ? ac : "var(--color-background-secondary)", color: txnMode === m ? "#fff" : "var(--color-text-secondary)", fontWeight: txnMode === m ? 500 : 400 }}>{l}</button>;
         return (
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+            {/* Prominent period selector */}
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 12, border: "0.5px solid var(--color-border-tertiary)", padding: 14, marginBottom: 12 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                {modeBtn("payperiod", "Pay period")}{modeBtn("week", "Week")}{modeBtn("month", "Month")}{modeBtn("range", "Custom range")}
+                <button onClick={() => setPaydayEdit(v => !v)} title="Payday settings" style={{ fontSize: 12.5, padding: "6px 10px", borderRadius: 20, cursor: "pointer", color: ac }}>⚙ Payday</button>
+              </div>
+              {paydayEdit && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12, fontSize: 12.5, background: "var(--color-background-secondary)", borderRadius: 8, padding: "8px 10px" }}>
+                  <span style={{ color: "var(--color-text-secondary)" }}>I get paid</span>
+                  <select value={payday.type} onChange={e => up({ payday: { ...payday, type: e.target.value, day: e.target.value === "weekly" ? 5 : 1 } })} style={{ fontSize: 12.5 }}>
+                    <option value="monthly">monthly</option><option value="weekly">weekly</option>
+                  </select>
+                  {payday.type === "monthly" ? (
+                    <><span style={{ color: "var(--color-text-secondary)" }}>on day</span><input type="number" min="1" max="28" value={payday.day} onChange={e => up({ payday: { ...payday, day: Math.min(28, Math.max(1, parseInt(e.target.value, 10) || 1)) } })} style={{ width: 60, fontSize: 12.5 }} /></>
+                  ) : (
+                    <select value={payday.day} onChange={e => up({ payday: { ...payday, day: parseInt(e.target.value, 10) } })} style={{ fontSize: 12.5 }}>
+                      {["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map((d, i) => <option key={i} value={i}>{d}</option>)}
+                    </select>
+                  )}
+                  <span style={{ color: "var(--color-text-secondary)" }}>· your tracker resets each new period</span>
+                </div>
+              )}
+              {txnMode === "range" ? (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <input type="date" value={txnFrom} onChange={e => setTxnFrom(e.target.value)} style={{ fontSize: 13 }} />
+                  <span style={{ color: "var(--color-text-secondary)", fontSize: 13 }}>to</span>
+                  <input type="date" value={txnTo} onChange={e => setTxnTo(e.target.value)} style={{ fontSize: 13 }} />
+                </div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <button onClick={() => setTxnOffset(o => o - 1)} style={{ padding: "5px 11px", borderRadius: 8, cursor: "pointer" }}>◀</button>
+                  <div style={{ flex: 1, textAlign: "center", fontSize: 14, fontWeight: 600 }}>{bounds.label}</div>
+                  <button onClick={() => setTxnOffset(o => o + 1)} disabled={txnOffset >= 0} style={{ padding: "5px 11px", borderRadius: 8, cursor: txnOffset >= 0 ? "default" : "pointer", opacity: txnOffset >= 0 ? 0.4 : 1 }}>▶</button>
+                  {txnOffset !== 0 && <button onClick={() => setTxnOffset(0)} style={{ fontSize: 12, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Now</button>}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 16, marginTop: 12, fontSize: 13, flexWrap: "wrap" }}>
+                <span>Spent <b style={{ color: "#E24B4A" }}>{fmtMoney(pSpent)}</b></span>
+                <span>Earnt <b style={{ color: "#1D9E75" }}>{fmtMoney(pEarnt)}</b></span>
+                <span>Net <b style={{ color: pEarnt - pSpent >= 0 ? "#639922" : "#E24B4A" }}>{pEarnt - pSpent >= 0 ? "+" : "−"}{fmtMoney(Math.abs(pEarnt - pSpent))}</b></span>
+                <span style={{ color: "var(--color-text-secondary)" }}>{list.length} transaction{list.length !== 1 ? "s" : ""}</span>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <input placeholder="Search…" value={txnSearch} onChange={e => setTxnSearch(e.target.value)} style={{ fontSize: 13, width: 150 }} />
+                <input placeholder="Search…" value={txnSearch} onChange={e => setTxnSearch(e.target.value)} style={{ fontSize: 13, width: 140 }} />
                 <select value={txnFilter} onChange={e => setTxnFilter(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
                   <option value="">All categories</option>
                   {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
@@ -2976,7 +3078,7 @@ function FinanceView({ state, up, accentColor }) {
                 <button onClick={() => setTxnModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Transaction</button>
               </div>
             </div>
-            {(state.transactions || []).length > 0 && list.length === 0 && <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>No transactions match your search/filter.</div>}
+            {(state.transactions || []).length > 0 && list.length === 0 && <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>No transactions in this period.</div>}
             {(state.transactions || []).length === 0 && <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 36, marginBottom: 10 }}>💳</div><div style={{ fontSize: 14, marginBottom: 6 }}>No transactions yet</div><div style={{ fontSize: 12 }}>Import a Lloyds CSV export, add manually, or load sample data.</div></div>}
             {list.map(t => {
               const c = catById(t.categoryId);
@@ -2997,6 +3099,48 @@ function FinanceView({ state, up, accentColor }) {
                   <div style={{ fontSize: 14, fontWeight: 600, color: income ? "#1D9E75" : "var(--color-text-primary)", width: 84, textAlign: "right" }}>{income ? "+" : "−"}{fmtMoney(t.amount)}</div>
                   <button onClick={() => setTxnModal(t)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "2px 4px" }}>✏️</button>
                   <button onClick={() => deleteTxn(t.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "2px 4px" }}>🗑</button>
+                </div>
+              );
+            })}
+            {(state.transactions || []).length > 0 && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", textAlign: "center", marginTop: 14 }}>🗄 Tend keeps the last 6 months of transactions. Older ones roll off automatically — your monthly totals are saved in <b>Reports</b>.</div>}
+          </div>
+        );
+      })()}
+
+      {/* ── Reports (monthly history, up to 2 years) ── */}
+      {tab === "reports" && (() => {
+        const merged = { ...(state.monthlyReports || {}) };
+        const recent = new Set((state.transactions || []).map(t => (t.date || "").slice(0, 7)).filter(Boolean));
+        recent.add(curMonthKey());
+        Object.keys(state.financePlans || {}).forEach(m => recent.add(m));
+        recent.forEach(mk => { merged[mk] = computeMonthReport(state, mk); });
+        const keys = Object.keys(merged).filter(k => merged[k]).sort().reverse().slice(0, 24);
+        return (
+          <div>
+            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 14 }}>A saved snapshot of every month — forecast vs actual spend, what you saved, your debt and gifts bought. Kept for up to 2 years, even after the raw transactions roll off.</div>
+            {keys.length === 0 && <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 36, marginBottom: 10 }}>📅</div><div style={{ fontSize: 14 }}>No monthly history yet — it builds up as you use Tend.</div></div>}
+            {keys.map(mk => {
+              const r = merged[mk];
+              const over = r.actual > r.forecast && r.forecast > 0;
+              return (
+                <div key={mk} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600 }}>{monthLabel(mk)}</div>
+                    <div style={{ fontSize: 12, color: r.saved > 0 ? "#1D9E75" : "var(--color-text-secondary)" }}>{r.saved > 0 ? `saved ${fmtMoney(r.saved, true)}` : "no surplus"}</div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(96px,1fr))", gap: 8 }}>
+                    {[["Forecast", fmtMoney(r.forecast, true), "var(--color-text-secondary)"],
+                      ["Actual", fmtMoney(r.actual, true), over ? "#E24B4A" : "#639922"],
+                      ["Income", fmtMoney(r.income, true), "#1D9E75"],
+                      ["Debt", fmtMoney(r.debt, true), r.debt > 0 ? "#E24B4A" : "var(--color-text-secondary)"],
+                      ["Gifts", String(r.gifts || 0), "var(--color-text-primary)"]].map(([l, v, c]) => (
+                      <div key={l} style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.03em" }}>{l}</div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: c }}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {r.forecast > 0 && <div style={{ fontSize: 11.5, color: over ? "#E24B4A" : "#639922", marginTop: 8 }}>{over ? `Over forecast by ${fmtMoney(r.actual - r.forecast, true)}` : `Under forecast by ${fmtMoney(r.forecast - r.actual, true)}`}</div>}
                 </div>
               );
             })}
@@ -3650,9 +3794,28 @@ function App({ user }) {
     else delete root.dataset.mode;
     // Keep the iOS status-bar / PWA theme-color in step with the active scheme.
     const dark = mode === "dark" || (mode === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", dark ? "#1c1c1e" : "#ffffff");
+    const metaEl = document.querySelector('meta[name="theme-color"]');
+    if (metaEl) metaEl.setAttribute("content", dark ? "#1c1c1e" : "#ffffff");
   }, [mode]);
+
+  // Once loaded: snapshot each month's report (so history survives pruning), then
+  // drop transactions older than 6 months (Tend keeps a 6-month rolling window).
+  useEffect(() => {
+    if (!meta.loaded) return;
+    const txns = state.transactions || [];
+    const reports = { ...(state.monthlyReports || {}) };
+    const months = new Set(txns.map(t => (t.date || "").slice(0, 7)).filter(Boolean));
+    months.add(curMonthKey());
+    Object.keys(state.financePlans || {}).forEach(m => months.add(m));
+    months.forEach(mk => { reports[mk] = computeMonthReport(state, mk); });
+    const cutoff24 = monthsAgoKey(24);
+    Object.keys(reports).forEach(mk => { if (mk < cutoff24) delete reports[mk]; });
+    const sixAgo = addDaysStr(todayStr(), -183);
+    const pruned = txns.filter(t => (t.date || "") >= sixAgo);
+    if (pruned.length !== txns.length || JSON.stringify(reports) !== JSON.stringify(state.monthlyReports || {})) {
+      up({ transactions: pruned, monthlyReports: reports });
+    }
+  }, [meta.loaded]);
 
   const ac = accent(state.theme);
   const today = todayStr();
