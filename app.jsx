@@ -1771,7 +1771,7 @@ function NetWorth({ state, up, accentColor }) {
   const months = Object.keys(hist).sort().slice(-6);
   const bars = months.map(m => ({ label: monthShort(m), value: Math.max(0, hist[m]), color: "#7F77DD" }));
   return (
-    <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14 }}>
+    <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
         <div style={{ fontSize: 14, fontWeight: 600 }}>📈 Net worth</div>
         <div style={{ fontSize: 24, fontWeight: 700, color: nw >= 0 ? "#1D9E75" : "#E24B4A" }}>{fmtMoney(nw)}</div>
@@ -2256,10 +2256,16 @@ function FinanceView({ state, up, accentColor }) {
         const proj = [0, 6, 12, 18, 24].map(m => ({ label: m === 0 ? "Now" : "+" + m + "m", value: savings.reduce((s, a) => s + projectBalance(a.balance, a.contribution, a.rate, m), 0), color: "#1D9E75" }));
         return (
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Track balances, goals and how long until you reach them. Balances sync once your bank is linked.</div>
-              <button onClick={() => setSavModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Account</button>
-            </div>
+            {/* Net worth — top */}
+            <NetWorth state={state} up={up} accentColor={ac} />
+
+            {/* Savings — middle */}
+            <div style={{ marginTop: 26, paddingTop: 20, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>🐖 Savings</div>
+                <button onClick={() => setSavModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Account</button>
+              </div>
+              <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 14 }}>Track balances, goals and how long until you reach them. Balances sync once your bank is linked.</div>
 
             {savings.length === 0 && (
               <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
@@ -2339,12 +2345,12 @@ function FinanceView({ state, up, accentColor }) {
                 })}
               </>
             )}
-            <NetWorth state={state} up={up} accentColor={ac} />
+            </div>
 
-            {/* Debts */}
-            <div style={{ marginTop: 14 }}>
+            {/* Debts — bottom */}
+            <div style={{ marginTop: 26, paddingTop: 20, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 14, fontWeight: 600 }}>💳 Debts</div>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>💳 Debts</div>
                 <button onClick={() => setDebtModal("new")} style={{ fontSize: 13, padding: "6px 14px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Debt</button>
               </div>
               {debts.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2px 0 6px" }}>No debts tracked. Add credit cards, loans or car finance to see payoff order and what interest is costing you.</div>}
