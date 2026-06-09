@@ -35,8 +35,9 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["today","important-dates","people","finance","audit","settings"];
+const VIEWS = ["home","today","important-dates","people","finance","audit","settings"];
 const VIEW_META = {
+  home: { icon: "🏠", label: "Home" },
   today: { icon: "☀️", label: "Tasks" },
   "important-dates": { icon: "🎂", label: "Important Dates" },
   people: { icon: "🎁", label: "People" },
@@ -3897,11 +3898,152 @@ function TasksInsights({ state, allTasks, overdueTasks, accentColor, onGoFinance
   );
 }
 
+// Offline "Ask Claude" assistant: handles add-task, plan-my-day, finance and
+// upcoming intents from the user's own data. Upgrades to the real Claude API
+// once a backend AI endpoint is wired (Phase B).
+function runAssistant(state, prompt) {
+  const raw = (prompt || "").trim();
+  const p = raw.toLowerCase();
+  if (!raw) return { reply: "Ask me to plan your day, summarise your money, or add a task." };
+  const today = todayStr();
+  const tasks = (state.tasks || []).filter(t => !t.done);
+  const addMatch = raw.match(/^(?:add|create|new|remind me to)\s+(?:a\s+)?(?:task\s+)?(.+)/i);
+  if (addMatch) return { addText: addMatch[1] };
+  if (/\b(focus|today|priorit|what.*(do|tackle)|plan my day|to ?do)\b/.test(p)) {
+    const todays = tasks.filter(t => t.scheduledDate === today || t.deadline === today);
+    const overdue = tasks.filter(t => t.deadline && t.deadline < today);
+    const highs = tasks.filter(t => t.priority === "high");
+    const seen = new Set(); const list = [...overdue, ...todays, ...highs].filter(t => !seen.has(t.id) && seen.add(t.id)).slice(0, 6)
+      .map(t => ({ id: t.id, title: t.title, tag: overdue.includes(t) ? "overdue" : todays.includes(t) ? "today" : "high" }));
+    return { reply: list.length ? `Here's what I'd tackle first${overdue.length ? ` — ${overdue.length} overdue to clear` : ""}:` : "You're all clear — nothing urgent right now. 🎉", list };
+  }
+  if (/\b(financ|money|spend|budget|saving|save|debt|net worth|bank|afford)\b/.test(p)) {
+    const cur = (state.currentAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+    const sav = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+    const debt = (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0);
+    const nw = cur + sav + investmentTotals(state.investments).value + pensionPotsTotal(state) - debt;
+    const st = monthStats(state, curMonthKey());
+    const safe = (st.income || st.incomeProjected) - st.plannedTotal - (Number(state.safetyBuffer) || 0);
+    return { reply: `In the bank ${fmtMoney(cur, true)} · savings ${fmtMoney(sav, true)} · debt ${fmtMoney(debt, true)}. Net worth ≈ ${fmtMoney(nw, true)}. Safe to spend this month: ${fmtMoney(safe)}.` };
+  }
+  if (/\b(upcoming|coming up|this week|week|event|birthday|due|deadline)\b/.test(p)) {
+    const list = tasks.filter(t => { const d = t.deadline || t.scheduledDate; return d && d >= today && daysUntil(d) <= 7; })
+      .sort((a, b) => (a.deadline || a.scheduledDate).localeCompare(b.deadline || b.scheduledDate)).slice(0, 6)
+      .map(t => ({ id: t.id, title: t.title, tag: fmtShort(t.deadline || t.scheduledDate) }));
+    return { reply: list.length ? "Coming up in the next 7 days:" : "Nothing scheduled in the next week.", list };
+  }
+  return { reply: "I can plan your day, summarise your finances, or add tasks. Try “what should I focus on today?”, “how are my finances?”, or “add buy milk tomorrow”. Full conversational Claude arrives with the API key (Phase B)." };
+}
+
+function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTasks }) {
+  const ac = accentColor;
+  const today = todayStr();
+  const [q, setQ] = useState("");
+  const [resp, setResp] = useState(null);
+  const ask = () => {
+    if (!q.trim()) return;
+    const r = runAssistant(state, q);
+    if (r.addText) {
+      const ctx = { tags: state.tags, groups: state.groups };
+      const task = buildTask(localParse(r.addText, ctx), ctx, {});
+      onAddTask(task);
+      setResp({ reply: `Added “${task.title}”${task.deadline ? ` · ⚑ ${fmtShort(task.deadline)}` : ""} ✓`, list: [] });
+    } else setResp(r);
+    setQ("");
+  };
+  const open = allTasks.filter(t => !t.done);
+  const todays = open.filter(t => t.scheduledDate === today || t.deadline === today);
+  const upcoming = open.filter(t => { const d = t.deadline || t.scheduledDate; return d && d > today && daysUntil(d) <= 14; })
+    .sort((a, b) => (a.deadline || a.scheduledDate).localeCompare(b.deadline || b.scheduledDate)).slice(0, 5);
+  const dates = (state.importantDates || []).map(d => ({ d, days: d.date ? daysUntil(`${new Date().getFullYear()}-${d.date.slice(5)}`) : null }))
+    .filter(x => x.days != null && x.days >= 0 && x.days <= 30).sort((a, b) => a.days - b.days).slice(0, 4);
+  const cur = (state.currentAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const sav = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const debt = (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0);
+  const nw = cur + sav + investmentTotals(state.investments).value + pensionPotsTotal(state) - debt;
+  const st = monthStats(state, curMonthKey());
+  const safe = (st.income || st.incomeProjected) - st.plannedTotal - (Number(state.safetyBuffer) || 0);
+  const greeting = (() => { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; })();
+  const card = { background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 };
+  const Snap = ({ label, value, color, onClick }) => (
+    <div onClick={onClick} style={{ background: "var(--color-background-secondary)", borderRadius: 10, padding: "10px 12px", cursor: onClick ? "pointer" : "default" }}>
+      <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: color || "var(--color-text-primary)" }}>{value}</div>
+    </div>
+  );
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 2px" }}>{greeting} 👋</h1>
+      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}{overdueTasks.length > 0 ? ` · ⚠ ${overdueTasks.length} overdue` : ""}</p>
+
+      {/* Ask Claude */}
+      <div style={{ ...card, background: hex2rgba(ac, 0.06), borderColor: hex2rgba(ac, 0.25) }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>✨ Ask Claude</div>
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>Plan your day, sort your tasks, check your money — or just say “add …”.</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && ask()} placeholder="e.g. what should I focus on today?" style={{ flex: 1, fontSize: 14, boxSizing: "border-box" }} />
+          <button onClick={ask} style={{ padding: "0 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>Ask</button>
+        </div>
+        {!resp && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>{["What should I focus on today?", "How are my finances?", "What's coming up?"].map(s => <button key={s} onClick={() => { setQ(s); setTimeout(() => { setResp(runAssistant(state, s)); setQ(""); }, 0); }} style={{ fontSize: 12, padding: "5px 11px", borderRadius: 20, cursor: "pointer", color: ac }}>{s}</button>)}</div>}
+        {resp && (
+          <div style={{ marginTop: 12, background: "var(--color-background-primary)", borderRadius: 10, padding: "12px 14px" }}>
+            <div style={{ fontSize: 13.5 }}>{resp.reply}</div>
+            {resp.list && resp.list.map(it => (
+              <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginTop: 7 }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: ac, flexShrink: 0 }} />
+                <span style={{ flex: 1 }}>{it.title}</span>
+                <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{it.tag}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Finance snapshot */}
+      <div style={card}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>💷 Your money</div>
+          <button onClick={() => setView("finance")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Open Finance →</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 8 }}>
+          <Snap label="In the bank" value={fmtMoney(cur, true)} color={ac} />
+          <Snap label="Savings" value={fmtMoney(sav, true)} color="#1D9E75" />
+          <Snap label="Debt" value={fmtMoney(debt, true)} color={debt > 0 ? "#E24B4A" : undefined} />
+          <Snap label="Net worth" value={fmtMoney(nw, true)} color={nw >= 0 ? "#1D9E75" : "#E24B4A"} />
+          <Snap label="Safe to spend" value={fmtMoney(safe, true)} color={safe >= 0 ? "#639922" : "#E24B4A"} />
+        </div>
+      </div>
+
+      {/* Today + upcoming */}
+      <div style={card}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>☀️ Today &amp; upcoming</div>
+          <button onClick={() => setView("today")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Open Tasks →</button>
+        </div>
+        {todays.length === 0 && upcoming.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Nothing scheduled — you're all clear ✨</div>}
+        {todays.map(t => <div key={t.id} style={{ display: "flex", gap: 8, fontSize: 13.5, padding: "5px 0" }}><span>○</span><span style={{ flex: 1 }}>{t.title}</span><span style={{ fontSize: 11, color: ac }}>today</span></div>)}
+        {upcoming.map(t => <div key={t.id} style={{ display: "flex", gap: 8, fontSize: 13.5, padding: "5px 0", color: "var(--color-text-secondary)" }}><span>○</span><span style={{ flex: 1 }}>{t.title}</span><span style={{ fontSize: 11 }}>{fmtShort(t.deadline || t.scheduledDate)}</span></div>)}
+      </div>
+
+      {/* Important dates */}
+      {dates.length > 0 && (
+        <div style={card}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>🎂 Important dates</div>
+            <button onClick={() => setView("important-dates")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Open →</button>
+          </div>
+          {dates.map(({ d, days }) => <div key={d.id} style={{ display: "flex", gap: 8, fontSize: 13.5, padding: "5px 0" }}><span style={{ flex: 1 }}>{(DATE_TYPES.find(t => t.v === d.type) || {}).icon || "📅"} {d.title}</span><span style={{ fontSize: 11.5, color: days <= 7 ? ac : "var(--color-text-secondary)", fontWeight: days <= 7 ? 500 : 400 }}>{days === 0 ? "today" : `in ${days} day${days !== 1 ? "s" : ""}`}</span></div>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 function App({ user }) {
   const [state, up, meta] = useAppState(user);
-  const [view, setView] = useState("today");
+  const [view, setView] = useState("home");
   const [modal, setModal] = useState(null);
   const [groupModal, setGroupModal] = useState(null);
   const [dateModal, setDateModal] = useState(null);
@@ -4113,13 +4255,16 @@ function App({ user }) {
               {view === "today" && <button onClick={() => setFocusMode(!focusMode)} style={{ fontSize: 12, padding: "5px 12px", background: focusMode ? ac : "transparent", color: focusMode ? "#fff" : "var(--color-text-primary)", border: `1px solid ${ac}`, borderRadius: 7, cursor: "pointer" }}>🎯 Focus</button>}
             </>
           )}
-          {!["insights","settings","calendar","finance","people"].includes(view) && (
+          {!["home","insights","settings","calendar","finance","people"].includes(view) && (
             <button onClick={() => setModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ New task</button>
           )}
         </div>
 
         {/* Body */}
         <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
+
+          {/* Central home dashboard */}
+          {view === "home" && <HomeView state={state} accentColor={ac} setView={setView} onAddTask={saveTask} allTasks={allTasks} overdueTasks={overdueTasks} />}
 
           {/* Today hub — List (Today + Unsorted + Upcoming) or Calendar */}
           {view === "today" && (
