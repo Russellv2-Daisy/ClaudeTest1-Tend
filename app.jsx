@@ -1399,7 +1399,7 @@ function FinanceCatModal({ cat, accentColor, onSave, onClose }) {
 const FINANCE_TABS = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
   { id: "plan", icon: "🎯", label: "Plan" },
-  { id: "savings", icon: "🐖", label: "Savings" },
+  { id: "savings", icon: "🐖", label: "Savings & Debts" },
   { id: "investments", icon: "💹", label: "Investments" },
   { id: "pension", icon: "🏖", label: "Pension" },
   { id: "insurance", icon: "🛡", label: "Insurance" },
@@ -1787,58 +1787,66 @@ function NetWorth({ state, up, accentColor }) {
   );
 }
 
-// Average daily spend over the last `days` from real spend transactions.
-function avgDailySpendRecent(state, days) {
-  const cut = new Date(); cut.setDate(cut.getDate() - days);
-  const from = cut.getFullYear() + "-" + String(cut.getMonth() + 1).padStart(2, "0") + "-" + String(cut.getDate()).padStart(2, "0");
-  const sum = (state.transactions || []).filter(t => t.type !== "income" && (t.date || "") >= from).reduce((s, t) => s + (Number(t.amount) || 0), 0);
-  return sum / days;
-}
-function lastDayOfMonthStr() { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10); }
-
-// "Will I have enough on the 28th?" — projects current balance to a target date
-// using average spend, plus any income you expect before then.
-function CashFlowForecast({ state, up, accentColor }) {
+// "Will my money last the month?" — fully automatic. Uses this month's income
+// (plan or actual) as the pot, your spend so far, and a spend rate that starts
+// from your PLAN and switches to your ACTUAL pace as the month progresses.
+// Recomputed from today's date on every open, so it moves day to day.
+function CashFlowForecast({ state, accentColor }) {
   const ac = accentColor;
-  const cf = state.cashFlow || {};
-  const [target, setTarget] = useState(lastDayOfMonthStr());
-  const recentPerDay = avgDailySpendRecent(state, 60);
-  const d = new Date(); const dim = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  const planSpend = monthStats(state, curMonthKey()).plannedTotal || 0;
-  const usingTxns = recentPerDay > 0;
-  const perDay = usingTxns ? recentPerDay : planSpend / dim;
-  const balance = Number(cf.balance) || 0;
-  const income = Number(cf.expectedIncome) || 0;
-  const daysLeft = Math.max(0, daysUntil(target) || 0);
-  const projSpend = perDay * daysLeft;
-  const projected = balance + income - projSpend;
-  const safeDaily = daysLeft > 0 ? Math.max(0, (balance + income) / daysLeft) : 0;
-  const col = projected >= 0 ? "#1D9E75" : "#E24B4A";
-  const setCf = (k, v) => up({ cashFlow: { ...cf, [k]: v } });
-  const numStyle = { width: "100%", boxSizing: "border-box", fontSize: 14 };
+  const mk = curMonthKey();
+  const st = monthStats(state, mk);
+  const now = new Date();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const dayOfMonth = now.getDate();
+  const daysLeft = Math.max(0, daysInMonth - dayOfMonth);
+  const income = st.incomeActual > 0 ? st.incomeActual : st.incomeProjected;
+  const spentSoFar = st.spend;
+  const plannedDaily = st.plannedTotal > 0 ? st.plannedTotal / daysInMonth : 0;
+  const actualDaily = dayOfMonth > 0 ? spentSoFar / dayOfMonth : 0;
+  // Lean on the plan early on; switch to your real pace once a few days of
+  // spending have landed this month.
+  const haveActual = spentSoFar > 0 && dayOfMonth >= 3;
+  const dailyRate = haveActual ? actualDaily : plannedDaily;
+  const projRemaining = dailyRate * daysLeft;
+  const projTotalSpend = spentSoFar + projRemaining;
+  const projEnd = income - projTotalSpend;
+  const weekly = dailyRate * 7;
+  const weeksLeft = Math.max(1, Math.round(daysLeft / 7));
+  const col = projEnd >= 0 ? "#1D9E75" : "#E24B4A";
+  const lastDay = fmtShort(`${mk}-${String(daysInMonth).padStart(2, "0")}`);
+  const noIncome = income <= 0;
   return (
     <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 16 }}>
-      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>🔮 Cash flow forecast</div>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Will your balance last? Projects forward using your {usingTxns ? "average spend (last 60 days)" : "monthly plan (add transactions for a sharper estimate)"}.</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
-        <div><div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4 }}>Balance now (£)</div><input type="number" step="0.01" placeholder="0.00" value={cf.balance ?? ""} onChange={e => setCf("balance", e.target.value)} style={numStyle} /></div>
-        <div><div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4 }}>Income still to come (£)</div><input type="number" step="0.01" placeholder="0.00" value={cf.expectedIncome ?? ""} onChange={e => setCf("expectedIncome", e.target.value)} style={numStyle} /></div>
-        <div><div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4 }}>By date</div><input type="date" value={target} onChange={e => setTarget(e.target.value)} style={numStyle} /></div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>🔮 Cash flow forecast</div>
+        <span style={{ fontSize: 10.5, background: hex2rgba(ac, 0.12), color: ac, padding: "2px 8px", borderRadius: 10 }}>{haveActual ? "live · from your spending" : "from your plan"}</span>
       </div>
-      <div style={{ background: hex2rgba(col, 0.08), border: `1px solid ${hex2rgba(col, 0.3)}`, borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 170 }}>
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Projected balance on {fmtShort(target)}</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: col }}>{fmtMoney(projected)}</div>
-          <div style={{ fontSize: 11.5, color: col, marginTop: 2 }}>{projected >= 0 ? "you should be in the black 🎉" : `short by ${fmtMoney(Math.abs(projected), true)} — ease off spending`}</div>
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Updates automatically each day — starts from your plan, then tracks your actual spending as the month goes on.</div>
+
+      {noIncome ? (
+        <div style={{ fontSize: 13, color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", borderRadius: 10, padding: "12px 14px" }}>
+          Add your monthly income in the <b>Plan</b> tab and the forecast will tell you whether your money lasts the month. {spentSoFar > 0 && `So far you've spent ${fmtMoney(spentSoFar, true)} this month (~${fmtMoney(weekly, true)}/week).`}
         </div>
-        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
-          <div>Balance <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(balance, true)}</b></div>
-          <div>+ Income to come <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(income, true)}</b></div>
-          <div>− Spend over {daysLeft} day{daysLeft !== 1 ? "s" : ""} <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(projSpend, true)}</b></div>
-          <div style={{ color: "var(--color-text-secondary)" }}>≈ {fmtMoney(perDay, true)}/day</div>
-        </div>
-      </div>
-      {daysLeft > 0 && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>To reach {fmtShort(target)} at exactly £0 you can spend ~<b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(safeDaily, true)}/day</b>.</div>}
+      ) : (
+        <>
+          <div style={{ background: hex2rgba(col, 0.08), border: `1px solid ${hex2rgba(col, 0.3)}`, borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Projected money left by {lastDay}</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: col }}>{fmtMoney(projEnd)}</div>
+              <div style={{ fontSize: 11.5, color: col, marginTop: 2 }}>{projEnd >= 0 ? `on track — about ${fmtMoney(projEnd, true)} spare 🎉` : `heading for a ${fmtMoney(Math.abs(projEnd), true)} shortfall — trim ~${fmtMoney(Math.abs(projEnd) / weeksLeft, true)}/week`}</div>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
+              <div>Income this month <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(income, true)}</b></div>
+              <div>− Spent so far ({dayOfMonth}d) <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(spentSoFar, true)}</b></div>
+              <div>− Projected rest ({daysLeft}d) <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(projRemaining, true)}</b></div>
+            </div>
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>
+            Spending about <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(weekly, true)}/week</b> ({fmtMoney(dailyRate, true)}/day) with {daysLeft} day{daysLeft !== 1 ? "s" : ""} left. On this pace you'll spend {fmtMoney(projTotalSpend, true)} vs your {fmtMoney(st.plannedTotal, true)} plan.
+          </div>
+          <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 6 }}>🔒 Based on your plan &amp; transactions now; will use your live bank balance once it's linked.</div>
+        </>
+      )}
     </div>
   );
 }
@@ -2082,7 +2090,7 @@ function FinanceView({ state, up, accentColor }) {
                   </div>
                 );
               })()}
-              <CashFlowForecast state={state} up={up} accentColor={ac} />
+              <CashFlowForecast state={state} accentColor={ac} />
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 16 }}>
                 <StatCard label="Spent" value={fmtMoney(stats.spend)} color="#E24B4A" sub={`of ${fmtMoney(stats.plannedTotal)} planned`} />
                 <StatCard label="Remaining in plan" value={fmtMoney(stats.plannedTotal - stats.spend)} color={stats.plannedTotal - stats.spend >= 0 ? "#639922" : "#E24B4A"} sub={stats.plannedTotal ? `${Math.round(stats.spend / stats.plannedTotal * 100)}% used` : "no plan set"} />
