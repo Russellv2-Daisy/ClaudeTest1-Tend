@@ -35,10 +35,9 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["today","groups","important-dates","people","finance","insights","audit","settings"];
+const VIEWS = ["today","important-dates","people","finance","insights","audit","settings"];
 const VIEW_META = {
   today: { icon: "☀️", label: "Tasks" },
-  groups: { icon: "📁", label: "Groups" },
   "important-dates": { icon: "🎂", label: "Important Dates" },
   people: { icon: "🎁", label: "People" },
   finance: { icon: "💷", label: "Finance" },
@@ -211,7 +210,7 @@ function TaskModal({ task, groups, tags, financeCats, accentColor, onSave, onClo
         <Field label="Deadline">
           <input type="date" value={t.deadline || ""} onChange={e => up("deadline", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} />
         </Field>
-        <Field label="Scheduled date">
+        <Field label="Scheduled completion date">
           <input type="date" value={t.scheduledDate || ""} onChange={e => up("scheduledDate", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} />
         </Field>
         <Field label="Duration (min)">
@@ -404,8 +403,8 @@ function TaskRow({ task, tags, groups, onToggle, onEdit, onDelete }) {
         </div>
         {task.notes && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 3, lineHeight: 1.5 }}>{task.notes}</div>}
         <div style={{ display: "flex", gap: 10, marginTop: 5, flexWrap: "wrap" }}>
-          {task.deadline && <span style={{ fontSize: 11, color: overdue ? "#A32D2D" : "var(--color-text-secondary)" }}>⚑ {fmtDate(task.deadline)}</span>}
-          {task.scheduledDate && <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>▷ {fmtDate(task.scheduledDate)}</span>}
+          {task.deadline && <span title="Deadline" style={{ fontSize: 11, color: overdue ? "#A32D2D" : "var(--color-text-secondary)" }}>⚑ {fmtDate(task.deadline)}</span>}
+          {task.scheduledDate && <span title="Scheduled completion date" style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>▷ {fmtDate(task.scheduledDate)}</span>}
           {task.duration && <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>⏱ {task.duration}min</span>}
           {grp && <span style={{ fontSize: 11, color: grp.color || "var(--color-text-secondary)", fontWeight: 500 }}>{grp.emoji} {grp.name}</span>}
           {task.repeat && task.repeat !== "none" && <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>↻ {task.repeat}</span>}
@@ -432,11 +431,16 @@ function TaskRow({ task, tags, groups, onToggle, onEdit, onDelete }) {
 
 // ── Calendar View ─────────────────────────────────────────────────────────────
 
+// Calendar dot colours: scheduled-completion = theme accent, deadline = red,
+// important date = amber. (Deadline is the red dot the user asked for.)
+const CAL_DEADLINE = "#E24B4A";
+const CAL_DATE = "#BA7517";
+
 function CalendarView({ tasks, importantDates, accentColor, onAddTask, onEditDate }) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState(now.getDate());
 
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = (getFirstDayOfMonth(year, month) + 6) % 7; // Mon start
@@ -449,40 +453,47 @@ function CalendarView({ tasks, importantDates, accentColor, onAddTask, onEditDat
   function getEventsForDay(d) {
     const ds = dateStr(d);
     const monthDay = ds.slice(5);
-    const ts = tasks.filter(t => t.deadline === ds || t.scheduledDate === ds);
-    const ids = importantDates.filter(id => id.date && id.date.slice(5) === monthDay);
-    return { tasks: ts, dates: ids };
+    const scheduled = tasks.filter(t => t.scheduledDate === ds);
+    const deadlines = tasks.filter(t => t.deadline === ds);
+    const dates = importantDates.filter(id => id.date && id.date.slice(5) === monthDay);
+    return { scheduled, deadlines, dates };
   }
 
   const selDateStr = selected ? dateStr(selected) : null;
   const selEvents = selected ? getEventsForDay(selected) : null;
+  const goToday = () => { setYear(todayYear); setMonth(todayMonth); setSelected(todayDate); };
+  const Dot = ({ c }) => <div style={{ width: 6, height: 6, borderRadius: "50%", background: c }} />;
+  const LegendItem = ({ c, label }) => <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--color-text-secondary)" }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: c }} />{label}</span>;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 16, alignItems: "start" }}>
-      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-          <button onClick={() => { let m = month - 1, y = year; if (m < 0) { m = 11; y--; } setMonth(m); setYear(y); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "var(--color-text-secondary)", padding: "2px 8px" }}>‹</button>
-          <span style={{ fontWeight: 500, fontSize: 15 }}>{MONTH_NAMES[month]} {year}</span>
-          <button onClick={() => { let m = month + 1, y = year; if (m > 11) { m = 0; y++; } setMonth(m); setYear(y); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "var(--color-text-secondary)", padding: "2px 8px" }}>›</button>
+    <div>
+      {/* Big calendar spanning the top */}
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", overflow: "hidden", marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+          <button onClick={() => { let m = month - 1, y = year; if (m < 0) { m = 11; y--; } setMonth(m); setYear(y); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--color-text-secondary)", padding: "2px 10px" }}>‹</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ fontWeight: 600, fontSize: 17 }}>{MONTH_NAMES[month]} {year}</span>
+            <button onClick={goToday} style={{ fontSize: 12, padding: "4px 11px", borderRadius: 8, cursor: "pointer", color: accentColor }}>Today</button>
+          </div>
+          <button onClick={() => { let m = month + 1, y = year; if (m > 11) { m = 0; y++; } setMonth(m); setYear(y); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--color-text-secondary)", padding: "2px 10px" }}>›</button>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", padding: "10px 12px 0" }}>
-          {DAY_NAMES.map(d => <div key={d} style={{ textAlign: "center", fontSize: 11, fontWeight: 500, color: "var(--color-text-secondary)", padding: "0 0 8px", textTransform: "uppercase", letterSpacing: "0.05em" }}>{d}</div>)}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", padding: "12px 14px 0" }}>
+          {DAY_NAMES.map(d => <div key={d} style={{ textAlign: "center", fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", padding: "0 0 8px", textTransform: "uppercase", letterSpacing: "0.05em" }}>{d}</div>)}
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", padding: "0 12px 14px", gap: 3 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", padding: "0 14px 16px", gap: 5 }}>
           {Array(firstDay).fill(null).map((_, i) => <div key={"e" + i} />)}
           {Array(daysInMonth).fill(null).map((_, i) => {
             const d = i + 1;
             const isToday = d === todayDate && month === todayMonth && year === todayYear;
             const isSel = d === selected;
             const ev = getEventsForDay(d);
-            const hasTask = ev.tasks.length > 0;
-            const hasDate = ev.dates.length > 0;
             return (
-              <div key={d} onClick={() => setSelected(isSel ? null : d)} style={{ borderRadius: 9, padding: "6px 4px", textAlign: "center", cursor: "pointer", background: isSel ? accentColor : isToday ? hex2rgba(accentColor, 0.1) : "transparent", border: isToday && !isSel ? `1.5px solid ${accentColor}` : "1.5px solid transparent", transition: "background 0.15s" }}>
-                <div style={{ fontSize: 13, fontWeight: isToday || isSel ? 500 : 400, color: isSel ? "#fff" : isToday ? accentColor : "var(--color-text-primary)" }}>{d}</div>
-                <div style={{ display: "flex", gap: 2, justifyContent: "center", marginTop: 3 }}>
-                  {hasTask && <div style={{ width: 5, height: 5, borderRadius: "50%", background: isSel ? "rgba(255,255,255,0.8)" : accentColor }} />}
-                  {hasDate && <div style={{ width: 5, height: 5, borderRadius: "50%", background: isSel ? "rgba(255,255,255,0.8)" : "#E24B4A" }} />}
+              <div key={d} onClick={() => setSelected(d)} style={{ minHeight: 52, borderRadius: 10, padding: "7px 4px 5px", textAlign: "center", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", background: isSel ? accentColor : isToday ? hex2rgba(accentColor, 0.1) : "var(--color-background-secondary)", border: isToday && !isSel ? `1.5px solid ${accentColor}` : "1.5px solid transparent", transition: "background 0.15s" }}>
+                <div style={{ fontSize: 15, fontWeight: isToday || isSel ? 600 : 400, color: isSel ? "#fff" : isToday ? accentColor : "var(--color-text-primary)" }}>{d}</div>
+                <div style={{ display: "flex", gap: 3, justifyContent: "center", marginTop: 5, flexWrap: "wrap" }}>
+                  {ev.scheduled.length > 0 && <Dot c={isSel ? "rgba(255,255,255,0.85)" : accentColor} />}
+                  {ev.deadlines.length > 0 && <Dot c={isSel ? "#fff" : CAL_DEADLINE} />}
+                  {ev.dates.length > 0 && <Dot c={isSel ? "rgba(255,255,255,0.7)" : CAL_DATE} />}
                 </div>
               </div>
             );
@@ -490,33 +501,51 @@ function CalendarView({ tasks, importantDates, accentColor, onAddTask, onEditDat
         </div>
       </div>
 
-      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 16, minHeight: 200 }}>
-        {selected ? (
-          <>
-            <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 12 }}>{selected} {MONTH_NAMES[month]}</div>
-            {selEvents.tasks.length === 0 && selEvents.dates.length === 0 && (
-              <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>Nothing scheduled.</div>
-            )}
-            {selEvents.dates.map(id => {
-              const typeInfo = DATE_TYPES.find(t => t.v === id.type);
-              return (
-                <div key={id.id} onClick={() => onEditDate(id)} style={{ padding: "8px 10px", borderRadius: 9, background: "#FCEBEB", marginBottom: 6, cursor: "pointer" }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "#A32D2D" }}>{typeInfo?.icon} {id.title}</div>
-                  <div style={{ fontSize: 11, color: "#E24B4A", marginTop: 2 }}>{id.type} · repeats yearly</div>
-                  {id.tasks?.length > 0 && <div style={{ fontSize: 11, color: "#A32D2D", marginTop: 2 }}>{id.tasks.filter(t => t.done).length}/{id.tasks.length} to-dos</div>}
+      {/* Legend */}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 14, padding: "0 4px" }}>
+        <LegendItem c={accentColor} label="Scheduled completion" />
+        <LegendItem c={CAL_DEADLINE} label="Deadline" />
+        <LegendItem c={CAL_DATE} label="Important date" />
+      </div>
+
+      {/* Selected day — underneath the calendar */}
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 18, minHeight: 140 }}>
+        {selected ? (() => {
+          const deadlineOnly = selEvents.deadlines.filter(t => t.scheduledDate !== selDateStr);
+          const empty = selEvents.scheduled.length === 0 && selEvents.deadlines.length === 0 && selEvents.dates.length === 0;
+          return (
+            <>
+              <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12 }}>{selected} {MONTH_NAMES[month]} {year}</div>
+              {empty && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>Nothing on this day.</div>}
+              {selEvents.dates.map(id => {
+                const typeInfo = DATE_TYPES.find(t => t.v === id.type);
+                return (
+                  <div key={id.id} onClick={() => onEditDate(id)} style={{ padding: "9px 12px", borderRadius: 9, background: hex2rgba(CAL_DATE, 0.12), marginBottom: 6, cursor: "pointer", borderLeft: `3px solid ${CAL_DATE}` }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 500 }}>{typeInfo?.icon} {id.title}</div>
+                    <div style={{ fontSize: 11, color: CAL_DATE, marginTop: 2 }}>Important date · repeats yearly</div>
+                  </div>
+                );
+              })}
+              {selEvents.scheduled.map(t => {
+                const alsoDeadline = t.deadline === selDateStr;
+                return (
+                  <div key={"s" + t.id} style={{ padding: "9px 12px", borderRadius: 9, background: hex2rgba(accentColor, 0.08), marginBottom: 6, borderLeft: `3px solid ${accentColor}` }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 500 }}>{t.title}</div>
+                    <div style={{ fontSize: 11, color: accentColor, marginTop: 2 }}>▷ Scheduled completion{alsoDeadline ? ` & ⚑ deadline` : ""}</div>
+                  </div>
+                );
+              })}
+              {deadlineOnly.map(t => (
+                <div key={"d" + t.id} style={{ padding: "9px 12px", borderRadius: 9, background: hex2rgba(CAL_DEADLINE, 0.08), marginBottom: 6, borderLeft: `3px solid ${CAL_DEADLINE}` }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 500 }}>{t.title}</div>
+                  <div style={{ fontSize: 11, color: CAL_DEADLINE, marginTop: 2 }}>⚑ Deadline</div>
                 </div>
-              );
-            })}
-            {selEvents.tasks.map(t => (
-              <div key={t.id} style={{ padding: "8px 10px", borderRadius: 9, background: hex2rgba(accentColor, 0.08), marginBottom: 6 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: accentColor }}>{t.title}</div>
-                <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 2 }}><PriBadge p={t.priority} /></div>
-              </div>
-            ))}
-            <button onClick={() => onAddTask(selDateStr)} style={{ marginTop: 8, width: "100%", padding: "8px", borderRadius: 8, border: `1px dashed ${accentColor}`, background: "transparent", color: accentColor, fontSize: 13, cursor: "pointer" }}>+ Add task</button>
-          </>
-        ) : (
-          <div style={{ textAlign: "center", padding: "24px 0", color: "var(--color-text-secondary)", fontSize: 13 }}>Select a day to see events</div>
+              ))}
+              <button onClick={() => onAddTask(selDateStr)} style={{ marginTop: 8, padding: "8px 16px", borderRadius: 8, border: `1px dashed ${accentColor}`, background: "transparent", color: accentColor, fontSize: 13, cursor: "pointer" }}>+ Add task on this day</button>
+            </>
+          );
+        })() : (
+          <div style={{ textAlign: "center", padding: "24px 0", color: "var(--color-text-secondary)", fontSize: 13 }}>Select a day to see what's on.</div>
         )}
       </div>
     </div>
@@ -3471,7 +3500,7 @@ function App({ user }) {
           {view === "today" && (
             <div>
               <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-                {[["list", "📋 List"], ["calendar", "🗓 Calendar"]].map(([m, l]) => (
+                {[["list", "📋 List"], ["calendar", "🗓 Calendar"], ["groups", "📁 Groups"]].map(([m, l]) => (
                   <button key={m} onClick={() => setTodayMode(m)} style={{ fontSize: 13, padding: "7px 14px", borderRadius: 9, cursor: "pointer", border: "none", background: todayMode === m ? ac : "var(--color-background-secondary)", color: todayMode === m ? "#fff" : "var(--color-text-secondary)", fontWeight: todayMode === m ? 500 : 400 }}>{l}</button>
                 ))}
               </div>
@@ -3521,11 +3550,8 @@ function App({ user }) {
               {todayMode === "calendar" && (
                 <CalendarView tasks={allTasks} importantDates={state.importantDates} accentColor={ac} onAddTask={(date) => setModal({ prefill: date })} onEditDate={(d) => setDateModal(d)} />
               )}
-            </div>
-          )}
 
-          {/* Groups */}
-          {view === "groups" && (
+              {todayMode === "groups" && (
             <div>
               <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
                 <button onClick={() => setGroupModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ New group</button>
@@ -3558,6 +3584,8 @@ function App({ user }) {
                   </div>
                 );
               })}
+            </div>
+              )}
             </div>
           )}
 
