@@ -1351,12 +1351,20 @@ function monthStats(state, mk) {
     plannedTotal += planned; manualActualTotal += manualActual;
   });
 
-  const incomeProjected = (Number((plan.income || {}).projected) || 0) + (Number((plan.extra || {}).projected) || 0);
-  const incomeManualActual = (Number((plan.income || {}).actual) || 0) + (Number((plan.extra || {}).actual) || 0);
+  // Auto commitments pulled from the Savings & Debts / Pension tabs (made there first).
+  const savingsContrib = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.contribution) || 0), 0);
+  const debtPayments = (state.debts || []).reduce((s, d) => { const pl = debtPlan(d); return s + (pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0)); }, 0);
+  const pensionContrib = pensionMonthlyContribution(state);
+  const commitments = savingsContrib + debtPayments + pensionContrib;
+  plannedTotal += commitments;
+
+  const incomeKeys = ["income", "income2", "extra"];
+  const incomeProjected = incomeKeys.reduce((s, k) => s + (Number((plan[k] || {}).projected) || 0), 0);
+  const incomeManualActual = incomeKeys.reduce((s, k) => s + (Number((plan[k] || {}).actual) || 0), 0);
   const incomeActual = txnIncome > 0 ? txnIncome : incomeManualActual;
   const spend = cats.reduce((s, c) => s + byCat[c.id].spent, 0);
 
-  return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, spend, plannedTotal, manualActualTotal };
+  return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, spend, plannedTotal, manualActualTotal, savingsContrib, debtPayments, pensionContrib, commitments };
 }
 
 // Best-effort, offline plan parser ("groceries 100, fuel 80, spotify 13, income 2289").
@@ -2384,24 +2392,23 @@ function FinanceView({ state, up, accentColor }) {
             <>
               <CashFlowForecast state={state} accentColor={ac} />
               {(() => {
-                const savContrib = savings.reduce((s, a) => s + (Number(a.contribution) || 0), 0);
                 const buffer = Number(state.safetyBuffer) || 0;
                 const expIncome = stats.incomeActual > 0 ? stats.incomeActual : stats.incomeProjected;
-                const safe = expIncome - stats.plannedTotal - savContrib - buffer;
+                const safe = expIncome - stats.plannedTotal - buffer;
                 const col = safe >= 0 ? "#1D9E75" : "#E24B4A";
                 return (
                   <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 16 }}>
                     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>💸 Safe to spend this month</div>
                     <div style={{ background: hex2rgba(col, 0.08), border: `1px solid ${hex2rgba(col, 0.3)}`, borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                       <div style={{ flex: 1, minWidth: 180 }}>
-                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Free to spend after plan &amp; savings</div>
+                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Free to spend after plan, savings, debts &amp; pension</div>
                         <div style={{ fontSize: 28, fontWeight: 700, color: col }}>{fmtMoney(safe)}</div>
                         <div style={{ fontSize: 11.5, color: col, marginTop: 2 }}>{safe >= 0 ? "free to spend 🎉" : "over budget — trim the plan"}</div>
                       </div>
                       <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
                         <div>Income <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(expIncome, true)}</b></div>
-                        <div>− Planned outgoings <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(stats.plannedTotal, true)}</b></div>
-                        <div>− Savings contributions <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(savContrib, true)}</b></div>
+                        <div>− Planned outgoings <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(stats.plannedTotal - stats.commitments, true)}</b></div>
+                        {stats.commitments > 0 && <div>− Savings/debt/pension <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(stats.commitments, true)}</b></div>}
                         {buffer > 0 && <div>− Safety buffer <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(buffer, true)}</b></div>}
                       </div>
                     </div>
@@ -2482,7 +2489,7 @@ function FinanceView({ state, up, accentColor }) {
               <div style={{ width: 96, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Actual</div>
               <div style={{ width: 94 }} />
             </div>
-            {[["income", "Income 1"], ["extra", "Extra income"]].map(([f, label]) => (
+            {[["income", "Main income / salary"], ["income2", "Second income"], ["extra", "Other (benefits, etc.)"]].map(([f, label]) => (
               <div key={f} style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
                 <div style={{ flex: 1, fontSize: 13 }}>{label}</div>
                 <MoneyCell value={(stats.plan[f] || {}).projected} onChange={v => setIncomeField(f, "projected", v)} />
@@ -2497,6 +2504,23 @@ function FinanceView({ state, up, accentColor }) {
               <div style={{ width: 94 }} />
             </div>
           </div>
+
+          {/* Commitments pulled automatically from the other tabs */}
+          {stats.commitments > 0 && (
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>🔗 Commitments <span style={{ fontSize: 11, fontWeight: 400, color: "var(--color-text-secondary)" }}>auto</span></div>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>Pulled from your Savings &amp; Debts and Pension tabs — set them there and they flow into the plan.</div>
+              {[["🐖 Savings contributions", stats.savingsContrib], ["💳 Debt / loan payments", stats.debtPayments], ["🏖 Pension contributions", stats.pensionContrib]].filter(x => x[1] > 0).map(([l, v]) => (
+                <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
+                  <span style={{ color: "var(--color-text-secondary)" }}>{l}</span>
+                  <span style={{ fontWeight: 500 }}>{fmtMoney(v, true)}/mo</span>
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, marginTop: 8, paddingTop: 8, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                <span>Total commitments</span><span style={{ color: ac }}>{fmtMoney(stats.commitments, true)}/mo</span>
+              </div>
+            </div>
+          )}
 
           {/* Expense groups → line items */}
           {cats.map(c => {
