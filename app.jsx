@@ -1694,8 +1694,8 @@ function MoneyInsights({ state, accentColor }) {
   const maxCat = Math.max(1, ...cats.map(c => r.byCat[c.id] || 0));
 
   return (
-    <div style={{ marginTop: 24 }}>
-      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>💷 Money</div>
+    <div>
+      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>🔎 Explore by date range</div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
         {PRESETS.map(([v, l]) => (
           <button key={v} onClick={() => setPreset(v)} style={{ fontSize: 12, padding: "6px 12px", borderRadius: 20, border: "none", cursor: "pointer", background: preset === v ? ac : "var(--color-background-secondary)", color: preset === v ? "#fff" : "var(--color-text-secondary)", fontWeight: preset === v ? 500 : 400 }}>{l}</button>
@@ -2546,9 +2546,12 @@ function FinanceView({ state, up, accentColor }) {
         let cumSav = 0;
         const savBars = series.map(s => { cumSav += (savCat ? (s.st.byCat[savCat.id]?.spent || 0) : 0); return { label: monthShort(s.mk), value: cumSav, color: "#1D9E75" }; });
         const hasData = series.some(s => s.st.spend > 0 || s.st.income > 0);
-        if (!hasData) return <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 38, marginBottom: 12 }}>📈</div><div style={{ fontSize: 14, marginBottom: 16 }}>No history yet — add transactions to see trends.</div><button onClick={loadSample} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 9, cursor: "pointer" }}>✨ Load sample data</button></div>;
         return (
           <div style={{ display: "grid", gap: 14 }}>
+            {!hasData && (
+              <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 38, marginBottom: 12 }}>📈</div><div style={{ fontSize: 14, marginBottom: 16 }}>No 6-month history yet — add transactions to see the trend charts. The date-range explorer below works with any transactions.</div><button onClick={loadSample} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 9, cursor: "pointer" }}>✨ Load sample data</button></div>
+            )}
+            {hasData && (<>
             <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
               <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 16 }}>Monthly spending (last 6 months)</div>
               <BarsChart data={spendBars} money />
@@ -2583,6 +2586,8 @@ function FinanceView({ state, up, accentColor }) {
                 </div>
               );
             })()}
+            </>)}
+            <MoneyInsights state={state} accentColor={ac} />
           </div>
         );
       })()}
@@ -3515,7 +3520,7 @@ function App({ user }) {
                   );
                 })}
               </div>
-              <MoneyInsights state={state} accentColor={ac} />
+              <div style={{ marginTop: 24, fontSize: 13, color: "var(--color-text-secondary)" }}>💷 Money insights have moved in with the charts — find them under <button onClick={() => setView("finance")} style={{ background: "none", border: "none", padding: 0, color: ac, cursor: "pointer", font: "inherit", textDecoration: "underline" }}>Finance → Trends</button>.</div>
             </div>
           )}
 
