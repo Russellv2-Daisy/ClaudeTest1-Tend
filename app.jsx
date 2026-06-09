@@ -3032,6 +3032,25 @@ function nextKeyDate(person) {
 }
 function shopSearchUrl(q) { return "https://www.amazon.co.uk/s?k=" + encodeURIComponent(q || ""); }
 
+// When a person has "auto-setup" on, generate their Important Date + birthday
+// and reminder tasks. Deterministic ids (keyed by person.id) so re-saving
+// replaces rather than duplicates. personId links items back for cleanup.
+function buildPersonAuto(person) {
+  const out = { tasks: [], importantDate: null };
+  if (!person.autoBirthday || !person.birthday) return out;
+  const occ = nextOccurrence(person.birthday);
+  const name = person.name || "them";
+  out.importantDate = { id: "ip_" + person.id, personId: person.id, auto: true, title: `${name}'s Birthday`, type: "birthday", date: person.birthday, notes: "", tags: [], tasks: [], cost: "", costCategory: "" };
+  const base = { priority: "medium", groupId: "", notes: "", tags: [], subtasks: [], someday: false, duration: "", cost: "", costCategory: "", done: false };
+  out.tasks.push({ ...base, id: "tb_" + person.id, personId: person.id, auto: "birthday", title: `🎂 Wish ${name} a happy birthday`, deadline: occ, scheduledDate: occ, repeat: "yearly" });
+  const leads = (person.reminderLeads && person.reminderLeads.length) ? person.reminderLeads.slice() : [person.reminderLeadDays || 14];
+  const maxLead = Math.max(...leads);
+  out.tasks.push({ ...base, id: "tp_" + person.id, personId: person.id, auto: "birthday", title: `🎁 Get ${name} a present`, deadline: occ, scheduledDate: dateMinusDays(occ, maxLead), repeat: "none", cost: person.typicalBudget || "", costCategory: "g_gifts" });
+  leads.forEach(L => out.tasks.push({ ...base, id: `tr_${person.id}_${L}`, personId: person.id, auto: "reminder", title: `🔔 ${name}'s birthday in ${L} days`, priority: "low", deadline: dateMinusDays(occ, L), scheduledDate: dateMinusDays(occ, L), repeat: "none" }));
+  if (person.reminderDate) out.tasks.push({ ...base, id: `trc_${person.id}`, personId: person.id, auto: "reminder", title: `🔔 Reminder: ${name}'s birthday`, priority: "low", deadline: person.reminderDate, scheduledDate: person.reminderDate, repeat: "none" });
+  return out;
+}
+
 // Offline gift-idea generator (used when the Claude API key isn't set). Wishlist first.
 function localGiftIdeas(person, budget) {
   const b = Number(budget) || Number(person.typicalBudget) || 30;
@@ -3060,8 +3079,8 @@ async function fetchGiftIdeas(person, occasion, budget) {
 // ── People: Person profile modal ─────────────────────────────────────────────
 
 function PersonModal({ person, accentColor, onSave, onClose }) {
-  const blank = { name: "", relationship: "Friend", birthday: "", anniversary: "", otherDates: [], location: "", timezone: "", hobbies: "", brands: "", foods: "", experiences: "", wishlist: [], dislikes: "", typicalBudget: "", reminderLeadDays: 14, giftHistory: [] };
-  const [p, setP] = useState({ ...blank, ...(person || {}) });
+  const blank = { name: "", relationship: "Friend", birthday: "", anniversary: "", otherDates: [], location: "", timezone: "", hobbies: "", brands: "", foods: "", experiences: "", wishlist: [], dislikes: "", typicalBudget: "", reminderLeadDays: 14, reminderLeads: [], reminderDate: "", autoBirthday: false, giftHistory: [] };
+  const [p, setP] = useState(() => { const base = { ...blank, ...(person || {}) }; if ((!base.reminderLeads || !base.reminderLeads.length) && base.reminderLeadDays) base.reminderLeads = [base.reminderLeadDays]; return base; });
   const up = (k, v) => setP(x => ({ ...x, [k]: v }));
   const [wl, setWl] = useState(""); const [wlPrice, setWlPrice] = useState("");
   const [odLabel, setOdLabel] = useState(""); const [odDate, setOdDate] = useState("");
@@ -3125,14 +3144,22 @@ function PersonModal({ person, accentColor, onSave, onClose }) {
         </div>
       </Field>
       <Field label="Dislikes / allergies"><textarea placeholder="Things to avoid…" value={p.dislikes} onChange={e => up("dislikes", e.target.value)} rows={2} style={{ width: "100%", boxSizing: "border-box", resize: "vertical" }} /></Field>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
-        <Field label="Typical budget (£)"><input type="number" step="0.01" placeholder="e.g. 40" value={p.typicalBudget} onChange={e => up("typicalBudget", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
-        <Field label="Remind me before">
-          <select value={p.reminderLeadDays} onChange={e => up("reminderLeadDays", parseInt(e.target.value, 10))} style={{ width: "100%" }}>
-            {[7, 14, 30, 60, 90].map(n => <option key={n} value={n}>{n} days before</option>)}
-          </select>
-        </Field>
-      </div>
+      <Field label="Typical budget (£)"><input type="number" step="0.01" placeholder="e.g. 40" value={p.typicalBudget} onChange={e => up("typicalBudget", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      <Field label="Remind me before their key dates">
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[7, 14, 30, 60, 90].map(n => {
+            const on = (p.reminderLeads || []).includes(n);
+            return <button key={n} onClick={() => up("reminderLeads", on ? (p.reminderLeads || []).filter(x => x !== n) : [...(p.reminderLeads || []), n].sort((a, b) => a - b))} style={{ padding: "6px 13px", borderRadius: 20, border: `1.5px solid ${on ? ac : "var(--color-border-tertiary)"}`, background: on ? hex2rgba(ac, 0.1) : "transparent", color: on ? ac : "var(--color-text-secondary)", fontSize: 12, fontWeight: on ? 500 : 400, cursor: "pointer" }}>{n} days</button>;
+          })}
+        </div>
+      </Field>
+      <Field label="…or remind me on a specific date">
+        <input type="date" value={p.reminderDate || ""} onChange={e => up("reminderDate", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} />
+      </Field>
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 9, fontSize: 13, cursor: "pointer", padding: "11px 13px", background: hex2rgba(ac, 0.06), borderRadius: 10, marginBottom: 4 }}>
+        <input type="checkbox" checked={!!p.autoBirthday} onChange={e => up("autoBirthday", e.target.checked)} style={{ marginTop: 2 }} />
+        <span>🎂 <b>Set up their birthday automatically</b> — adds it to Important Dates and puts a “wish happy birthday” task, a “get a present” task, and your chosen reminders on the calendar &amp; task list.{!p.birthday && <span style={{ color: "#BA7517" }}> Add a birthday above to enable.</span>}</span>
+      </label>
       {(p.giftHistory || []).length > 0 && (
         <>
           <Divider />
@@ -3150,7 +3177,7 @@ function PersonModal({ person, accentColor, onSave, onClose }) {
       )}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (p.name.trim()) onSave({ ...p, typicalBudget: parseFloat(p.typicalBudget) || 0 }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{person?.id ? "Save" : "Add person"}</button>
+        <button onClick={() => { if (p.name.trim()) onSave({ ...p, typicalBudget: parseFloat(p.typicalBudget) || 0, reminderLeads: p.reminderLeads || [], reminderLeadDays: (p.reminderLeads && p.reminderLeads.length) ? Math.max(...p.reminderLeads) : (p.reminderLeadDays || 14) }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{person?.id ? "Save" : "Add person"}</button>
       </div>
     </Modal>
   );
@@ -3216,10 +3243,22 @@ function PeopleView({ state, up, accentColor, onAddTask }) {
   function savePerson(pp) {
     const id = pp.id || genId();
     const withId = { ...pp, id };
-    up({ people: people.some(x => x.id === id) ? people.map(x => x.id === id ? withId : x) : [...people, withId] });
+    const newPeople = people.some(x => x.id === id) ? people.map(x => x.id === id ? withId : x) : [...people, withId];
+    // Regenerate this person's auto birthday/reminder items (replacing any prior ones).
+    const { tasks: autoTasks, importantDate } = buildPersonAuto(withId);
+    const baseTasks = (state.tasks || []).filter(t => t.personId !== id);
+    const baseDates = (state.importantDates || []).filter(d => d.personId !== id);
+    up({
+      people: newPeople,
+      tasks: [...baseTasks, ...autoTasks],
+      importantDates: importantDate ? [...baseDates, importantDate] : baseDates,
+    });
     setPersonModal(null);
   }
-  function deletePerson(id) { if (confirm("Delete this person?")) up({ people: people.filter(p => p.id !== id) }); }
+  function deletePerson(id) {
+    if (!confirm("Delete this person? Their auto birthday tasks & date will be removed too.")) return;
+    up({ people: people.filter(p => p.id !== id), tasks: (state.tasks || []).filter(t => t.personId !== id), importantDates: (state.importantDates || []).filter(d => d.personId !== id) });
+  }
 
   function chooseGift(person, idea, occasion) {
     const giftsCat = (state.financeCategories || []).find(c => c.id === "g_gifts") || (state.financeCategories || []).find(c => /gift/i.test(c.name));
@@ -3270,30 +3309,41 @@ function PeopleView({ state, up, accentColor, onAddTask }) {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 12 }}>
-        {people.map(p => {
-          const k = nextKeyDate(p);
-          return (
-            <div key={p.id} style={{ background: "var(--color-background-primary)", borderRadius: 13, border: "0.5px solid var(--color-border-tertiary)", padding: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 10 }}>
-                <div style={{ width: 40, height: 40, borderRadius: "50%", background: hex2rgba(ac, 0.14), color: ac, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, fontWeight: 600, flexShrink: 0 }}>{(p.name || "?").slice(0, 1).toUpperCase()}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
-                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{p.relationship}{p.typicalBudget ? ` · ~${fmtMoney(p.typicalBudget, true)}` : ""}</div>
-                </div>
-              </div>
-              {k ? (
-                <div style={{ fontSize: 12, color: k.days <= (p.reminderLeadDays || 14) ? ac : "var(--color-text-secondary)", marginBottom: 12, fontWeight: k.days <= (p.reminderLeadDays || 14) ? 500 : 400 }}>{k.icon} {k.label} in {k.days} day{k.days !== 1 ? "s" : ""} · {fmtShort(k.date)}</div>
-              ) : <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>No key dates set</div>}
-              <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => setGiftModal({ person: p, occasion: k })} style={{ flex: 1, fontSize: 12, padding: "7px 0", background: ac, color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 500 }}>🎁 Gift ideas</button>
-                <button onClick={() => setPersonModal(p)} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 8, cursor: "pointer" }}>✏️</button>
-                <button onClick={() => deletePerson(p.id)} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 8, cursor: "pointer" }}>🗑</button>
-              </div>
+      {RELATIONSHIPS.map(rel => {
+        const inRel = pp => { const r = pp.relationship || "Other"; return rel === "Other" ? (r === "Other" || !RELATIONSHIPS.includes(r)) : r === rel; };
+        const group = people.filter(inRel);
+        if (group.length === 0) return null; // no line for empty sections
+        const label = rel === "Friend" ? "Friends" : rel === "Colleague" ? "Colleagues" : rel;
+        return (
+          <div key={rel} style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em", paddingBottom: 8, borderBottom: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>{label} <span style={{ fontWeight: 400, textTransform: "none" }}>· {group.length}</span></div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: 12 }}>
+              {group.map(p => {
+                const k = nextKeyDate(p);
+                return (
+                  <div key={p.id} style={{ background: "var(--color-background-primary)", borderRadius: 13, border: "0.5px solid var(--color-border-tertiary)", padding: 16 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 10 }}>
+                      <div style={{ width: 40, height: 40, borderRadius: "50%", background: hex2rgba(ac, 0.14), color: ac, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, fontWeight: 600, flexShrink: 0 }}>{(p.name || "?").slice(0, 1).toUpperCase()}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{p.relationship}{p.typicalBudget ? ` · ~${fmtMoney(p.typicalBudget, true)}` : ""}{p.autoBirthday ? " · 🎂 auto" : ""}</div>
+                      </div>
+                    </div>
+                    {k ? (
+                      <div style={{ fontSize: 12, color: k.days <= (p.reminderLeadDays || 14) ? ac : "var(--color-text-secondary)", marginBottom: 12, fontWeight: k.days <= (p.reminderLeadDays || 14) ? 500 : 400 }}>{k.icon} {k.label} in {k.days} day{k.days !== 1 ? "s" : ""} · {fmtShort(k.date)}</div>
+                    ) : <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>No key dates set</div>}
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => setGiftModal({ person: p, occasion: k })} style={{ flex: 1, fontSize: 12, padding: "7px 0", background: ac, color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontWeight: 500 }}>🎁 Gift ideas</button>
+                      <button onClick={() => setPersonModal(p)} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 8, cursor: "pointer" }}>✏️</button>
+                      <button onClick={() => deletePerson(p.id)} style={{ fontSize: 13, padding: "7px 10px", borderRadius: 8, cursor: "pointer" }}>🗑</button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
