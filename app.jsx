@@ -35,13 +35,12 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["today","important-dates","people","finance","insights","audit","settings"];
+const VIEWS = ["today","important-dates","people","finance","audit","settings"];
 const VIEW_META = {
   today: { icon: "☀️", label: "Tasks" },
   "important-dates": { icon: "🎂", label: "Important Dates" },
   people: { icon: "🎁", label: "People" },
   finance: { icon: "💷", label: "Finance" },
-  insights: { icon: "📊", label: "Insights" },
   audit: { icon: "🛡️", label: "Life Audit" },
   settings: { icon: "⚙️", label: "Settings" }
 };
@@ -54,7 +53,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1532,6 +1531,31 @@ function AddItemRow({ accentColor, onAdd }) {
   );
 }
 
+function CurrentAccountModal({ account, accentColor, onSave, onClose }) {
+  const blank = { name: "", institution: "", balance: "", linked: false };
+  const [a, setA] = useState({ ...blank, ...(account || {}) });
+  const up = (k, v) => setA(x => ({ ...x, [k]: v }));
+  const ac = accentColor;
+  const inp = { width: "100%", boxSizing: "border-box" };
+  return (
+    <Modal onClose={onClose} width={400}>
+      <ModalHeader title={account?.id ? "Edit current account" : "New current account"} onClose={onClose} />
+      <Field label="Name"><input placeholder="e.g. Lloyds Club, Monzo" value={a.name} onChange={e => up("name", e.target.value)} style={inp} autoFocus /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Bank / provider"><input placeholder="e.g. Lloyds" value={a.institution} onChange={e => up("institution", e.target.value)} style={inp} /></Field>
+        <Field label="Current balance (£)"><input type="number" step="0.01" placeholder="0.00" value={a.balance} onChange={e => up("balance", e.target.value)} style={inp} /></Field>
+      </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer" }}>
+        <input type="checkbox" checked={!!a.linked} onChange={e => up("linked", e.target.checked)} /> Link this to my bank (auto-updates once Open Banking is on — Phase B)
+      </label>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (a.name.trim()) onSave({ id: account?.id || genId(), name: a.name.trim(), institution: a.institution, balance: parseFloat(a.balance) || 0, linked: !!a.linked }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{account?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
 const SAVINGS_TYPES = [["general", "💰 General savings"], ["emergency", "🚨 Emergency fund"], ["isa", "📈 ISA"], ["goal", "🎯 Goal pot"], ["other", "🏦 Other"]];
 function savTypeLabel(t) { const m = SAVINGS_TYPES.find(x => x[0] === t); return m ? m[1] : SAVINGS_TYPES[0][1]; }
 
@@ -1965,6 +1989,7 @@ function FinanceView({ state, up, accentColor }) {
   const [debtModal, setDebtModal] = useState(null);
   const [debtStrategy, setDebtStrategy] = useState("avalanche");
   const [savDate, setSavDate] = useState("");
+  const [caModal, setCaModal] = useState(null);
   const [planText, setPlanText] = useState("");
   const [txnFilter, setTxnFilter] = useState("");
   const [txnSearch, setTxnSearch] = useState("");
@@ -2085,6 +2110,9 @@ function FinanceView({ state, up, accentColor }) {
   const debts = state.debts || [];
   function saveDebt(dt) { up({ debts: debts.some(x => x.id === dt.id) ? debts.map(x => x.id === dt.id ? dt : x) : [...debts, dt] }); setDebtModal(null); }
   function deleteDebt(id) { if (confirm("Delete this debt?")) up({ debts: debts.filter(d => d.id !== id) }); }
+  const currentAccounts = state.currentAccounts || [];
+  function saveCA(c) { up({ currentAccounts: currentAccounts.some(x => x.id === c.id) ? currentAccounts.map(x => x.id === c.id ? c : x) : [...currentAccounts, c] }); setCaModal(null); }
+  function deleteCA(id) { if (confirm("Delete this account?")) up({ currentAccounts: currentAccounts.filter(c => c.id !== id) }); }
   function importCSV(file) {
     if (!file) return;
     const reader = new FileReader();
@@ -2120,6 +2148,7 @@ function FinanceView({ state, up, accentColor }) {
       {potModal && <PotModal pot={potModal.pot} importantDates={state.importantDates || []} accentColor={ac} onSave={p => savePot(potModal.accId, p)} onClose={() => setPotModal(null)} />}
       {subModal !== null && <SubModal sub={subModal === "new" ? null : subModal} cats={cats} accentColor={ac} onSave={saveSub} onClose={() => setSubModal(null)} />}
       {debtModal !== null && <DebtModal debt={debtModal === "new" ? null : debtModal} accentColor={ac} onSave={saveDebt} onClose={() => setDebtModal(null)} />}
+      {caModal !== null && <CurrentAccountModal account={caModal === "new" ? null : caModal} accentColor={ac} onSave={saveCA} onClose={() => setCaModal(null)} />}
 
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
@@ -2336,8 +2365,36 @@ function FinanceView({ state, up, accentColor }) {
         const proj = [0, 6, 12, 18, 24].map(m => ({ label: m === 0 ? "Now" : "+" + m + "m", value: savings.reduce((s, a) => s + projectBalance(a.balance, a.contribution, a.rate, m), 0), color: "#1D9E75" }));
         return (
           <div>
-            {/* Net worth — top */}
-            <NetWorth state={state} up={up} accentColor={ac} />
+            {/* Current / Debit accounts — top */}
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>🏦 Current / Debit accounts</div>
+                <button onClick={() => setCaModal("new")} style={{ fontSize: 13, padding: "6px 14px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Account</button>
+              </div>
+              {currentAccounts.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2px 0 6px" }}>Add your everyday current/debit accounts to see your spending money separate from savings. Link them to your bank in Phase B to auto-update.</div>}
+              {currentAccounts.length > 0 && (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
+                    <StatCard label="In current accounts" value={fmtMoney(currentAccounts.reduce((s, c) => s + (Number(c.balance) || 0), 0))} color={ac} sub="available to spend" />
+                  </div>
+                  {currentAccounts.map(c => (
+                    <div key={c.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 22 }}>🏦</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 600, fontSize: 15 }}>{c.name}</span>
+                          {c.linked && <span style={{ fontSize: 10, background: hex2rgba(ac, 0.14), color: ac, padding: "1px 7px", borderRadius: 10, fontWeight: 500 }}>🔗 Bank link (Phase B)</span>}
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{c.institution || "Current account"}</div>
+                      </div>
+                      <div style={{ fontSize: 17, fontWeight: 600, color: ac }}>{fmtMoney(c.balance)}</div>
+                      <button onClick={() => setCaModal(c)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+                      <button onClick={() => deleteCA(c.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
 
             {/* Savings — middle */}
             <div style={{ marginTop: 26, paddingTop: 20, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
@@ -3441,6 +3498,65 @@ function PeopleView({ state, up, accentColor, onAddTask }) {
   );
 }
 
+// Task insights (now a tab inside the Tasks hub).
+function TasksInsights({ state, allTasks, overdueTasks, accentColor, onGoFinance }) {
+  const ac = accentColor;
+  const total = allTasks.length;
+  const done = allTasks.filter(t => t.done).length;
+  const pct = total ? Math.round(done / total * 100) : 0;
+  return (
+    <div style={{ maxWidth: 600 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10, marginBottom: 16 }}>
+        {[["Total", total, ac], ["Done", done, "#639922"], ["Pending", total - done, "#EF9F27"], ["Overdue", overdueTasks.length, "#E24B4A"]].map(([l, v, c]) => (
+          <div key={l} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: "16px 14px", border: "0.5px solid var(--color-border-tertiary)", textAlign: "center" }}>
+            <div style={{ fontSize: 26, fontWeight: 500, color: c }}>{v}</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 3 }}>{l}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 10 }}>Overall progress</div>
+        <div style={{ height: 14, background: "var(--color-background-secondary)", borderRadius: 7, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: `${pct}%`, background: ac, borderRadius: 7, transition: "width 0.5s" }} />
+        </div>
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6 }}>{pct}% complete · {done} of {total} tasks done</div>
+      </div>
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>By priority</div>
+        {Object.keys(PRIORITY).map(p => {
+          const cnt = allTasks.filter(t => t.priority === p).length;
+          const dc = allTasks.filter(t => t.priority === p && t.done).length;
+          return (
+            <div key={p} style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, marginBottom: 4 }}><PriBadge p={p} /><span style={{ color: "var(--color-text-secondary)" }}>{dc}/{cnt}</span></div>
+              <div style={{ height: 7, background: "var(--color-background-secondary)", borderRadius: 4 }}>
+                <div style={{ height: "100%", width: `${cnt ? Math.round(dc / cnt * 100) : 0}%`, background: PRIORITY[p].color, borderRadius: 4 }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 10 }}>By group</div>
+        {state.groups.map(g => {
+          const cnt = allTasks.filter(t => t.groupId === g.id).length;
+          const dc = allTasks.filter(t => t.groupId === g.id && t.done).length;
+          if (!cnt) return null;
+          return (
+            <div key={g.id} style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span>{g.emoji} {g.name}</span><span style={{ color: "var(--color-text-secondary)" }}>{dc}/{cnt}</span></div>
+              <div style={{ height: 7, background: "var(--color-background-secondary)", borderRadius: 4 }}>
+                <div style={{ height: "100%", width: `${Math.round(dc / cnt * 100)}%`, background: g.color || ac, borderRadius: 4 }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>💷 Money insights live with the charts — find them under <button onClick={onGoFinance} style={{ background: "none", border: "none", padding: 0, color: ac, cursor: "pointer", font: "inherit", textDecoration: "underline" }}>Finance → Trends</button>.</div>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 function App({ user }) {
@@ -3650,7 +3766,7 @@ function App({ user }) {
           {view === "today" && (
             <div>
               <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-                {[["list", "📋 List"], ["calendar", "🗓 Calendar"], ["groups", "📁 Groups"]].map(([m, l]) => (
+                {[["list", "📋 List"], ["calendar", "🗓 Calendar"], ["groups", "📁 Groups"], ["insights", "📊 Insights"]].map(([m, l]) => (
                   <button key={m} onClick={() => setTodayMode(m)} style={{ fontSize: 13, padding: "7px 14px", borderRadius: 9, cursor: "pointer", border: "none", background: todayMode === m ? ac : "var(--color-background-secondary)", color: todayMode === m ? "#fff" : "var(--color-text-secondary)", fontWeight: todayMode === m ? 500 : 400 }}>{l}</button>
                 ))}
               </div>
@@ -3741,6 +3857,10 @@ function App({ user }) {
               })}
             </div>
               )}
+
+              {todayMode === "insights" && (
+                <TasksInsights state={state} allTasks={allTasks} overdueTasks={overdueTasks} accentColor={ac} onGoFinance={() => setView("finance")} />
+              )}
             </div>
           )}
 
@@ -3799,58 +3919,6 @@ function App({ user }) {
           )}
 
           {/* Insights */}
-          {view === "insights" && (
-            <div style={{ maxWidth: 600 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10, marginBottom: 16 }}>
-                {[["Total", total, ac], ["Done", done, "#639922"], ["Pending", total - done, "#EF9F27"], ["Overdue", overdueTasks.length, "#E24B4A"]].map(([l, v, c]) => (
-                  <div key={l} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: "16px 14px", border: "0.5px solid var(--color-border-tertiary)", textAlign: "center" }}>
-                    <div style={{ fontSize: 26, fontWeight: 500, color: c }}>{v}</div>
-                    <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 3 }}>{l}</div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
-                <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 10 }}>Overall progress</div>
-                <div style={{ height: 14, background: "var(--color-background-secondary)", borderRadius: 7, overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${pct}%`, background: ac, borderRadius: 7, transition: "width 0.5s" }} />
-                </div>
-                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6 }}>{pct}% complete · {done} of {total} tasks done</div>
-              </div>
-              <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
-                <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>By priority</div>
-                {Object.keys(PRIORITY).map(p => {
-                  const cnt = allTasks.filter(t => t.priority === p).length;
-                  const dc = allTasks.filter(t => t.priority === p && t.done).length;
-                  return (
-                    <div key={p} style={{ marginBottom: 10 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, marginBottom: 4 }}><PriBadge p={p} /><span style={{ color: "var(--color-text-secondary)" }}>{dc}/{cnt}</span></div>
-                      <div style={{ height: 7, background: "var(--color-background-secondary)", borderRadius: 4 }}>
-                        <div style={{ height: "100%", width: `${cnt ? Math.round(dc / cnt * 100) : 0}%`, background: PRIORITY[p].color, borderRadius: 4 }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
-                <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 10 }}>By group</div>
-                {state.groups.map(g => {
-                  const cnt = allTasks.filter(t => t.groupId === g.id).length;
-                  const dc = allTasks.filter(t => t.groupId === g.id && t.done).length;
-                  if (!cnt) return null;
-                  return (
-                    <div key={g.id} style={{ marginBottom: 10 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span>{g.emoji} {g.name}</span><span style={{ color: "var(--color-text-secondary)" }}>{dc}/{cnt}</span></div>
-                      <div style={{ height: 7, background: "var(--color-background-secondary)", borderRadius: 4 }}>
-                        <div style={{ height: "100%", width: `${Math.round(dc / cnt * 100)}%`, background: g.color || ac, borderRadius: 4 }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ marginTop: 24, fontSize: 13, color: "var(--color-text-secondary)" }}>💷 Money insights have moved in with the charts — find them under <button onClick={() => setView("finance")} style={{ background: "none", border: "none", padding: 0, color: ac, cursor: "pointer", font: "inherit", textDecoration: "underline" }}>Finance → Trends</button>.</div>
-            </div>
-          )}
-
           {/* People / Personas */}
           {view === "people" && <PeopleView state={state} up={up} accentColor={ac} onAddTask={saveTask} />}
 
