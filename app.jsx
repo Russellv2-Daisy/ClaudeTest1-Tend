@@ -55,7 +55,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1762,7 +1762,6 @@ function NetWorth({ state, up, accentColor }) {
   const assets = savingsTotal + investTotal;
   const debtTotal = debts.reduce((s, d) => s + (Number(d.balance) || 0), 0);
   const nw = assets - debtTotal;
-  const [dn, setDn] = useState(""); const [db, setDb] = useState("");
   const mk = curMonthKey();
   useEffect(() => {
     const hist = state.netWorthHistory || {};
@@ -1771,27 +1770,13 @@ function NetWorth({ state, up, accentColor }) {
   const hist = state.netWorthHistory || {};
   const months = Object.keys(hist).sort().slice(-6);
   const bars = months.map(m => ({ label: monthShort(m), value: Math.max(0, hist[m]), color: "#7F77DD" }));
-  const addDebt = () => { if (!dn.trim()) return; up({ debts: [...debts, { id: genId(), name: dn.trim(), balance: parseFloat(db) || 0 }] }); setDn(""); setDb(""); };
   return (
     <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14 }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
         <div style={{ fontSize: 14, fontWeight: 600 }}>📈 Net worth</div>
         <div style={{ fontSize: 24, fontWeight: 700, color: nw >= 0 ? "#1D9E75" : "#E24B4A" }}>{fmtMoney(nw)}</div>
       </div>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Assets {fmtMoney(assets, true)} (savings {fmtMoney(savingsTotal, true)}{investTotal > 0 ? ` + investments ${fmtMoney(investTotal, true)}` : ""}) − Debts {fmtMoney(debtTotal, true)}</div>
-      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 6 }}>DEBTS (credit cards, loans…)</div>
-      {debts.map(d => (
-        <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 5 }}>
-          <span style={{ flex: 1 }}>💳 {d.name}</span>
-          <span style={{ color: "#E24B4A" }}>−{fmtMoney(d.balance, true)}</span>
-          <button onClick={() => up({ debts: debts.filter(x => x.id !== d.id) })} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "var(--color-text-secondary)" }}>×</button>
-        </div>
-      ))}
-      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-        <input placeholder="Debt name (e.g. Visa)" value={dn} onChange={e => setDn(e.target.value)} onKeyDown={e => e.key === "Enter" && addDebt()} style={{ flex: 1, fontSize: 13 }} />
-        <input type="number" placeholder="£ owed" value={db} onChange={e => setDb(e.target.value)} style={{ width: 90, fontSize: 13 }} />
-        <button onClick={addDebt} style={{ padding: "0 14px", fontSize: 13 }}>+</button>
-      </div>
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Assets {fmtMoney(assets, true)} (savings {fmtMoney(savingsTotal, true)}{investTotal > 0 ? ` + investments ${fmtMoney(investTotal, true)}` : ""}) − Debts {fmtMoney(debtTotal, true)}</div>
       {bars.length >= 2 && (
         <div style={{ marginTop: 16 }}>
           <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8 }}>Net worth over time</div>
@@ -1799,6 +1784,88 @@ function NetWorth({ state, up, accentColor }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Average daily spend over the last `days` from real spend transactions.
+function avgDailySpendRecent(state, days) {
+  const cut = new Date(); cut.setDate(cut.getDate() - days);
+  const from = cut.getFullYear() + "-" + String(cut.getMonth() + 1).padStart(2, "0") + "-" + String(cut.getDate()).padStart(2, "0");
+  const sum = (state.transactions || []).filter(t => t.type !== "income" && (t.date || "") >= from).reduce((s, t) => s + (Number(t.amount) || 0), 0);
+  return sum / days;
+}
+function lastDayOfMonthStr() { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10); }
+
+// "Will I have enough on the 28th?" — projects current balance to a target date
+// using average spend, plus any income you expect before then.
+function CashFlowForecast({ state, up, accentColor }) {
+  const ac = accentColor;
+  const cf = state.cashFlow || {};
+  const [target, setTarget] = useState(lastDayOfMonthStr());
+  const recentPerDay = avgDailySpendRecent(state, 60);
+  const d = new Date(); const dim = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  const planSpend = monthStats(state, curMonthKey()).plannedTotal || 0;
+  const usingTxns = recentPerDay > 0;
+  const perDay = usingTxns ? recentPerDay : planSpend / dim;
+  const balance = Number(cf.balance) || 0;
+  const income = Number(cf.expectedIncome) || 0;
+  const daysLeft = Math.max(0, daysUntil(target) || 0);
+  const projSpend = perDay * daysLeft;
+  const projected = balance + income - projSpend;
+  const safeDaily = daysLeft > 0 ? Math.max(0, (balance + income) / daysLeft) : 0;
+  const col = projected >= 0 ? "#1D9E75" : "#E24B4A";
+  const setCf = (k, v) => up({ cashFlow: { ...cf, [k]: v } });
+  const numStyle = { width: "100%", boxSizing: "border-box", fontSize: 14 };
+  return (
+    <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 16 }}>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>🔮 Cash flow forecast</div>
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Will your balance last? Projects forward using your {usingTxns ? "average spend (last 60 days)" : "monthly plan (add transactions for a sharper estimate)"}.</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <div><div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4 }}>Balance now (£)</div><input type="number" step="0.01" placeholder="0.00" value={cf.balance ?? ""} onChange={e => setCf("balance", e.target.value)} style={numStyle} /></div>
+        <div><div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4 }}>Income still to come (£)</div><input type="number" step="0.01" placeholder="0.00" value={cf.expectedIncome ?? ""} onChange={e => setCf("expectedIncome", e.target.value)} style={numStyle} /></div>
+        <div><div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4 }}>By date</div><input type="date" value={target} onChange={e => setTarget(e.target.value)} style={numStyle} /></div>
+      </div>
+      <div style={{ background: hex2rgba(col, 0.08), border: `1px solid ${hex2rgba(col, 0.3)}`, borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 170 }}>
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Projected balance on {fmtShort(target)}</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: col }}>{fmtMoney(projected)}</div>
+          <div style={{ fontSize: 11.5, color: col, marginTop: 2 }}>{projected >= 0 ? "you should be in the black 🎉" : `short by ${fmtMoney(Math.abs(projected), true)} — ease off spending`}</div>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
+          <div>Balance <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(balance, true)}</b></div>
+          <div>+ Income to come <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(income, true)}</b></div>
+          <div>− Spend over {daysLeft} day{daysLeft !== 1 ? "s" : ""} <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(projSpend, true)}</b></div>
+          <div style={{ color: "var(--color-text-secondary)" }}>≈ {fmtMoney(perDay, true)}/day</div>
+        </div>
+      </div>
+      {daysLeft > 0 && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>To reach {fmtShort(target)} at exactly £0 you can spend ~<b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(safeDaily, true)}/day</b>.</div>}
+    </div>
+  );
+}
+
+function DebtModal({ debt, accentColor, onSave, onClose }) {
+  const blank = { name: "", balance: "", rate: "", minPayment: "" };
+  const [d, setD] = useState({ ...blank, ...(debt || {}) });
+  const up = (k, v) => setD(x => ({ ...x, [k]: v }));
+  const ac = accentColor;
+  const inp = { width: "100%", boxSizing: "border-box" };
+  return (
+    <Modal onClose={onClose} width={420}>
+      <ModalHeader title={debt?.id ? "Edit debt" : "New debt"} onClose={onClose} />
+      <Field label="Name"><input placeholder="e.g. Visa, Car loan, Klarna" value={d.name} onChange={e => up("name", e.target.value)} style={inp} autoFocus /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <Field label="Balance owed (£)"><input type="number" step="0.01" placeholder="0.00" value={d.balance} onChange={e => up("balance", e.target.value)} style={inp} /></Field>
+        <Field label="Interest (% APR)"><input type="number" step="0.01" placeholder="e.g. 22.9" value={d.rate} onChange={e => up("rate", e.target.value)} style={inp} /></Field>
+        <Field label="Min payment (£/mo)"><input type="number" step="0.01" placeholder="0.00" value={d.minPayment} onChange={e => up("minPayment", e.target.value)} style={inp} /></Field>
+      </div>
+      {Number(d.balance) > 0 && Number(d.rate) > 0 && (
+        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 2 }}>Costs about {fmtMoney((Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12)} in interest per month.</div>
+      )}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (d.name.trim()) onSave({ id: debt?.id || genId(), name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0 }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
   );
 }
 
@@ -1812,6 +1879,8 @@ function FinanceView({ state, up, accentColor }) {
   const [insModal, setInsModal] = useState(null);
   const [potModal, setPotModal] = useState(null);
   const [subModal, setSubModal] = useState(null);
+  const [debtModal, setDebtModal] = useState(null);
+  const [debtStrategy, setDebtStrategy] = useState("avalanche");
   const [planText, setPlanText] = useState("");
   const [txnFilter, setTxnFilter] = useState("");
   const [txnSearch, setTxnSearch] = useState("");
@@ -1929,6 +1998,9 @@ function FinanceView({ state, up, accentColor }) {
   const subs = state.subscriptions || [];
   function saveSub(s) { up({ subscriptions: subs.some(x => x.id === s.id) ? subs.map(x => x.id === s.id ? s : x) : [...subs, s] }); setSubModal(null); }
   function deleteSub(id) { up({ subscriptions: subs.filter(s => s.id !== id) }); }
+  const debts = state.debts || [];
+  function saveDebt(dt) { up({ debts: debts.some(x => x.id === dt.id) ? debts.map(x => x.id === dt.id ? dt : x) : [...debts, dt] }); setDebtModal(null); }
+  function deleteDebt(id) { if (confirm("Delete this debt?")) up({ debts: debts.filter(d => d.id !== id) }); }
   function importCSV(file) {
     if (!file) return;
     const reader = new FileReader();
@@ -1963,6 +2035,7 @@ function FinanceView({ state, up, accentColor }) {
       {insModal !== null && <InsuranceModal policy={insModal === "new" ? null : insModal} cats={cats} accentColor={ac} onSave={saveInsurance} onClose={() => setInsModal(null)} />}
       {potModal && <PotModal pot={potModal.pot} importantDates={state.importantDates || []} accentColor={ac} onSave={p => savePot(potModal.accId, p)} onClose={() => setPotModal(null)} />}
       {subModal !== null && <SubModal sub={subModal === "new" ? null : subModal} cats={cats} accentColor={ac} onSave={saveSub} onClose={() => setSubModal(null)} />}
+      {debtModal !== null && <DebtModal debt={debtModal === "new" ? null : debtModal} accentColor={ac} onSave={saveDebt} onClose={() => setDebtModal(null)} />}
 
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
@@ -2009,6 +2082,7 @@ function FinanceView({ state, up, accentColor }) {
                   </div>
                 );
               })()}
+              <CashFlowForecast state={state} up={up} accentColor={ac} />
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 16 }}>
                 <StatCard label="Spent" value={fmtMoney(stats.spend)} color="#E24B4A" sub={`of ${fmtMoney(stats.plannedTotal)} planned`} />
                 <StatCard label="Remaining in plan" value={fmtMoney(stats.plannedTotal - stats.spend)} color={stats.plannedTotal - stats.spend >= 0 ? "#639922" : "#E24B4A"} sub={stats.plannedTotal ? `${Math.round(stats.spend / stats.plannedTotal * 100)}% used` : "no plan set"} />
@@ -2258,6 +2332,62 @@ function FinanceView({ state, up, accentColor }) {
               </>
             )}
             <NetWorth state={state} up={up} accentColor={ac} />
+
+            {/* Debts */}
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>💳 Debts</div>
+                <button onClick={() => setDebtModal("new")} style={{ fontSize: 13, padding: "6px 14px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Debt</button>
+              </div>
+              {debts.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2px 0 6px" }}>No debts tracked. Add credit cards, loans or car finance to see payoff order and what interest is costing you.</div>}
+              {debts.length > 0 && (() => {
+                const totalOwed = debts.reduce((s, d) => s + (Number(d.balance) || 0), 0);
+                const totalMin = debts.reduce((s, d) => s + (Number(d.minPayment) || 0), 0);
+                const monthlyInterest = debts.reduce((s, d) => s + (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12, 0);
+                const ordered = [...debts].sort((a, b) => debtStrategy === "avalanche" ? (Number(b.rate) || 0) - (Number(a.rate) || 0) : (Number(a.balance) || 0) - (Number(b.balance) || 0));
+                return (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
+                      <StatCard label="Total owed" value={fmtMoney(totalOwed)} color="#E24B4A" />
+                      <StatCard label="Min payments / mo" value={fmtMoney(totalMin)} />
+                      <StatCard label="Interest / mo" value={fmtMoney(monthlyInterest)} color="#E24B4A" sub="at current balances" />
+                    </div>
+                    <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>🎯 Payoff order</div>
+                        {[["avalanche", "Avalanche"], ["snowball", "Snowball"]].map(([v, l]) => (
+                          <button key={v} onClick={() => setDebtStrategy(v)} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 20, border: "none", cursor: "pointer", background: debtStrategy === v ? ac : "var(--color-background-secondary)", color: debtStrategy === v ? "#fff" : "var(--color-text-secondary)", fontWeight: debtStrategy === v ? 500 : 400 }}>{l}</button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>{debtStrategy === "avalanche" ? "Highest interest rate first — costs you the least overall." : "Smallest balance first — quick wins to keep you motivated."} Pay the minimum on all, then put any spare money on #1.</div>
+                      {ordered.map((d, i) => (
+                        <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "6px 0", borderBottom: i < ordered.length - 1 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                          <span style={{ width: 22, height: 22, borderRadius: "50%", background: i === 0 ? ac : "var(--color-background-secondary)", color: i === 0 ? "#fff" : "var(--color-text-secondary)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{i + 1}</span>
+                          <span style={{ flex: 1 }}>{d.name}{i === 0 && <span style={{ fontSize: 10.5, color: ac, marginLeft: 6 }}>pay this first</span>}</span>
+                          <span style={{ color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR</span>
+                          <span style={{ color: "#E24B4A", fontWeight: 500, minWidth: 64, textAlign: "right" }}>{fmtMoney(d.balance, true)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    {debts.map(d => {
+                      const mi = (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12;
+                      return (
+                        <div key={d.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
+                          <span style={{ fontSize: 22 }}>💳</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 15 }}>{d.name}</div>
+                            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR{d.minPayment ? ` · min ${fmtMoney(d.minPayment, true)}/mo` : ""}{mi > 0 ? ` · ~${fmtMoney(mi, true)}/mo interest` : ""}</div>
+                          </div>
+                          <div style={{ fontSize: 17, fontWeight: 600, color: "#E24B4A" }}>{fmtMoney(d.balance)}</div>
+                          <button onClick={() => setDebtModal(d)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+                          <button onClick={() => deleteDebt(d.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                        </div>
+                      );
+                    })}
+                  </>
+                );
+              })()}
+            </div>
           </div>
         );
       })()}
