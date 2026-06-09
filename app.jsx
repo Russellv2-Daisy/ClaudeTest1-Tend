@@ -310,7 +310,7 @@ function GroupModal({ group, accentColor, onSave, onClose }) {
 // ── Important Date Modal ──────────────────────────────────────────────────────
 
 function DateModal({ item, tags, groups, financeCats, accentColor, onSave, onClose }) {
-  const [d, setD] = useState(item || { title: "", date: "", type: "birthday", notes: "", tasks: [], cost: "", costCategory: "" });
+  const [d, setD] = useState(item || { title: "", date: "", type: "birthday", repeatMonths: 12, notes: "", tasks: [], cost: "", costCategory: "" });
   const [newTask, setNewTask] = useState("");
   const up = (k, v) => setD(p => ({ ...p, [k]: v }));
 
@@ -334,8 +334,13 @@ function DateModal({ item, tags, groups, financeCats, accentColor, onSave, onClo
           <Field label="Date">
             <input type="date" value={d.date} onChange={e => up("date", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} />
           </Field>
+          <Field label="Repeats">
+            <select value={d.repeatMonths || 12} onChange={e => up("repeatMonths", parseInt(e.target.value, 10))} style={{ width: "100%" }}>
+              {REPEAT_MONTH_OPTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </Field>
           <Field label="Notes">
-            <textarea placeholder="Add a note…" value={d.notes} onChange={e => up("notes", e.target.value)} rows={3} style={{ width: "100%", boxSizing: "border-box", resize: "vertical" }} />
+            <textarea placeholder="Add a note…" value={d.notes} onChange={e => up("notes", e.target.value)} rows={2} style={{ width: "100%", boxSizing: "border-box", resize: "vertical" }} />
           </Field>
         </div>
       </div>
@@ -372,7 +377,7 @@ function DateModal({ item, tags, groups, financeCats, accentColor, onSave, onClo
       </Field>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (d.title && d.date) onSave({ ...d, id: d.id || genId(), cost: parseFloat(d.cost) || 0 }); }} style={{ padding: "9px 20px", background: accentColor, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>
+        <button onClick={() => { if (d.title && d.date) onSave({ ...d, id: d.id || genId(), repeatMonths: Number(d.repeatMonths) || 12, cost: parseFloat(d.cost) || 0 }); }} style={{ padding: "9px 20px", background: accentColor, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>
           {item?.id ? "Save changes" : "Add date"}
         </button>
       </div>
@@ -455,7 +460,7 @@ function CalendarView({ tasks, importantDates, accentColor, onAddTask, onEditDat
     const monthDay = ds.slice(5);
     const scheduled = tasks.filter(t => t.scheduledDate === ds);
     const deadlines = tasks.filter(t => t.deadline === ds);
-    const dates = importantDates.filter(id => id.date && id.date.slice(5) === monthDay);
+    const dates = importantDates.filter(id => dateOccursOn(id, ds));
     return { scheduled, deadlines, dates };
   }
 
@@ -522,7 +527,7 @@ function CalendarView({ tasks, importantDates, accentColor, onAddTask, onEditDat
                 return (
                   <div key={id.id} onClick={() => onEditDate(id)} style={{ padding: "9px 12px", borderRadius: 9, background: hex2rgba(CAL_DATE, 0.12), marginBottom: 6, cursor: "pointer", borderLeft: `3px solid ${CAL_DATE}` }}>
                     <div style={{ fontSize: 13.5, fontWeight: 500 }}>{typeInfo?.icon} {id.title}</div>
-                    <div style={{ fontSize: 11, color: CAL_DATE, marginTop: 2 }}>Important date · repeats yearly</div>
+                    <div style={{ fontSize: 11, color: CAL_DATE, marginTop: 2 }}>Important date · repeats {repeatLabel(id.repeatMonths)}</div>
                   </div>
                 );
               })}
@@ -1034,6 +1039,14 @@ function projectBalance(balance, monthly, annualRatePct, months) {
   for (let k = 0; k < months; k++) b = b * (1 + i) + m;
   return b;
 }
+// Amortising loan: monthly payment, total payable and total interest over a term.
+function loanSchedule(balance, ratePct, months) {
+  const P = Number(balance) || 0, n = Number(months) || 0, r = (Number(ratePct) || 0) / 100 / 12;
+  if (n <= 0) return { monthly: 0, total: 0, interest: 0 };
+  const monthly = r === 0 ? P / n : P * r / (1 - Math.pow(1 + r, -n));
+  const total = monthly * n;
+  return { monthly, total, interest: total - P };
+}
 // Monthly contribution needed to reach target in `months`.
 function requiredMonthly(balance, annualRatePct, target, months) {
   balance = Number(balance) || 0; target = Number(target) || 0; months = Number(months) || 0;
@@ -1142,23 +1155,28 @@ function auditSubsMonthly(state) {
 // Derive a financial-health scorecard from existing finance state. Pure, no input.
 function financialHealth(state) {
   const stats = monthStats(state, curMonthKey());
-  const savings = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const savAccts = state.savingsAccounts || [];
+  const savings = savAccts.reduce((s, a) => s + (Number(a.balance) || 0), 0);
   const investVal = investmentTotals(state.investments).value;
+  const pensionVal = Number((state.pension || {}).currentPot) || 0;
   const debtTotal = (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0);
-  const netWorth = savings + investVal - debtTotal;
+  const netWorth = savings + investVal + pensionVal - debtTotal;
   const income = stats.income || stats.incomeProjected || 0;
   const monthlySpend = stats.spend || stats.plannedTotal || 0;
-  const contrib = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.contribution) || 0), 0);
-  const efMonths = monthlySpend > 0 ? savings / monthlySpend : null;
+  const contrib = savAccts.reduce((s, a) => s + (Number(a.contribution) || 0), 0);
+  // Emergency fund: prefer accounts explicitly flagged as emergency funds; else all savings.
+  const efAccts = savAccts.filter(a => a.type === "emergency");
+  const efPot = efAccts.length ? efAccts.reduce((s, a) => s + (Number(a.balance) || 0), 0) : savings;
+  const efMonths = monthlySpend > 0 ? efPot / monthlySpend : null;
   const savingsRate = income > 0 ? contrib / income * 100 : null;
   const subs = auditSubsMonthly(state);
   const subsPct = income > 0 ? subs / income * 100 : null;
   const monthNet = income - monthlySpend;
   const indicators = [
     { label: "Net worth", value: fmtMoney(netWorth, true), status: netWorth > 0 ? "good" : netWorth === 0 ? "warn" : "bad",
-      note: `Savings ${fmtMoney(savings, true)}${investVal > 0 ? ` + investments ${fmtMoney(investVal, true)}` : ""}${debtTotal > 0 ? ` − debts ${fmtMoney(debtTotal, true)}` : ""}` },
+      note: `Savings ${fmtMoney(savings, true)}${investVal > 0 ? ` + investments ${fmtMoney(investVal, true)}` : ""}${pensionVal > 0 ? ` + pension ${fmtMoney(pensionVal, true)}` : ""}${debtTotal > 0 ? ` − debts ${fmtMoney(debtTotal, true)}` : ""}` },
     { label: "Emergency fund", value: efMonths == null ? "—" : `${efMonths.toFixed(1)} mo`, status: efMonths == null ? "warn" : efMonths >= 6 ? "good" : efMonths >= 3 ? "warn" : "bad",
-      note: efMonths == null ? "Add savings & spending to gauge this" : "Months of spending your savings would cover (aim 3–6)" },
+      note: efMonths == null ? "Add savings & spending to gauge this" : `${efAccts.length ? "Your emergency fund" : "Your savings"} would cover this many months of spending (aim 3–6)` },
     { label: "Savings rate", value: savingsRate == null ? "—" : `${savingsRate.toFixed(0)}%`, status: savingsRate == null ? "warn" : savingsRate >= 20 ? "good" : savingsRate >= 10 ? "warn" : "bad",
       note: "Monthly savings as a share of income (aim 20%+)" },
     { label: "This month", value: `${monthNet >= 0 ? "+" : "−"}${fmtMoney(Math.abs(monthNet), true)}`, status: monthNet >= 0 ? "good" : "bad",
@@ -1217,7 +1235,7 @@ function monthStats(state, mk) {
   });
   (state.importantDates || []).forEach(d => {
     const amt = Number(d.cost) || 0;
-    if (amt > 0 && d.costCategory && d.date && d.date.slice(5, 7) === mk.slice(5, 7)) pushAuto(d.costCategory, { label: d.title || "Important date", amount: amt, source: "date" });
+    if (amt > 0 && d.costCategory && dateOccursInMonth(d, mk)) pushAuto(d.costCategory, { label: d.title || "Important date", amount: amt, source: "date" });
   });
   // Insurance premiums recur every month: monthly premium as-is; annual spread /12 (sinking fund).
   (state.insurance || []).forEach(p => {
@@ -1514,16 +1532,26 @@ function AddItemRow({ accentColor, onAdd }) {
   );
 }
 
+const SAVINGS_TYPES = [["general", "💰 General savings"], ["emergency", "🚨 Emergency fund"], ["isa", "📈 ISA"], ["goal", "🎯 Goal pot"], ["other", "🏦 Other"]];
+function savTypeLabel(t) { const m = SAVINGS_TYPES.find(x => x[0] === t); return m ? m[1] : SAVINGS_TYPES[0][1]; }
+
 function SavingsModal({ account, accentColor, onSave, onClose }) {
-  const blank = { name: "", institution: "", balance: "", contribution: "", rate: "", target: "", targetDate: "" };
+  const blank = { name: "", institution: "", type: "general", balance: "", contribution: "", rate: "", target: "", targetDate: "" };
   const [a, setA] = useState({ ...blank, ...(account || {}) });
   const up = (k, v) => setA(x => ({ ...x, [k]: v }));
   const ac = accentColor;
   return (
     <Modal onClose={onClose} width={420}>
       <ModalHeader title={account?.id ? "Edit savings account" : "New savings account"} onClose={onClose} />
-      <Field label="Name"><input placeholder="e.g. Emergency fund, House deposit" value={a.name} onChange={e => up("name", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} autoFocus /></Field>
-      <Field label="Provider / institution"><input placeholder="e.g. Club Lloyds Monthly Saver" value={a.institution} onChange={e => up("institution", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      <Field label="Name"><input placeholder="e.g. Rainy day, House deposit" value={a.name} onChange={e => up("name", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} autoFocus /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Account type">
+          <select value={a.type || "general"} onChange={e => up("type", e.target.value)} style={{ width: "100%" }}>
+            {SAVINGS_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </Field>
+        <Field label="Provider / institution"><input placeholder="e.g. Club Lloyds Saver" value={a.institution} onChange={e => up("institution", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Current balance (£)"><input type="number" step="0.01" placeholder="0.00" value={a.balance} onChange={e => up("balance", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
         <Field label="Monthly contribution (£)"><input type="number" step="0.01" placeholder="0.00" value={a.contribution} onChange={e => up("contribution", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
@@ -1534,7 +1562,7 @@ function SavingsModal({ account, accentColor, onSave, onClose }) {
       <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: -4 }}>🔒 Balances will sync automatically once your bank is linked. For now, enter them manually.</div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (a.name.trim()) onSave({ id: account?.id || genId(), name: a.name.trim(), institution: a.institution, balance: parseFloat(a.balance) || 0, contribution: parseFloat(a.contribution) || 0, rate: parseFloat(a.rate) || 0, target: parseFloat(a.target) || 0, targetDate: a.targetDate || "" }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{account?.id ? "Save" : "Add"}</button>
+        <button onClick={() => { if (a.name.trim()) onSave({ id: account?.id || genId(), name: a.name.trim(), institution: a.institution, type: a.type || "general", balance: parseFloat(a.balance) || 0, contribution: parseFloat(a.contribution) || 0, rate: parseFloat(a.rate) || 0, target: parseFloat(a.target) || 0, targetDate: a.targetDate || "" }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{account?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -1788,7 +1816,8 @@ function NetWorth({ state, up, accentColor }) {
   const debts = state.debts || [];
   const savingsTotal = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
   const investTotal = investmentTotals(state.investments).value;
-  const assets = savingsTotal + investTotal;
+  const pensionTotal = Number((state.pension || {}).currentPot) || 0;
+  const assets = savingsTotal + investTotal + pensionTotal;
   const debtTotal = debts.reduce((s, d) => s + (Number(d.balance) || 0), 0);
   const nw = assets - debtTotal;
   const mk = curMonthKey();
@@ -1799,13 +1828,23 @@ function NetWorth({ state, up, accentColor }) {
   const hist = state.netWorthHistory || {};
   const months = Object.keys(hist).sort().slice(-6);
   const bars = months.map(m => ({ label: monthShort(m), value: Math.max(0, hist[m]), color: "#7F77DD" }));
+  const Line = ({ label, value, neg }) => (Number(value) === 0) ? null : (
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0" }}>
+      <span style={{ color: "var(--color-text-secondary)" }}>{label}</span>
+      <span style={{ fontWeight: 500, color: neg ? "#E24B4A" : "var(--color-text-primary)" }}>{neg ? "−" : ""}{fmtMoney(value, true)}</span>
+    </div>
+  );
   return (
     <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ fontSize: 14, fontWeight: 600 }}>📈 Net worth</div>
         <div style={{ fontSize: 24, fontWeight: 700, color: nw >= 0 ? "#1D9E75" : "#E24B4A" }}>{fmtMoney(nw)}</div>
       </div>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Assets {fmtMoney(assets, true)} (savings {fmtMoney(savingsTotal, true)}{investTotal > 0 ? ` + investments ${fmtMoney(investTotal, true)}` : ""}) − Debts {fmtMoney(debtTotal, true)}</div>
+      <Line label="🐖 Savings" value={savingsTotal} />
+      <Line label="💹 Investments" value={investTotal} />
+      <Line label="🏖 Pension pot" value={pensionTotal} />
+      <Line label="💳 Debts & credit cards" value={debtTotal} neg />
+      {assets === 0 && debtTotal === 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Add savings, investments, a pension pot or debts to see your net worth build.</div>}
       {bars.length >= 2 && (
         <div style={{ marginTop: 16 }}>
           <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8 }}>Net worth over time</div>
@@ -1881,26 +1920,33 @@ function CashFlowForecast({ state, accentColor }) {
 }
 
 function DebtModal({ debt, accentColor, onSave, onClose }) {
-  const blank = { name: "", balance: "", rate: "", minPayment: "" };
+  const blank = { name: "", balance: "", rate: "", minPayment: "", termMonths: "" };
   const [d, setD] = useState({ ...blank, ...(debt || {}) });
   const up = (k, v) => setD(x => ({ ...x, [k]: v }));
   const ac = accentColor;
   const inp = { width: "100%", boxSizing: "border-box" };
+  const term = Number(d.termMonths) || 0;
+  const sched = (Number(d.balance) > 0 && term > 0) ? loanSchedule(d.balance, d.rate, term) : null;
   return (
-    <Modal onClose={onClose} width={420}>
-      <ModalHeader title={debt?.id ? "Edit debt" : "New debt"} onClose={onClose} />
+    <Modal onClose={onClose} width={440}>
+      <ModalHeader title={debt?.id ? "Edit debt / loan" : "New debt / loan"} onClose={onClose} />
       <Field label="Name"><input placeholder="e.g. Visa, Car loan, Klarna" value={d.name} onChange={e => up("name", e.target.value)} style={inp} autoFocus /></Field>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Balance owed (£)"><input type="number" step="0.01" placeholder="0.00" value={d.balance} onChange={e => up("balance", e.target.value)} style={inp} /></Field>
         <Field label="Interest (% APR)"><input type="number" step="0.01" placeholder="e.g. 22.9" value={d.rate} onChange={e => up("rate", e.target.value)} style={inp} /></Field>
         <Field label="Min payment (£/mo)"><input type="number" step="0.01" placeholder="0.00" value={d.minPayment} onChange={e => up("minPayment", e.target.value)} style={inp} /></Field>
+        <Field label="Term (months)"><input type="number" step="1" placeholder="e.g. 36" value={d.termMonths} onChange={e => up("termMonths", e.target.value)} style={inp} /></Field>
       </div>
-      {Number(d.balance) > 0 && Number(d.rate) > 0 && (
-        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 2 }}>Costs about {fmtMoney((Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12)} in interest per month.</div>
-      )}
+      {sched ? (
+        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 2, lineHeight: 1.7, background: "var(--color-background-secondary)", borderRadius: 8, padding: "10px 12px" }}>
+          Over {term} months you'd pay about <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(sched.monthly)}/mo</b> · total payable <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(sched.total)}</b> (<b style={{ color: "#E24B4A" }}>{fmtMoney(sched.interest)}</b> interest).
+        </div>
+      ) : (Number(d.balance) > 0 && Number(d.rate) > 0) ? (
+        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 2 }}>About {fmtMoney((Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12)} in interest per month. Add a term to see total payable.</div>
+      ) : null}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (d.name.trim()) onSave({ id: debt?.id || genId(), name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0 }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
+        <button onClick={() => { if (d.name.trim()) onSave({ id: debt?.id || genId(), name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0, termMonths: parseInt(d.termMonths, 10) || 0 }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -1918,6 +1964,7 @@ function FinanceView({ state, up, accentColor }) {
   const [subModal, setSubModal] = useState(null);
   const [debtModal, setDebtModal] = useState(null);
   const [debtStrategy, setDebtStrategy] = useState("avalanche");
+  const [savDate, setSavDate] = useState("");
   const [planText, setPlanText] = useState("");
   const [txnFilter, setTxnFilter] = useState("");
   const [txnSearch, setTxnSearch] = useState("");
@@ -2097,6 +2144,7 @@ function FinanceView({ state, up, accentColor }) {
             </div>
           ) : (
             <>
+              <CashFlowForecast state={state} accentColor={ac} />
               {(() => {
                 const savContrib = savings.reduce((s, a) => s + (Number(a.contribution) || 0), 0);
                 const buffer = Number(state.safetyBuffer) || 0;
@@ -2104,22 +2152,25 @@ function FinanceView({ state, up, accentColor }) {
                 const safe = expIncome - stats.plannedTotal - savContrib - buffer;
                 const col = safe >= 0 ? "#1D9E75" : "#E24B4A";
                 return (
-                  <div style={{ background: hex2rgba(col, 0.08), border: `1px solid ${hex2rgba(col, 0.3)}`, borderRadius: 14, padding: "16px 18px", marginBottom: 16, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-                    <div style={{ flex: 1, minWidth: 180 }}>
-                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 4 }}>💸 Safe to spend this month</div>
-                      <div style={{ fontSize: 30, fontWeight: 700, color: col }}>{fmtMoney(safe)}</div>
-                      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 4 }}>after your plan, savings{buffer > 0 ? " & buffer" : ""} — {safe >= 0 ? "free to spend" : "over budget; trim the plan"}</div>
-                    </div>
-                    <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
-                      <div>Income <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(expIncome, true)}</b></div>
-                      <div>− Planned outgoings <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(stats.plannedTotal, true)}</b></div>
-                      <div>− Savings contributions <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(savContrib, true)}</b></div>
-                      <div>− Safety buffer <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(buffer, true)}</b></div>
+                  <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 16 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>💸 Safe to spend this month</div>
+                    <div style={{ background: hex2rgba(col, 0.08), border: `1px solid ${hex2rgba(col, 0.3)}`, borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                      <div style={{ flex: 1, minWidth: 180 }}>
+                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Free to spend after plan &amp; savings</div>
+                        <div style={{ fontSize: 28, fontWeight: 700, color: col }}>{fmtMoney(safe)}</div>
+                        <div style={{ fontSize: 11.5, color: col, marginTop: 2 }}>{safe >= 0 ? "free to spend 🎉" : "over budget — trim the plan"}</div>
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
+                        <div>Income <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(expIncome, true)}</b></div>
+                        <div>− Planned outgoings <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(stats.plannedTotal, true)}</b></div>
+                        <div>− Savings contributions <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(savContrib, true)}</b></div>
+                        {buffer > 0 && <div>− Safety buffer <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(buffer, true)}</b></div>}
+                      </div>
                     </div>
                   </div>
                 );
               })()}
-              <CashFlowForecast state={state} accentColor={ac} />
+              <div style={{ marginBottom: 16 }}><NetWorth state={state} up={up} accentColor={ac} /></div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 16 }}>
                 <StatCard label="Spent" value={fmtMoney(stats.spend)} color="#E24B4A" sub={`of ${fmtMoney(stats.plannedTotal)} planned`} />
                 <StatCard label="Remaining in plan" value={fmtMoney(stats.plannedTotal - stats.spend)} color={stats.plannedTotal - stats.spend >= 0 ? "#639922" : "#E24B4A"} sub={stats.plannedTotal ? `${Math.round(stats.spend / stats.plannedTotal * 100)}% used` : "no plan set"} />
@@ -2310,11 +2361,25 @@ function FinanceView({ state, up, accentColor }) {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
                   <StatCard label="Total saved" value={fmtMoney(totalBal)} color="#1D9E75" />
                   <StatCard label="Saving / month" value={fmtMoney(totalContrib)} color={ac} />
+                  {(() => { const eoyM = Math.max(0, 11 - new Date().getMonth()); const v = savings.reduce((s, a) => s + projectBalance(a.balance, a.contribution, a.rate, eoyM), 0); return <StatCard label={`By end of ${new Date().getFullYear()}`} value={fmtMoney(v)} color="#1D9E75" sub={`${eoyM} month${eoyM !== 1 ? "s" : ""} away`} />; })()}
                   <StatCard label="In 12 months" value={fmtMoney(proj[2].value)} color="#1D9E75" sub="at current pace" />
                 </div>
                 <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
                   <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 16 }}>Projected total savings</div>
                   <BarsChart data={proj} money />
+                </div>
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>🔮 How much will I have saved by…</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+                    <input type="date" value={savDate} onChange={e => setSavDate(e.target.value)} style={{ fontSize: 13 }} />
+                    {savDate && (() => {
+                      const m = monthsBetweenToday(savDate);
+                      if (m == null || m < 0) return <span style={{ fontSize: 13, color: "#E24B4A" }}>Pick a future date.</span>;
+                      const v = savings.reduce((s, a) => s + projectBalance(a.balance, a.contribution, a.rate, m), 0);
+                      return <span style={{ fontSize: 14 }}>By {fmtDate(savDate)} you'll have about <b style={{ color: "#1D9E75" }}>{fmtMoney(v)}</b> <span style={{ color: "var(--color-text-secondary)" }}>({m} month{m !== 1 ? "s" : ""} at your current pace)</span></span>;
+                    })()}
+                    {!savDate && <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Pick a date to forecast your total savings.</span>}
+                  </div>
                 </div>
                 {savings.map(a => {
                   const bal = Number(a.balance) || 0, target = Number(a.target) || 0;
@@ -2332,10 +2397,13 @@ function FinanceView({ state, up, accentColor }) {
                   return (
                     <div key={a.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                        <span style={{ fontSize: 22 }}>🐖</span>
+                        <span style={{ fontSize: 22 }}>{savTypeLabel(a.type).split(" ")[0]}</span>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: 600, fontSize: 15 }}>{a.name}</div>
-                          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{a.institution || "Savings"}{a.rate ? ` · ${a.rate}% AER` : ""}{a.contribution ? ` · ${fmtMoney(a.contribution, true)}/mo` : ""}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <span style={{ fontWeight: 600, fontSize: 15 }}>{a.name}</span>
+                            {a.type === "emergency" && <span style={{ fontSize: 10, background: hex2rgba("#E24B4A", 0.14), color: "#E24B4A", padding: "1px 7px", borderRadius: 10, fontWeight: 500 }}>Emergency fund</span>}
+                          </div>
+                          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{savTypeLabel(a.type).replace(/^\S+\s/, "")}{a.institution ? ` · ${a.institution}` : ""}{a.rate ? ` · ${a.rate}% AER` : ""}{a.contribution ? ` · ${fmtMoney(a.contribution, true)}/mo` : ""}</div>
                         </div>
                         <div style={{ textAlign: "right" }}>
                           <div style={{ fontSize: 17, fontWeight: 600, color: "#1D9E75" }}>{fmtMoney(bal)}</div>
@@ -2414,12 +2482,15 @@ function FinanceView({ state, up, accentColor }) {
                     </div>
                     {debts.map(d => {
                       const mi = (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12;
+                      const term = Number(d.termMonths) || 0;
+                      const sched = term > 0 ? loanSchedule(d.balance, d.rate, term) : null;
                       return (
                         <div key={d.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
                           <span style={{ fontSize: 22 }}>💳</span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontWeight: 600, fontSize: 15 }}>{d.name}</div>
-                            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR{d.minPayment ? ` · min ${fmtMoney(d.minPayment, true)}/mo` : ""}{mi > 0 ? ` · ~${fmtMoney(mi, true)}/mo interest` : ""}</div>
+                            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR{term > 0 ? ` · ${term}-month term` : ""}{d.minPayment ? ` · min ${fmtMoney(d.minPayment, true)}/mo` : ""}{mi > 0 ? ` · ~${fmtMoney(mi, true)}/mo interest` : ""}</div>
+                            {sched && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>≈ {fmtMoney(sched.monthly, true)}/mo · total payable <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(sched.total, true)}</b> ({fmtMoney(sched.interest, true)} interest)</div>}
                           </div>
                           <div style={{ fontSize: 17, fontWeight: 600, color: "#E24B4A" }}>{fmtMoney(d.balance)}</div>
                           <button onClick={() => setDebtModal(d)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
@@ -3018,6 +3089,28 @@ function dateMinusDays(dateStr, days) {
   const d = new Date(dateStr + "T00:00:00"); d.setDate(d.getDate() - (days || 0));
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
+// Important dates can repeat every N months (1/2/3/4/6/12). Default 12 = yearly.
+function dateOccursOn(item, ds) {
+  if (!item || !item.date || !ds) return false;
+  const rep = Number(item.repeatMonths) || 12;
+  const [by, bm, bd] = item.date.split("-").map(Number);
+  const [ty, tm, td] = ds.split("-").map(Number);
+  if (bd !== td) return false;
+  if (rep >= 12) return bm === tm;
+  const diff = (ty - by) * 12 + (tm - bm);
+  return diff >= 0 && diff % rep === 0;
+}
+function dateOccursInMonth(item, mk) {
+  if (!item || !item.date || !mk) return false;
+  const rep = Number(item.repeatMonths) || 12;
+  const [by, bm] = item.date.split("-").map(Number);
+  const [ty, tm] = mk.split("-").map(Number);
+  if (rep >= 12) return bm === tm;
+  const diff = (ty - by) * 12 + (tm - bm);
+  return diff >= 0 && diff % rep === 0;
+}
+function repeatLabel(rep) { rep = Number(rep) || 12; return rep >= 12 ? "yearly" : rep === 1 ? "monthly" : `every ${rep} months`; }
+const REPEAT_MONTH_OPTS = [[1, "Monthly"], [2, "Every 2 months"], [3, "Every 3 months"], [4, "Every 4 months"], [6, "Every 6 months"], [12, "Yearly"]];
 function personKeyDates(person) {
   const out = [];
   if (person.birthday) out.push({ label: "Birthday", icon: "🎂", date: nextOccurrence(person.birthday) });
@@ -3438,6 +3531,13 @@ function App({ user }) {
   // Upcoming (future-dated).
   const upcomingDate = t => t.scheduledDate && t.scheduledDate > today ? (t.deadline && t.deadline > today ? (t.scheduledDate < t.deadline ? t.scheduledDate : t.deadline) : t.scheduledDate) : (t.deadline && t.deadline > today ? t.deadline : null);
   const upcomingTasks = filterTasks(allTasks.filter(t => !t.done && !t.someday && upcomingDate(t))).sort((a, b) => upcomingDate(a).localeCompare(upcomingDate(b)));
+  // Bucket upcoming tasks by horizon: this month, next month, 3 / 6 / 12 months, later.
+  const lastDayOfMonthOffset = off => { const e = new Date(); const x = new Date(e.getFullYear(), e.getMonth() + off + 1, 0); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
+  const monthsAheadStr = n => { const x = new Date(); x.setMonth(x.getMonth() + n); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
+  const _eTM = lastDayOfMonthOffset(0), _eNM = lastDayOfMonthOffset(1), _p3 = monthsAheadStr(3), _p6 = monthsAheadStr(6), _p12 = monthsAheadStr(12);
+  const bucketOf = d => d <= _eTM ? "thisMonth" : d <= _eNM ? "nextMonth" : d <= _p3 ? "m3" : d <= _p6 ? "m6" : d <= _p12 ? "y1" : "later";
+  const upcomingBuckets = { thisMonth: [], nextMonth: [], m3: [], m6: [], y1: [], later: [] };
+  upcomingTasks.forEach(t => { upcomingBuckets[bucketOf(upcomingDate(t))].push(t); });
   // Rainy day (someday).
   const somedayTasks = filterTasks(allTasks.filter(t => t.someday && !t.done));
 
@@ -3583,7 +3683,12 @@ function App({ user }) {
                     {viewTasks.length > 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600, marginBottom: 8 }}>☀️ Today Tasks</div>}
                     {!allEmpty && viewTasks.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 4 }}>Nothing scheduled for today.</div>}
                     {viewTasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
-                    {!focusMode && <Section icon="📆" label="Upcoming" tasks={upcomingTasks} />}
+                    {!focusMode && <Section icon="📆" label="This month" tasks={upcomingBuckets.thisMonth} />}
+                    {!focusMode && <Section icon="📆" label="Next month" tasks={upcomingBuckets.nextMonth} />}
+                    {!focusMode && <Section icon="🗓" label="Within 3 months" tasks={upcomingBuckets.m3} />}
+                    {!focusMode && <Section icon="🗓" label="Within 6 months" tasks={upcomingBuckets.m6} />}
+                    {!focusMode && <Section icon="🗓" label="Within a year" tasks={upcomingBuckets.y1} />}
+                    {!focusMode && <Section icon="📌" label="Later" tasks={upcomingBuckets.later} />}
                     {!focusMode && <Section icon="📥" label="Unsorted" hint="no day set — schedule it or file into a group" tasks={unsortedTasks} />}
                     {!focusMode && <Section icon="🌂" label="Rainy Day" hint="for when you have free time" tasks={somedayTasks} />}
                     {completed.length > 0 && (
@@ -3665,7 +3770,7 @@ function App({ user }) {
                       <span style={{ fontSize: 26 }}>{ti?.icon || "📅"}</span>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: 500, fontSize: 14 }}>{d.title}</div>
-                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{fmtShort(d.date)} · repeats yearly</div>
+                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{fmtShort(d.date)} · repeats {repeatLabel(d.repeatMonths)}</div>
                         {d.notes && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{d.notes}</div>}
                         {upcoming && <div style={{ fontSize: 12, color: ac, marginTop: 3, fontWeight: 500 }}>Coming up in {du} day{du !== 1 ? "s" : ""}</div>}
                         {totalTodos > 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 3 }}>✓ {doneTodos}/{totalTodos} to-dos</div>}
