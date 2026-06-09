@@ -12,6 +12,10 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <title>Tend — your tasks, tended</title>
   <style>
+    /* Light is the default. Dark applies either via an explicit data-mode="dark"
+       override (set by the app), or via the OS setting when the user hasn't
+       forced a mode (data-mode absent / not light|dark). data-mode="light"
+       therefore wins over the OS preference. */
     :root {
       --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       --color-background-primary: #ffffff;
@@ -22,8 +26,17 @@
       --color-border-secondary: #c7c7cc;
       --color-border-tertiary: #e3e3e6;
     }
+    :root[data-mode="dark"] {
+      --color-background-primary: #1c1c1e;
+      --color-background-secondary: #2c2c2e;
+      --color-background-tertiary: #000000;
+      --color-text-primary: #f2f2f7;
+      --color-text-secondary: #98989f;
+      --color-border-secondary: #48484a;
+      --color-border-tertiary: #38383a;
+    }
     @media (prefers-color-scheme: dark) {
-      :root {
+      :root:not([data-mode="light"]):not([data-mode="dark"]) {
         --color-background-primary: #1c1c1e;
         --color-background-secondary: #2c2c2e;
         --color-background-tertiary: #000000;

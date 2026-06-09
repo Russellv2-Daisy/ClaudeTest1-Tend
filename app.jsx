@@ -55,7 +55,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], audit: {}, people: [], theme: "purple", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -563,6 +563,22 @@ function SettingsView({ state, up, accentColor, user, calendarToken }) {
 
   return (
     <div style={{ maxWidth: 560 }}>
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
+        <h3 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 500 }}>Appearance</h3>
+        <div style={{ display: "flex", gap: 8 }}>
+          {[["system", "🌗", "System"], ["light", "☀️", "Light"], ["dark", "🌙", "Dark"]].map(([val, icon, label]) => {
+            const active = (state.mode || "system") === val;
+            return (
+              <button key={val} onClick={() => up({ mode: val })} style={{ flex: 1, padding: "12px 8px", borderRadius: 11, cursor: "pointer", border: `1.5px solid ${active ? accentColor : "var(--color-border-tertiary)"}`, background: active ? hex2rgba(accentColor, 0.1) : "transparent", color: active ? accentColor : "var(--color-text-primary)", fontWeight: active ? 600 : 400, display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
+                <span style={{ fontSize: 20 }}>{icon}</span>
+                <span style={{ fontSize: 12.5 }}>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>System follows your device's light/dark setting automatically.</div>
+      </div>
+
       <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
         <h3 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 500 }}>Theme colour</h3>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -3127,6 +3143,19 @@ function App({ user }) {
     return () => window.removeEventListener("resize", onR);
   }, []);
 
+  // Apply light/dark mode. "system" follows the OS (remove the override attr);
+  // "light"/"dark" force it via [data-mode] on <html> (see index.html CSS).
+  const mode = state.mode || "system";
+  useEffect(() => {
+    const root = document.documentElement;
+    if (mode === "light" || mode === "dark") root.dataset.mode = mode;
+    else delete root.dataset.mode;
+    // Keep the iOS status-bar / PWA theme-color in step with the active scheme.
+    const dark = mode === "dark" || (mode === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", dark ? "#1c1c1e" : "#ffffff");
+  }, [mode]);
+
   const ac = accent(state.theme);
   const today = todayStr();
   const sidebarCollapsed = narrow ? false : collapsed; // on phones the drawer always shows full labels
@@ -3260,6 +3289,10 @@ function App({ user }) {
         <div style={{ padding: "12px 20px", background: "var(--color-background-primary)", borderBottom: "0.5px solid var(--color-border-tertiary)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           {narrow && <button onClick={() => setDrawerOpen(true)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, padding: "0 4px", color: "var(--color-text-secondary)" }}>☰</button>}
           <h1 style={{ margin: 0, fontSize: 17, fontWeight: 500, flex: 1 }}>{VIEW_META[view].icon} {VIEW_META[view].label}</h1>
+          {(() => {
+            const isDark = mode === "dark" || (mode === "system" && typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+            return <button onClick={() => up({ mode: isDark ? "light" : "dark" })} title={isDark ? "Switch to light mode" : "Switch to dark mode"} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 17, padding: "2px 6px", color: "var(--color-text-secondary)" }}>{isDark ? "☀️" : "🌙"}</button>;
+          })()}
           {overdueTasks.length > 0 && (
             <div style={{ fontSize: 12, background: "#FCEBEB", color: "#A32D2D", padding: "4px 10px", borderRadius: 20, fontWeight: 500 }}>⚠ {overdueTasks.length} overdue</div>
           )}
