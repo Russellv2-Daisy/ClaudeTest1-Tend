@@ -53,7 +53,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1144,10 +1144,11 @@ function pensionForecast(p) {
   const age = Number(p.currentAge) || 0;
   const retire = Number(p.retireAge) || 0;
   const years = Math.max(0, retire - age);
+  const contributing = p.contributing !== false; // false = paid-up, growth only
   let pot = pot0, salary = Number(p.salary) || 0, totalContrib = 0;
   const series = [{ age, pot }];
   for (let y = 0; y < years; y++) {
-    const contrib = salary * (empPct + erPct);
+    const contrib = contributing ? salary * (empPct + erPct) : 0;
     totalContrib += contrib;
     pot = pot * (1 + growth) + contrib;
     salary = salary * (1 + infl);
@@ -1161,11 +1162,28 @@ function pensionForecast(p) {
     annualIncome4: pot * 0.04, annualIncome4Real: potReal * 0.04, series,
   };
 }
-// Total of all pension pots (new multi-pension array, or the legacy single pension).
-function pensionPotsTotal(state) {
+// Full new UK State Pension (2024/25): £221.20/week ≈ £11,502/yr. Editable per person.
+const STATE_PENSION_WEEKLY = 221.20;
+// The working list of pensions — new array, or migrate the legacy single pension in.
+function pensionList(state) {
   const list = state.pensions;
-  if (Array.isArray(list) && list.length) return list.reduce((s, p) => s + (Number(p.currentPot) || 0), 0);
-  return Number((state.pension || {}).currentPot) || 0;
+  if (Array.isArray(list) && list.length) return list;
+  const legacy = state.pension || {};
+  if (Object.keys(legacy).some(k => legacy[k] !== "" && legacy[k] != null && legacy[k] !== 0)) {
+    return [{ id: "legacy", name: "My pension", type: "private", contributing: true, ...legacy }];
+  }
+  return [];
+}
+// State pension is an annual income from state-pension age, not a pot.
+function statePensionAnnual(p) { return (Number(p.weekly) || STATE_PENSION_WEEKLY) * 52; }
+// Total of all PRIVATE pension pots (state pension has no pot).
+function pensionPotsTotal(state) {
+  return pensionList(state).filter(p => p.type !== "state").reduce((s, p) => s + (Number(p.currentPot) || 0), 0);
+}
+// Your monthly contribution into all contributing private pensions (employee share only).
+function pensionMonthlyContribution(state) {
+  return pensionList(state).filter(p => p.type !== "state" && p.contributing !== false)
+    .reduce((s, p) => s + ((Number(p.salary) || 0) * (Number(p.employeePct) || 0) / 100) / 12, 0);
 }
 // How many years a pot lasts drawing `annualDraw`, compounding at `growthPct`.
 function potLastsYears(pot, annualDraw, growthPct) {
@@ -2285,6 +2303,25 @@ function FinanceView({ state, up, accentColor }) {
   const currentAccounts = state.currentAccounts || [];
   function saveCA(c) { up({ currentAccounts: currentAccounts.some(x => x.id === c.id) ? currentAccounts.map(x => x.id === c.id ? c : x) : [...currentAccounts, c] }); setCaModal(null); }
   function deleteCA(id) { if (confirm("Delete this account?")) up({ currentAccounts: currentAccounts.filter(c => c.id !== id) }); }
+  // Pensions: migrate the legacy single pension into the array once, then operate on the array.
+  useEffect(() => {
+    if ((state.pensions || []).length) return;
+    const legacy = state.pension || {};
+    if (Object.keys(legacy).some(k => legacy[k] !== "" && legacy[k] != null && legacy[k] !== 0)) {
+      up({ pensions: [{ id: genId(), name: "My pension", type: "private", contributing: true, ...legacy }], pension: {} });
+    }
+  }, []);
+  const pensions = state.pensions || [];
+  function setPension(list) { up({ pensions: list }); }
+  function addPension(type) {
+    const base = pensions[0] || {};
+    const p = type === "state"
+      ? { id: genId(), name: "State pension", type: "state", weekly: STATE_PENSION_WEEKLY, startAge: 67 }
+      : { id: genId(), name: `Pension ${pensions.filter(x => x.type !== "state").length + 1}`, type: "private", contributing: true, currentAge: base.currentAge || "", retireAge: base.retireAge || 67, currentPot: "", salary: base.salary || "", employeePct: 5, employerPct: 3, growthPct: 5, inflationPct: 2.5 };
+    setPension([...pensions, p]);
+  }
+  function setPensionById(id, k, v) { setPension(pensions.map(p => p.id === id ? { ...p, [k]: v } : p)); }
+  function deletePension(id) { if (confirm("Delete this pension?")) setPension(pensions.filter(p => p.id !== id)); }
   function importCSV(file) {
     if (!file) return;
     const reader = new FileReader();
@@ -2892,79 +2929,120 @@ function FinanceView({ state, up, accentColor }) {
 
       {/* ── Pension ── */}
       {tab === "pension" && (() => {
-        const p = state.pension || {};
-        const f = pensionForecast(p);
-        const ready = (Number(p.retireAge) || 0) > (Number(p.currentAge) || 0) && (Number(p.salary) || 0) > 0;
-        const step = Math.max(1, Math.round((f.series.length - 1) / 7) || 1);
-        const bars = f.series.filter((s, i) => i % step === 0 || i === f.series.length - 1).map(s => ({ label: String(s.age), value: Math.max(0, s.pot), color: "#7F77DD" }));
-        const scenarios = [["Cautious", -2, "#D85A30"], ["Your estimate", 0, "#7F77DD"], ["Optimistic", 2, "#1D9E75"]].map(([lbl, delta, col]) => {
-          const sf = pensionForecast({ ...p, growthPct: (Number(p.growthPct) || 0) + delta });
-          return { lbl, col, pot: sf.finalPot, income: sf.annualIncome4Real };
-        });
-        const fld = (label, key, opts) => (
+        const privates = pensions.filter(p => p.type !== "state");
+        const states = pensions.filter(p => p.type === "state");
+        const forecasts = privates.map(p => ({ p, f: pensionForecast(p) }));
+        const totalNowPot = pensionPotsTotal(state);
+        const totalFinal = forecasts.reduce((s, x) => s + x.f.finalPot, 0);
+        const privateIncomeReal = forecasts.reduce((s, x) => s + x.f.annualIncome4Real, 0);
+        const stateIncome = states.reduce((s, p) => s + statePensionAnnual(p), 0);
+        const combinedIncome = privateIncomeReal + stateIncome;
+        const monthlyContrib = pensionMonthlyContribution(state);
+        // Combined projected pot across all private pensions, by age.
+        let combinedBars = [];
+        if (forecasts.length) {
+          const allAges = forecasts.flatMap(x => x.f.series.map(s => s.age));
+          const minA = Math.min(...allAges), maxA = Math.max(...allAges);
+          const rows = [];
+          for (let a = minA; a <= maxA; a++) {
+            let pot = 0;
+            forecasts.forEach(x => { const ser = x.f.series; if (a < ser[0].age) return; const e = ser.find(s => s.age === a); pot += e ? e.pot : ser[ser.length - 1].pot; });
+            rows.push({ age: a, pot });
+          }
+          const step = Math.max(1, Math.round((rows.length - 1) / 7) || 1);
+          combinedBars = rows.filter((r, i) => i % step === 0 || i === rows.length - 1).map(r => ({ label: String(r.age), value: Math.max(0, r.pot), color: "#7F77DD" }));
+        }
+        const pfld = (p, label, key, opts) => (
           <Field label={label}>
-            <input type="number" step={opts?.step || "any"} placeholder={opts?.ph || ""} value={p[key] === 0 || p[key] ? p[key] : ""} onChange={e => setPensionField(key, e.target.value === "" ? "" : (parseFloat(e.target.value) || 0))} style={{ width: "100%", boxSizing: "border-box" }} />
+            <input type="number" step={opts?.step || "any"} placeholder={opts?.ph || ""} value={p[key] === 0 || p[key] ? p[key] : ""} onChange={e => setPensionById(p.id, key, e.target.value === "" ? "" : (parseFloat(e.target.value) || 0))} style={{ width: "100%", boxSizing: "border-box" }} />
           </Field>
         );
         return (
           <div>
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 14 }}>Project your pension pot to retirement, see it in today's money, and estimate the income it could provide.</div>
-            <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                {fld("Current age", "currentAge", { step: "1", ph: "e.g. 30" })}
-                {fld("Retirement age", "retireAge", { step: "1", ph: "e.g. 67" })}
-                {fld("Current pot (£)", "currentPot", { ph: "0" })}
-                {fld("Annual salary (£)", "salary", { ph: "e.g. 35000" })}
-                {fld("Your contribution (% of salary)", "employeePct", { ph: "e.g. 5" })}
-                {fld("Employer match (% of salary)", "employerPct", { ph: "e.g. 3" })}
-                {fld("Investment growth (%/yr)", "growthPct", { ph: "e.g. 5" })}
-                {fld("Inflation (%/yr)", "inflationPct", { ph: "e.g. 2.5" })}
+            {/* Summary dashboard */}
+            <SectionHead sub="Your whole retirement picture across every pension, plus the State Pension.">🏖 Pension dashboard</SectionHead>
+            {pensions.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 36, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 10 }}>🏖</div>
+                <div style={{ fontSize: 14, marginBottom: 14 }}>No pensions yet — add a workplace/private pension and your State Pension.</div>
               </div>
-            </div>
-
-            {!ready && (
-              <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>
-                Fill in your age, retirement age and salary above to see your forecast.
-              </div>
-            )}
-
-            {ready && (
+            ) : (
               <>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
-                  <StatCard label={`Pot at ${p.retireAge}`} value={fmtMoney(f.finalPot, true)} color={ac} sub={`in ${f.years} years`} />
-                  <StatCard label="In today's money" value={fmtMoney(f.finalPotReal, true)} sub="adjusted for inflation" />
-                  <StatCard label="You'll contribute" value={fmtMoney(f.totalContributions, true)} />
-                  <StatCard label="Growth earned" value={fmtMoney(f.growthEarned, true)} color="#1D9E75" />
+                  <StatCard label="Pots now" value={fmtMoney(totalNowPot, true)} />
+                  <StatCard label="Projected pot" value={fmtMoney(totalFinal, true)} color={ac} sub="at retirement" />
+                  <StatCard label="Retirement income" value={`${fmtMoney(combinedIncome, true)}/yr`} color="#1D9E75" sub="today's money" />
+                  <StatCard label="Paying in" value={`${fmtMoney(monthlyContrib, true)}/mo`} sub="auto-added to your plan" />
                 </div>
-
-                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
-                  <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 16 }}>Projected pot by age</div>
-                  <BarsChart data={bars} money />
-                </div>
-
-                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Retirement income</div>
-                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>A sustainable ~4% drawdown could give you roughly:</div>
-                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-                    <div><div style={{ fontSize: 22, fontWeight: 700, color: ac }}>{fmtMoney(f.annualIncome4Real, true)}<span style={{ fontSize: 13, fontWeight: 400, color: "var(--color-text-secondary)" }}>/yr</span></div><div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>in today's money</div></div>
-                    <div><div style={{ fontSize: 22, fontWeight: 700 }}>{fmtMoney(f.annualIncome4Real / 12, true)}<span style={{ fontSize: 13, fontWeight: 400, color: "var(--color-text-secondary)" }}>/mo</span></div><div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>in today's money</div></div>
+                {combinedBars.length > 0 && (
+                  <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                    <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 16 }}>Combined pot by age (all private pensions)</div>
+                    <BarsChart data={combinedBars} money />
                   </div>
-                </div>
-
-                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Scenarios</div>
-                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>If growth is ±2% from your estimate (income in today's money):</div>
-                  {scenarios.map(s => (
-                    <div key={s.lbl} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 7 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: 3, background: s.col, flexShrink: 0 }} />
-                      <span style={{ flex: 1 }}>{s.lbl}</span>
-                      <span style={{ color: "var(--color-text-secondary)", minWidth: 90, textAlign: "right" }}>{fmtMoney(s.pot, true)} pot</span>
-                      <span style={{ fontWeight: 600, minWidth: 90, textAlign: "right" }}>{fmtMoney(s.income, true)}/yr</span>
-                    </div>
-                  ))}
+                )}
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 6 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Estimated retirement income (today's money)</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}><span style={{ color: "var(--color-text-secondary)" }}>Private pensions (≈4% drawdown)</span><span style={{ fontWeight: 500 }}>{fmtMoney(privateIncomeReal, true)}/yr</span></div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}><span style={{ color: "var(--color-text-secondary)" }}>State Pension</span><span style={{ fontWeight: 500 }}>{fmtMoney(stateIncome, true)}/yr</span></div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, padding: "8px 0 0", marginTop: 6, borderTop: "0.5px solid var(--color-border-tertiary)", fontWeight: 700 }}><span>Combined</span><span style={{ color: ac }}>{fmtMoney(combinedIncome, true)}/yr · {fmtMoney(combinedIncome / 12, true)}/mo</span></div>
                 </div>
               </>
             )}
+
+            <div style={{ display: "flex", gap: 8, margin: "18px 0 14px", flexWrap: "wrap" }}>
+              <button onClick={() => addPension("private")} style={{ fontSize: 13, padding: "8px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Private pension</button>
+              {states.length === 0 && <button onClick={() => addPension("state")} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 9, cursor: "pointer" }}>+ State Pension</button>}
+            </div>
+
+            {/* Per-pension calculators */}
+            {pensions.map(p => {
+              if (p.type === "state") {
+                return (
+                  <div key={p.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <div style={{ fontSize: 15, fontWeight: 600, flex: 1 }}>🇬🇧 State Pension</div>
+                      <button onClick={() => deletePension(p.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14 }}>🗑</button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                      {pfld(p, "Weekly amount (£)", "weekly", { ph: String(STATE_PENSION_WEEKLY) })}
+                      {pfld(p, "From age", "startAge", { step: "1", ph: "67" })}
+                    </div>
+                    <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 8 }}>≈ <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(statePensionAnnual(p), true)}/yr</b> ({fmtMoney(statePensionAnnual(p) / 12, true)}/mo) from age {p.startAge || 67}. Full new State Pension is ~£{STATE_PENSION_WEEKLY}/week — check your forecast at gov.uk.</div>
+                  </div>
+                );
+              }
+              const f = pensionForecast(p);
+              const ready = (Number(p.retireAge) || 0) > (Number(p.currentAge) || 0) && (Number(p.salary) || 0) > 0;
+              return (
+                <div key={p.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                    <input value={p.name || ""} onChange={e => setPensionById(p.id, "name", e.target.value)} placeholder="Pension name" style={{ flex: 1, fontSize: 15, fontWeight: 600, border: "1px solid transparent", background: "transparent", padding: "4px 2px" }} />
+                    <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "var(--color-text-secondary)", cursor: "pointer" }}>
+                      <input type="checkbox" checked={p.contributing !== false} onChange={e => setPensionById(p.id, "contributing", e.target.checked)} /> Still paying in
+                    </label>
+                    <button onClick={() => deletePension(p.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14 }}>🗑</button>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    {pfld(p, "Current age", "currentAge", { step: "1", ph: "e.g. 30" })}
+                    {pfld(p, "Retirement age", "retireAge", { step: "1", ph: "e.g. 67" })}
+                    {pfld(p, "Current pot (£)", "currentPot", { ph: "0" })}
+                    {pfld(p, "Annual salary (£)", "salary", { ph: "e.g. 35000" })}
+                    {p.contributing !== false && pfld(p, "Your contribution (%)", "employeePct", { ph: "e.g. 5" })}
+                    {p.contributing !== false && pfld(p, "Employer match (%)", "employerPct", { ph: "e.g. 3" })}
+                    {pfld(p, "Growth (%/yr)", "growthPct", { ph: "e.g. 5" })}
+                    {pfld(p, "Inflation (%/yr)", "inflationPct", { ph: "e.g. 2.5" })}
+                  </div>
+                  {p.contributing === false && <div style={{ fontSize: 12, color: "#BA7517", marginTop: 8 }}>⏸ Paid-up — no new contributions, just growth.</div>}
+                  {ready ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10, marginTop: 14 }}>
+                      <StatCard label={`Pot at ${p.retireAge}`} value={fmtMoney(f.finalPot, true)} color={ac} />
+                      <StatCard label="Today's money" value={fmtMoney(f.finalPotReal, true)} />
+                      <StatCard label="Income ≈4%" value={`${fmtMoney(f.annualIncome4Real, true)}/yr`} color="#1D9E75" />
+                    </div>
+                  ) : <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 10 }}>Add age, retirement age and salary to forecast this pension.</div>}
+                </div>
+              );
+            })}
           </div>
         );
       })()}
