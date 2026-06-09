@@ -1161,6 +1161,12 @@ function pensionForecast(p) {
     annualIncome4: pot * 0.04, annualIncome4Real: potReal * 0.04, series,
   };
 }
+// Total of all pension pots (new multi-pension array, or the legacy single pension).
+function pensionPotsTotal(state) {
+  const list = state.pensions;
+  if (Array.isArray(list) && list.length) return list.reduce((s, p) => s + (Number(p.currentPot) || 0), 0);
+  return Number((state.pension || {}).currentPot) || 0;
+}
 // How many years a pot lasts drawing `annualDraw`, compounding at `growthPct`.
 function potLastsYears(pot, annualDraw, growthPct) {
   pot = Number(pot) || 0; annualDraw = Number(annualDraw) || 0;
@@ -1222,9 +1228,10 @@ function financialHealth(state) {
   const savAccts = state.savingsAccounts || [];
   const savings = savAccts.reduce((s, a) => s + (Number(a.balance) || 0), 0);
   const investVal = investmentTotals(state.investments).value;
-  const pensionVal = Number((state.pension || {}).currentPot) || 0;
+  const pensionVal = pensionPotsTotal(state);
+  const currentVal = (state.currentAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
   const debtTotal = (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0);
-  const netWorth = savings + investVal + pensionVal - debtTotal;
+  const netWorth = currentVal + savings + investVal + pensionVal - debtTotal;
   const income = stats.income || stats.incomeProjected || 0;
   const monthlySpend = stats.spend || stats.plannedTotal || 0;
   const contrib = savAccts.reduce((s, a) => s + (Number(a.contribution) || 0), 0);
@@ -1515,9 +1522,8 @@ const FINANCE_TABS = [
   { id: "pension", icon: "🏖", label: "Pension" },
   { id: "insurance", icon: "🛡", label: "Insurance" },
   { id: "subs", icon: "🔁", label: "Subscriptions" },
-  { id: "trends", icon: "📈", label: "Trends" },
+  { id: "trends", icon: "📈", label: "Reports & Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
-  { id: "reports", icon: "📅", label: "Reports" },
   { id: "categories", icon: "🏷", label: "Categories" },
   { id: "connect", icon: "🏦", label: "Connect bank" }
 ];
@@ -1904,10 +1910,11 @@ function MoneyInsights({ state, accentColor }) {
 function NetWorth({ state, up, accentColor }) {
   const ac = accentColor;
   const debts = state.debts || [];
+  const currentTotal = (state.currentAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
   const savingsTotal = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
   const investTotal = investmentTotals(state.investments).value;
-  const pensionTotal = Number((state.pension || {}).currentPot) || 0;
-  const assets = savingsTotal + investTotal + pensionTotal;
+  const pensionTotal = pensionPotsTotal(state);
+  const assets = currentTotal + savingsTotal + investTotal + pensionTotal;
   const debtTotal = debts.reduce((s, d) => s + (Number(d.balance) || 0), 0);
   const nw = assets - debtTotal;
   const mk = curMonthKey();
@@ -1918,25 +1925,38 @@ function NetWorth({ state, up, accentColor }) {
   const hist = state.netWorthHistory || {};
   const months = Object.keys(hist).sort().slice(-6);
   const bars = months.map(m => ({ label: monthShort(m), value: Math.max(0, hist[m]), color: "#7F77DD" }));
+  const prevKey = Object.keys(hist).sort().filter(k => k < mk).pop();
+  const change = prevKey != null ? nw - hist[prevKey] : null;
+  const col = nw >= 0 ? "#1D9E75" : "#E24B4A";
   const Line = ({ label, value, neg }) => (Number(value) === 0) ? null : (
-    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0" }}>
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0" }}>
       <span style={{ color: "var(--color-text-secondary)" }}>{label}</span>
       <span style={{ fontWeight: 500, color: neg ? "#E24B4A" : "var(--color-text-primary)" }}>{neg ? "−" : ""}{fmtMoney(value, true)}</span>
     </div>
   );
   return (
-    <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ fontSize: 14, fontWeight: 600 }}>📈 Net worth</div>
-        <div style={{ fontSize: 24, fontWeight: 700, color: nw >= 0 ? "#1D9E75" : "#E24B4A" }}>{fmtMoney(nw)}</div>
+    <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>📈 Net worth</div>
+      <div style={{ background: hex2rgba(col, 0.08), border: `1px solid ${hex2rgba(col, 0.3)}`, borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Total net worth</div>
+          <div style={{ fontSize: 30, fontWeight: 700, color: col }}>{fmtMoney(nw)}</div>
+          <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>
+            {fmtMoney(assets, true)} assets − {fmtMoney(debtTotal, true)} owed
+            {change != null && change !== 0 && <span style={{ color: change > 0 ? "#1D9E75" : "#E24B4A", fontWeight: 500 }}> · {change > 0 ? "▲" : "▼"} {fmtMoney(Math.abs(change), true)} this month</span>}
+          </div>
+        </div>
+        <div style={{ minWidth: 180, flex: 1 }}>
+          <Line label="🏦 Current accounts" value={currentTotal} />
+          <Line label="🐖 Savings" value={savingsTotal} />
+          <Line label="💹 Investments" value={investTotal} />
+          <Line label="🏖 Pensions" value={pensionTotal} />
+          <Line label="💳 Debts & credit cards" value={debtTotal} neg />
+        </div>
       </div>
-      <Line label="🐖 Savings" value={savingsTotal} />
-      <Line label="💹 Investments" value={investTotal} />
-      <Line label="🏖 Pension pot" value={pensionTotal} />
-      <Line label="💳 Debts & credit cards" value={debtTotal} neg />
-      {assets === 0 && debtTotal === 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Add savings, investments, a pension pot or debts to see your net worth build.</div>}
+      {assets === 0 && debtTotal === 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 10 }}>Add current/savings accounts, investments, a pension or debts and your net worth builds here.</div>}
       {bars.length >= 2 && (
-        <div style={{ marginTop: 16 }}>
+        <div style={{ marginTop: 14 }}>
           <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8 }}>Net worth over time</div>
           <BarsChart data={bars} money height={110} />
         </div>
@@ -2070,6 +2090,56 @@ function DebtModal({ debt, accentColor, onSave, onClose }) {
         <button onClick={() => { if (d.name.trim()) onSave({ id: debt?.id || genId(), name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0, termMonths: parseInt(d.termMonths, 10) || 0, monthsPaid: parseInt(d.monthsPaid, 10) || 0, adjustments: adj }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
+  );
+}
+
+// Consistent section header with breathing room (used to space out finance pages).
+function SectionHead({ children, sub, top = 0 }) {
+  return (
+    <div style={{ marginTop: top, marginBottom: 12 }}>
+      <div style={{ fontSize: 15, fontWeight: 600 }}>{children}</div>
+      {sub && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// Saved monthly report snapshots (forecast vs actual, saved, debt, gifts).
+function MonthlyReports({ state }) {
+  const merged = { ...(state.monthlyReports || {}) };
+  const recent = new Set((state.transactions || []).map(t => (t.date || "").slice(0, 7)).filter(Boolean));
+  recent.add(curMonthKey());
+  Object.keys(state.financePlans || {}).forEach(m => recent.add(m));
+  recent.forEach(mk => { merged[mk] = computeMonthReport(state, mk); });
+  const keys = Object.keys(merged).filter(k => merged[k]).sort().reverse().slice(0, 24);
+  if (keys.length === 0) return <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>No monthly history yet — it builds up as you use Tend.</div>;
+  return (
+    <div>
+      {keys.map(mk => {
+        const r = merged[mk];
+        const over = r.actual > r.forecast && r.forecast > 0;
+        return (
+          <div key={mk} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+              <div style={{ fontSize: 15, fontWeight: 600 }}>{monthLabel(mk)}</div>
+              <div style={{ fontSize: 12, color: r.saved > 0 ? "#1D9E75" : "var(--color-text-secondary)" }}>{r.saved > 0 ? `saved ${fmtMoney(r.saved, true)}` : "no surplus"}</div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(96px,1fr))", gap: 8 }}>
+              {[["Forecast", fmtMoney(r.forecast, true), "var(--color-text-secondary)"],
+                ["Actual", fmtMoney(r.actual, true), over ? "#E24B4A" : "#639922"],
+                ["Income", fmtMoney(r.income, true), "#1D9E75"],
+                ["Debt", fmtMoney(r.debt, true), r.debt > 0 ? "#E24B4A" : "var(--color-text-secondary)"],
+                ["Gifts", String(r.gifts || 0), "var(--color-text-primary)"]].map(([l, v, c]) => (
+                <div key={l} style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.03em" }}>{l}</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: c }}>{v}</div>
+                </div>
+              ))}
+            </div>
+            {r.forecast > 0 && <div style={{ fontSize: 11.5, color: over ? "#E24B4A" : "#639922", marginTop: 8 }}>{over ? `Over forecast by ${fmtMoney(r.actual - r.forecast, true)}` : `Under forecast by ${fmtMoney(r.forecast - r.actual, true)}`}</div>}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -2960,6 +3030,9 @@ function FinanceView({ state, up, accentColor }) {
         const hasData = series.some(s => s.st.spend > 0 || s.st.income > 0);
         return (
           <div style={{ display: "grid", gap: 14 }}>
+            <SectionHead sub="A saved snapshot of every month — kept up to 2 years, even after transactions roll off.">📅 Monthly reports</SectionHead>
+            <MonthlyReports state={state} />
+            <SectionHead sub="The last 6 months at a glance." top={10}>📈 Trends</SectionHead>
             {!hasData && (
               <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 38, marginBottom: 12 }}>📈</div><div style={{ fontSize: 14, marginBottom: 16 }}>No 6-month history yet — add transactions to see the trend charts. The date-range explorer below works with any transactions.</div><button onClick={loadSample} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 9, cursor: "pointer" }}>✨ Load sample data</button></div>
             )}
@@ -3108,46 +3181,6 @@ function FinanceView({ state, up, accentColor }) {
       })()}
 
       {/* ── Reports (monthly history, up to 2 years) ── */}
-      {tab === "reports" && (() => {
-        const merged = { ...(state.monthlyReports || {}) };
-        const recent = new Set((state.transactions || []).map(t => (t.date || "").slice(0, 7)).filter(Boolean));
-        recent.add(curMonthKey());
-        Object.keys(state.financePlans || {}).forEach(m => recent.add(m));
-        recent.forEach(mk => { merged[mk] = computeMonthReport(state, mk); });
-        const keys = Object.keys(merged).filter(k => merged[k]).sort().reverse().slice(0, 24);
-        return (
-          <div>
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 14 }}>A saved snapshot of every month — forecast vs actual spend, what you saved, your debt and gifts bought. Kept for up to 2 years, even after the raw transactions roll off.</div>
-            {keys.length === 0 && <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 36, marginBottom: 10 }}>📅</div><div style={{ fontSize: 14 }}>No monthly history yet — it builds up as you use Tend.</div></div>}
-            {keys.map(mk => {
-              const r = merged[mk];
-              const over = r.actual > r.forecast && r.forecast > 0;
-              return (
-                <div key={mk} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-                    <div style={{ fontSize: 15, fontWeight: 600 }}>{monthLabel(mk)}</div>
-                    <div style={{ fontSize: 12, color: r.saved > 0 ? "#1D9E75" : "var(--color-text-secondary)" }}>{r.saved > 0 ? `saved ${fmtMoney(r.saved, true)}` : "no surplus"}</div>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(96px,1fr))", gap: 8 }}>
-                    {[["Forecast", fmtMoney(r.forecast, true), "var(--color-text-secondary)"],
-                      ["Actual", fmtMoney(r.actual, true), over ? "#E24B4A" : "#639922"],
-                      ["Income", fmtMoney(r.income, true), "#1D9E75"],
-                      ["Debt", fmtMoney(r.debt, true), r.debt > 0 ? "#E24B4A" : "var(--color-text-secondary)"],
-                      ["Gifts", String(r.gifts || 0), "var(--color-text-primary)"]].map(([l, v, c]) => (
-                      <div key={l} style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "8px 10px" }}>
-                        <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.03em" }}>{l}</div>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: c }}>{v}</div>
-                      </div>
-                    ))}
-                  </div>
-                  {r.forecast > 0 && <div style={{ fontSize: 11.5, color: over ? "#E24B4A" : "#639922", marginTop: 8 }}>{over ? `Over forecast by ${fmtMoney(r.actual - r.forecast, true)}` : `Under forecast by ${fmtMoney(r.forecast - r.actual, true)}`}</div>}
-                </div>
-              );
-            })}
-          </div>
-        );
-      })()}
-
       {/* ── Categories ── */}
       {tab === "categories" && (
         <div>
