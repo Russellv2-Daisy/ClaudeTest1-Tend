@@ -1,0 +1,29 @@
+# Render blueprint for the Tend bank backend.
+# In Render: New → Blueprint → point at this repo & the `bank-backend` branch.
+# Then set the secret env vars (marked sync:false) in the dashboard.
+services:
+  - type: web
+    name: tend-bank
+    runtime: python
+    plan: free
+    rootDir: backend
+    branch: bank-backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENABLE_APPLICATION_ID
+        sync: false
+      - key: ENABLE_PRIVATE_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: APP_URL
+        value: https://claude-test1-tend.vercel.app
+      - key: BACKEND_URL
+        sync: false   # set to your Render URL once known, e.g. https://tend-bank.onrender.com
+      - key: ACCESS_VALID_DAYS
+        value: "90"

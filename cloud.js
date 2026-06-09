@@ -86,6 +86,14 @@
       });
     },
 
+    // Current Supabase access token — sent to the bank backend so it can
+    // identify the user server-side. Null if not signed in / not configured.
+    async getAccessToken() {
+      if (!sb) return null;
+      const { data } = await sb.auth.getSession();
+      return data.session ? data.session.access_token : null;
+    },
+
     async signOut() {
       if (sb) await sb.auth.signOut();
       cacheClearAll();

@@ -2110,6 +2110,48 @@ function FinanceView({ state, up, accentColor }) {
   const net = stats.income - stats.spend;
   const donutSegs = cats.map(c => ({ value: stats.byCat[c.id]?.spent || 0, color: c.color, label: c.name })).filter(s => s.value > 0);
 
+  // ── Live bank link (Enable Banking via the separate backend) ──
+  const backendUrl = ((window.TEND_CONFIG || {}).BACKEND_URL || "").replace(/\/$/, "");
+  const [bankStatus, setBankStatus] = useState(null);
+  const [bankBusy, setBankBusy] = useState(false);
+  const [bankMsg, setBankMsg] = useState("");
+  async function bankCall(path, method = "GET") {
+    const token = window.TendCloud && await window.TendCloud.getAccessToken();
+    const r = await fetch(backendUrl + path, { method, headers: token ? { Authorization: "Bearer " + token } : {} });
+    if (!r.ok) throw new Error("request failed (" + r.status + ")");
+    return r.json();
+  }
+  useEffect(() => {
+    if (!backendUrl) return;
+    bankCall("/bank/status").then(setBankStatus).catch(() => setBankStatus({ connected: false, error: true }));
+    const q = new URLSearchParams(window.location.search).get("bank");
+    if (q === "connected") { setBankMsg("✅ Bank connected — syncing your transactions…"); syncBank(); window.history.replaceState({}, "", window.location.pathname); }
+    else if (q === "error") { setBankMsg("⚠️ Bank linking was cancelled or failed. Try again."); window.history.replaceState({}, "", window.location.pathname); }
+  }, []);
+  async function connectBank() {
+    setBankBusy(true); setBankMsg("");
+    try { const { url } = await bankCall("/bank/auth", "POST"); if (url) window.location.href = url; else throw new Error("no url"); }
+    catch (e) { setBankMsg("Couldn't start the bank link — check the backend is running."); setBankBusy(false); }
+  }
+  async function syncBank() {
+    setBankBusy(true);
+    try {
+      const { transactions } = await bankCall("/bank/transactions");
+      const have = new Set((state.transactions || []).map(t => `${t.date}|${t.amount}|${t.description}`));
+      const fresh = (transactions || []).filter(t => !have.has(`${t.date}|${t.amount}|${t.description}`)).map(t => ({ id: genId(), categoryId: "", ...t }));
+      up({ transactions: [...fresh, ...(state.transactions || [])] });
+      setBankMsg(`Imported ${fresh.length} new transaction${fresh.length !== 1 ? "s" : ""} from your bank.`);
+      bankCall("/bank/status").then(setBankStatus).catch(() => {});
+    } catch (e) { setBankMsg("Sync failed — " + e.message); }
+    setBankBusy(false);
+  }
+  async function disconnectBank() {
+    if (!confirm("Disconnect your bank? Imported transactions stay; new ones stop syncing.")) return;
+    setBankBusy(true);
+    try { await bankCall("/bank/disconnect", "POST"); setBankStatus({ connected: false }); setBankMsg("Bank disconnected."); } catch (e) {}
+    setBankBusy(false);
+  }
+
   return (
     <div style={{ maxWidth: 760 }}>
       {txnModal !== null && <TxnModal txn={txnModal === "new" ? null : txnModal} cats={cats} accentColor={ac} onSave={saveTxn} onClose={() => setTxnModal(null)} />}
@@ -2915,22 +2957,37 @@ function FinanceView({ state, up, accentColor }) {
             <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 18 }}>
               Pull your real transactions in automatically via Open Banking (Enable Banking). Read-only and secure — it can never move your money. Your bank login happens on Lloyds’ own site.
             </div>
-            <button disabled style={{ fontSize: 14, padding: "10px 22px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect Lloyds — coming in Phase B</button>
-          </div>
-          <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14 }}>
-            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>To switch this on, you’ll need:</div>
-            {[
-              ["1", "A free Enable Banking account", "Sign up at enablebanking.com → create an application → whitelist your own Lloyds account for Restricted Production (free, no contract). You get an Application ID + a private key."],
-              ["2", "Supabase finished", "Fill config.js with your project URL + anon key, and add the service-role key in Vercel."],
-              ["3", "Keys added to Vercel", "Set ENABLE_APPLICATION_ID and ENABLE_PRIVATE_KEY (and ANTHROPIC_API_KEY for smart auto-categorising)."]
-            ].map(([n, t, d]) => (
-              <div key={n} style={{ display: "flex", gap: 12, marginBottom: 12 }}>
-                <span style={{ width: 24, height: 24, borderRadius: "50%", background: hex2rgba(ac, 0.12), color: ac, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{n}</span>
-                <div><div style={{ fontSize: 13, fontWeight: 500 }}>{t}</div><div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{d}</div></div>
+            {!backendUrl ? (
+              <button disabled style={{ fontSize: 14, padding: "10px 22px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect Lloyds — set up the backend first</button>
+            ) : bankStatus && bankStatus.connected ? (
+              <div>
+                <div style={{ fontSize: 13, color: "#1D9E75", fontWeight: 600, marginBottom: 12 }}>✅ Connected{bankStatus.bank ? ` to ${bankStatus.bank}` : ""}{bankStatus.accounts ? ` · ${bankStatus.accounts} account${bankStatus.accounts !== 1 ? "s" : ""}` : ""}</div>
+                <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+                  <button onClick={syncBank} disabled={bankBusy} style={{ fontSize: 14, padding: "10px 22px", background: ac, color: "#fff", border: "none", borderRadius: 10, cursor: bankBusy ? "wait" : "pointer", fontWeight: 500 }}>{bankBusy ? "Syncing…" : "↻ Sync transactions"}</button>
+                  <button onClick={disconnectBank} disabled={bankBusy} style={{ fontSize: 14, padding: "10px 18px", borderRadius: 10, cursor: "pointer" }}>Disconnect</button>
+                </div>
               </div>
-            ))}
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6, lineHeight: 1.5 }}>Until then, everything here works on manual entries or sample data — your plan, trends and stats are fully usable.</div>
+            ) : (
+              <button onClick={connectBank} disabled={bankBusy} style={{ fontSize: 14, padding: "10px 22px", background: ac, color: "#fff", border: "none", borderRadius: 10, cursor: bankBusy ? "wait" : "pointer", fontWeight: 500 }}>{bankBusy ? "Starting…" : "🔗 Connect Lloyds"}</button>
+            )}
+            {bankMsg && <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 12 }}>{bankMsg}</div>}
           </div>
+          {!backendUrl && (
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14 }}>
+              <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>To switch this on, you’ll need:</div>
+              {[
+                ["1", "A free Enable Banking account", "Sign up at enablebanking.com → create an application → whitelist your own Lloyds account for Restricted Production (free, no contract). You get an Application ID + a private key."],
+                ["2", "Deploy the bank backend", "Deploy the /backend service (e.g. to Render — see backend/README.md) and set its env vars. It keeps your bank tokens server-side."],
+                ["3", "Point the app at it", "Set BACKEND_URL in config.js to your deployed backend URL, run the Supabase bank_schema.sql, and reload."]
+              ].map(([n, t, d]) => (
+                <div key={n} style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+                  <span style={{ width: 24, height: 24, borderRadius: "50%", background: hex2rgba(ac, 0.12), color: ac, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{n}</span>
+                  <div><div style={{ fontSize: 13, fontWeight: 500 }}>{t}</div><div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{d}</div></div>
+                </div>
+              ))}
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6, lineHeight: 1.5 }}>Until then, everything here works on manual entries or sample data — your plan, trends and stats are fully usable.</div>
+            </div>
+          )}
         </div>
       )}
     </div>
