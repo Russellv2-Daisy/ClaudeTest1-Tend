@@ -10,40 +10,25 @@ const DEFAULT_TAGS = ["Quick", "Errands", "Focus", "Admin", "Personal", "Work"];
 const TAG_COLORS = ["#7F77DD","#378ADD","#1D9E75","#D85A30","#D4537E","#BA7517","#639922","#888780"];
 const REPEAT_OPTIONS = ["none","daily","weekly","monthly","yearly"];
 const FINANCE_EMOJIS = ["🍔","🛒","✈️","🚗","⛽","🏠","💡","📱","🎉","🎬","☕","🏋️","💊","👕","🎁","📚","🐾","💰","💷","🏥"];
-// Budget groups, each holding line items — mirrors the user's spreadsheet structure.
-// Streamlined to the groups/items actually in use (the rest can be added in the Plan tab).
+// Default budget groups for a NEW account — generic starter template only.
+// (No personal names or amounts; users rename / add / remove items in the Plan tab.)
 const DEFAULT_FINANCE_CATS = [
   { id: "g_housing", name: "Housing", emoji: "🏠", color: "#7F77DD", kind: "spending", items: [
-    { id: "i_rent", name: "Mortgage or rent" } ] },
-  { id: "g_ent", name: "Entertainment", emoji: "🎉", color: "#D4537E", kind: "spending", items: [
-    { id: "i_daysout", name: "Days Out (Inc Tradewell)" }, { id: "i_spotify", name: "Spotify" }, { id: "i_starlink", name: "Starlink" } ] },
+    { id: "i_rent", name: "Rent or mortgage" }, { id: "i_utilities", name: "Utilities" } ] },
   { id: "g_transport", name: "Transportation", emoji: "🚗", color: "#378ADD", kind: "spending", items: [
-    { id: "i_fuel", name: "Fuel" } ] },
-  { id: "g_loans", name: "Loans", emoji: "💳", color: "#BA7517", kind: "spending", items: [
-    { id: "i_clublloyds", name: "Club Lloyds fee" } ] },
+    { id: "i_fuel", name: "Fuel / transport" } ] },
   { id: "g_food", name: "Food", emoji: "🍔", color: "#D85A30", kind: "spending", items: [
     { id: "i_groceries", name: "Groceries" }, { id: "i_dining", name: "Dining out" } ] },
+  { id: "g_ent", name: "Entertainment", emoji: "🎉", color: "#D4537E", kind: "spending", items: [
+    { id: "i_subscriptions", name: "Subscriptions" }, { id: "i_daysout", name: "Days out" } ] },
   { id: "g_personal", name: "Personal Care", emoji: "🧴", color: "#1D9E75", kind: "spending", items: [
-    { id: "i_hair", name: "Hair/nails" }, { id: "i_apple", name: "Apple Storage" }, { id: "i_phone", name: "Phone" }, { id: "i_liquids", name: "Liquids" } ] },
+    { id: "i_phone", name: "Phone" }, { id: "i_health", name: "Health & grooming" } ] },
+  { id: "g_loans", name: "Loans", emoji: "💳", color: "#BA7517", kind: "spending", items: [
+    { id: "i_loan", name: "Loan repayment" } ] },
   { id: "g_gifts", name: "Gifts", emoji: "🎁", color: "#BA7517", kind: "spending", items: [
     { id: "i_gifts", name: "General gifts" } ] }
 ];
 const RELATIONSHIPS = ["Partner", "Family", "Friend", "Colleague", "Other"];
-// Current month key, computed once at load (timezone-safe). Used to pre-seed the budget.
-const SEED_MONTH = (() => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); })();
-// Pre-filled budget values transcribed from "JR PERSONAL MONTHLY BUDGET - Jan 26".
-const SEED_PLAN = {
-  income: { projected: 2289, actual: 2289 },
-  extra: { projected: 0, actual: 0 },
-  byItem: {
-    i_rent: { projected: 400, actual: 400 },
-    i_daysout: { projected: 100, actual: 100 }, i_spotify: { projected: 12.99, actual: 12.99 }, i_starlink: { projected: 34, actual: 34 },
-    i_fuel: { projected: 100, actual: 100 },
-    i_clublloyds: { projected: 22, actual: 22 },
-    i_groceries: { projected: 100, actual: 100 }, i_dining: { projected: 50, actual: 50 },
-    i_hair: { projected: 20, actual: 20 }, i_apple: { projected: 2.99, actual: 2.99 }, i_phone: { projected: 7, actual: 7 }, i_liquids: { projected: 10, actual: 10 }
-  }
-};
 const DATE_TYPES = [
   { v: "birthday", l: "Birthday", icon: "🎂" },
   { v: "anniversary", l: "Anniversary", icon: "💍" },
@@ -70,7 +55,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: { [SEED_MONTH]: SEED_PLAN }, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, audit: {}, people: [], theme: "purple", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, audit: {}, people: [], theme: "purple", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
