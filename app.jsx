@@ -537,6 +537,7 @@ function CalendarView({ tasks, importantDates, accentColor, onAddTask, onEditDat
                   <div key={"s" + t.id} style={{ padding: "9px 12px", borderRadius: 9, background: hex2rgba(accentColor, 0.08), marginBottom: 6, borderLeft: `3px solid ${accentColor}` }}>
                     <div style={{ fontSize: 13.5, fontWeight: 500 }}>{t.title}</div>
                     <div style={{ fontSize: 11, color: accentColor, marginTop: 2 }}>▷ Scheduled completion{alsoDeadline ? ` & ⚑ deadline` : ""}</div>
+                    {(t.subtasks || []).length > 0 && <div style={{ marginTop: 6, paddingLeft: 12, borderLeft: "2px solid var(--color-border-tertiary)" }}>{t.subtasks.map(s => <div key={s.id} style={{ fontSize: 11.5, color: "var(--color-text-secondary)", display: "flex", gap: 6 }}><span>•</span><span style={{ textDecoration: s.done ? "line-through" : "none" }}>{s.title}</span></div>)}</div>}
                   </div>
                 );
               })}
@@ -544,6 +545,7 @@ function CalendarView({ tasks, importantDates, accentColor, onAddTask, onEditDat
                 <div key={"d" + t.id} style={{ padding: "9px 12px", borderRadius: 9, background: hex2rgba(CAL_DEADLINE, 0.08), marginBottom: 6, borderLeft: `3px solid ${CAL_DEADLINE}` }}>
                   <div style={{ fontSize: 13.5, fontWeight: 500 }}>{t.title}</div>
                   <div style={{ fontSize: 11, color: CAL_DEADLINE, marginTop: 2 }}>⚑ Deadline</div>
+                  {(t.subtasks || []).length > 0 && <div style={{ marginTop: 6, paddingLeft: 12, borderLeft: "2px solid var(--color-border-tertiary)" }}>{t.subtasks.map(s => <div key={s.id} style={{ fontSize: 11.5, color: "var(--color-text-secondary)", display: "flex", gap: 6 }}><span>•</span><span style={{ textDecoration: s.done ? "line-through" : "none" }}>{s.title}</span></div>)}</div>}
                 </div>
               ))}
               <button onClick={() => onAddTask(selDateStr)} style={{ marginTop: 8, padding: "8px 16px", borderRadius: 8, border: `1px dashed ${accentColor}`, background: "transparent", color: accentColor, fontSize: 13, cursor: "pointer" }}>+ Add task on this day</button>
@@ -1543,7 +1545,7 @@ function FinanceCatModal({ cat, accentColor, onSave, onClose }) {
 
 const FINANCE_TABS = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
-  { id: "plan", icon: "🎯", label: "Plan" },
+  { id: "plan", icon: "🎯", label: "Breakdown Plan" },
   { id: "savings", icon: "🐖", label: "Savings & Debts" },
   { id: "investments", icon: "💹", label: "Investments" },
   { id: "pension", icon: "🏖", label: "Pension" },
@@ -1611,7 +1613,8 @@ function StatCard({ label, value, color, sub }) {
 function MoneyCell({ value, onChange }) {
   return (
     <div style={{ width: 96, display: "flex", justifyContent: "flex-end" }}>
-      <input type="number" step="0.01" value={value === 0 || value ? value : ""} placeholder="0"
+      <input type="number" step="0.01" value={value ? value : ""} placeholder="0"
+        onFocus={e => e.target.select()}
         onChange={e => onChange(e.target.value === "" ? 0 : (parseFloat(e.target.value) || 0))}
         style={{ width: 84, textAlign: "right", fontSize: 13, padding: "5px 7px", boxSizing: "border-box" }} />
     </div>
@@ -1730,14 +1733,14 @@ function InvestmentModal({ holding, accentColor, onSave, onClose }) {
 const INSURANCE_TYPES = [
   { v: "Car", icon: "🚗" }, { v: "Home", icon: "🏠" }, { v: "Phone / Gadget", icon: "📱" },
   { v: "Travel", icon: "✈️" }, { v: "Life", icon: "❤️" }, { v: "Health", icon: "🩺" },
-  { v: "Pet", icon: "🐾" }, { v: "Other", icon: "📄" }
+  { v: "Dental", icon: "🦷" }, { v: "Pet", icon: "🐾" }, { v: "Other", icon: "📄" }
 ];
 const insIcon = type => (INSURANCE_TYPES.find(t => t.v === type) || { icon: "📄" }).icon;
 function insMonthly(p) { const prem = Number(p.premium) || 0; return p.frequency === "annual" ? prem / 12 : prem; }
 function insAnnual(p) { const prem = Number(p.premium) || 0; return p.frequency === "annual" ? prem : prem * 12; }
 
 function InsuranceModal({ policy, cats, accentColor, onSave, onClose }) {
-  const blank = { type: "Car", provider: "", policyNumber: "", premium: "", frequency: "monthly", renewalDate: "", startDate: "", coverAmount: "", excess: "", autoRenew: false, contactPhone: "", website: "", notes: "", budgetCategory: "" };
+  const blank = { type: "Car", provider: "", policyNumber: "", premium: "", frequency: "monthly", renewalDate: "", startDate: "", coverAmount: "", excess: "", autoRenew: false, renewTask: true, contactPhone: "", website: "", notes: "", budgetCategory: "" };
   const [p, setP] = useState({ ...blank, ...(policy || {}) });
   const up = (k, v) => setP(x => ({ ...x, [k]: v }));
   const ac = accentColor;
@@ -1785,6 +1788,9 @@ function InsuranceModal({ policy, cats, accentColor, onSave, onClose }) {
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer" }}>
         <input type="checkbox" checked={!!p.autoRenew} onChange={e => up("autoRenew", e.target.checked)} /> Auto-renews
       </label>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer", marginTop: 6 }}>
+        <input type="checkbox" checked={p.renewTask !== false} onChange={e => up("renewTask", e.target.checked)} /> 🔔 Add a yearly “renew {p.type || "insurance"}” task to my calendar &amp; tasks
+      </label>
       {Number(p.premium) > 0 && (
         <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 8 }}>
           {fmtMoney(insMonthly(p))}/mo · {fmtMoney(insAnnual(p))}/yr{p.budgetCategory ? " — added to your monthly budget" : ""}
@@ -1792,7 +1798,7 @@ function InsuranceModal({ policy, cats, accentColor, onSave, onClose }) {
       )}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => onSave({ ...p, id: policy?.id || genId(), premium: parseFloat(p.premium) || 0, excess: parseFloat(p.excess) || 0, provider: (p.provider || "").trim() })} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{policy?.id ? "Save" : "Add"}</button>
+        <button onClick={() => onSave({ ...p, id: policy?.id || genId(), premium: parseFloat(p.premium) || 0, excess: parseFloat(p.excess) || 0, provider: (p.provider || "").trim(), renewTask: p.renewTask !== false })} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{policy?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -2286,10 +2292,17 @@ function FinanceView({ state, up, accentColor }) {
   const insurance = state.insurance || [];
   function saveInsurance(p) {
     const exists = insurance.some(x => x.id === p.id);
-    up({ insurance: exists ? insurance.map(x => x.id === p.id ? p : x) : [...insurance, p] });
+    const newInsurance = exists ? insurance.map(x => x.id === p.id ? p : x) : [...insurance, p];
+    // Maintain a linked yearly renewal task (deterministic id) when requested.
+    let tasks = (state.tasks || []).filter(t => t.insuranceId !== p.id);
+    if (p.renewTask !== false && p.renewalDate) {
+      const note = [p.provider && `Provider: ${p.provider}`, p.policyNumber && `Policy: ${p.policyNumber}`, `Premium: ${fmtMoney(insAnnual(p), true)}/yr`, p.contactPhone && `Tel: ${p.contactPhone}`].filter(Boolean).join(" · ");
+      tasks = [{ id: "ins_" + p.id, insuranceId: p.id, title: `🔔 Renew ${p.type} insurance${p.provider ? " (" + p.provider + ")" : ""}`, priority: "medium", groupId: "", deadline: p.renewalDate, scheduledDate: p.renewalDate, notes: note, tags: [], subtasks: [], someday: false, repeat: "yearly", duration: "", cost: "", costCategory: "", done: false }, ...tasks];
+    }
+    up({ insurance: newInsurance, tasks });
     setInsModal(null);
   }
-  function deleteInsurance(id) { if (confirm("Delete this policy?")) up({ insurance: insurance.filter(p => p.id !== id) }); }
+  function deleteInsurance(id) { if (confirm("Delete this policy?")) up({ insurance: insurance.filter(p => p.id !== id), tasks: (state.tasks || []).filter(t => t.insuranceId !== id) }); }
   function addRenewalTask(p) {
     if (!p.renewalDate) { alert("Add a renewal date to this policy first."); return; }
     const note = [p.provider && `Provider: ${p.provider}`, p.policyNumber && `Policy: ${p.policyNumber}`, `Premium: ${fmtMoney(insAnnual(p), true)}/yr`, p.contactPhone && `Tel: ${p.contactPhone}`].filter(Boolean).join(" · ");
@@ -2468,17 +2481,17 @@ function FinanceView({ state, up, accentColor }) {
       {/* ── Plan ── */}
       {tab === "plan" && (
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
             <MonthNav />
             <button onClick={copyLastMonth} style={{ fontSize: 12, padding: "6px 12px", borderRadius: 8, cursor: "pointer" }}>⧉ Copy last month</button>
           </div>
 
-          <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
-            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 8 }}>🤖 Describe your plan in words</div>
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>Fills the Projected column by line item — e.g. “groceries 100, dining 50, fuel 100, spotify 13, income 2289”. <span style={{ opacity: 0.8 }}>Or just type into the cells below. Offline parser for now — full Claude understanding arrives with the bank link (Phase B).</span></div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input value={planText} onChange={e => setPlanText(e.target.value)} onKeyDown={e => e.key === "Enter" && applyParsed()} placeholder="Type your plan and press Enter…" style={{ flex: 1, fontSize: 14, boxSizing: "border-box" }} />
-              <button onClick={applyParsed} style={{ padding: "0 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>Apply</button>
+          {/* Safety buffer — kept at the top so it's visible without scrolling */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, background: hex2rgba(ac, 0.06), border: `1px solid ${hex2rgba(ac, 0.2)}`, borderRadius: 12, padding: "12px 16px", marginBottom: 14, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, fontWeight: 600, flex: 1, minWidth: 160 }} title="A cushion held back from your plan in case you overspend">🛟 Safety buffer</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ color: "var(--color-text-secondary)" }}>£</span>
+              <input type="number" step="1" value={state.safetyBuffer || ""} onFocus={e => e.target.select()} onChange={e => up({ safetyBuffer: parseFloat(e.target.value) || 0 })} placeholder="0" style={{ width: 100, textAlign: "right" }} />
             </div>
           </div>
 
@@ -2506,22 +2519,40 @@ function FinanceView({ state, up, accentColor }) {
             </div>
           </div>
 
-          {/* Commitments pulled automatically from the other tabs */}
-          {stats.commitments > 0 && (
-            <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>🔗 Commitments <span style={{ fontSize: 11, fontWeight: 400, color: "var(--color-text-secondary)" }}>auto</span></div>
-              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>Pulled from your Savings &amp; Debts and Pension tabs — set them there and they flow into the plan.</div>
-              {[["🐖 Savings contributions", stats.savingsContrib], ["💳 Debt / loan payments", stats.debtPayments], ["🏖 Pension contributions", stats.pensionContrib]].filter(x => x[1] > 0).map(([l, v]) => (
-                <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
-                  <span style={{ color: "var(--color-text-secondary)" }}>{l}</span>
-                  <span style={{ fontWeight: 500 }}>{fmtMoney(v, true)}/mo</span>
+          {/* Commitments pulled automatically from the other tabs — projected vs actual */}
+          {(() => {
+            const monthTxns = (state.transactions || []).filter(t => t.type !== "income" && (t.date || "").slice(0, 7) === month);
+            const matchActual = kw => { kw = (kw || "").toLowerCase().trim(); if (!kw) return null; const ms = monthTxns.filter(t => (t.description || "").toLowerCase().includes(kw)); return ms.length ? ms.reduce((s, t) => s + (Number(t.amount) || 0), 0) : null; };
+            const items = [
+              ...savings.filter(a => Number(a.contribution) > 0).map(a => ({ icon: "🐖", label: a.name, projected: Number(a.contribution) || 0, kw: a.name })),
+              ...debts.map(d => { const pl = debtPlan(d); return { icon: "💳", label: d.name, projected: pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0), kw: d.name }; }).filter(x => x.projected > 0),
+              ...insurance.map(p => ({ icon: insIcon(p.type), label: `${p.type}${p.provider ? " · " + p.provider : ""}`, projected: insMonthly(p), kw: p.provider || p.type })).filter(x => x.projected > 0),
+              ...subs.map(s => ({ icon: "🔁", label: s.name, projected: Number(s.amount) || 0, kw: s.name })).filter(x => x.projected > 0),
+            ];
+            if (!items.length) return null;
+            return (
+              <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", marginBottom: 4 }}>
+                  <div style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>🔗 Commitments <span style={{ fontSize: 11, fontWeight: 400, color: "var(--color-text-secondary)" }}>auto</span></div>
+                  <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Projected</div>
+                  <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Actual</div>
                 </div>
-              ))}
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, marginTop: 8, paddingTop: 8, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
-                <span>Total commitments</span><span style={{ color: ac }}>{fmtMoney(stats.commitments, true)}/mo</span>
+                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>From your Savings &amp; Debts, Insurance and Subscriptions. Actual fills in when a matching transaction appears — “pending” until then.</div>
+                {items.map((it, i) => { const actual = matchActual(it.kw); return (
+                  <div key={i} style={{ display: "flex", alignItems: "center", fontSize: 13, padding: "4px 0" }}>
+                    <span style={{ flex: 1, color: "var(--color-text-secondary)" }}>{it.icon} {it.label}</span>
+                    <span style={{ width: 90, textAlign: "right", fontWeight: 500 }}>{fmtMoney(it.projected, true)}</span>
+                    <span style={{ width: 90, textAlign: "right", color: actual == null ? "var(--color-text-secondary)" : "#639922", fontWeight: actual == null ? 400 : 500, fontStyle: actual == null ? "italic" : "normal" }}>{actual == null ? "pending" : fmtMoney(actual, true)}</span>
+                  </div>
+                ); })}
+                <div style={{ display: "flex", alignItems: "center", fontSize: 13, fontWeight: 600, marginTop: 8, paddingTop: 8, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                  <span style={{ flex: 1 }}>Total commitments</span>
+                  <span style={{ width: 90, textAlign: "right", color: ac }}>{fmtMoney(items.reduce((s, x) => s + x.projected, 0), true)}</span>
+                  <span style={{ width: 90, textAlign: "right", color: "#639922" }}>{fmtMoney(items.reduce((s, x) => s + (matchActual(x.kw) || 0), 0), true)}</span>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Expense groups → line items */}
           {cats.map(c => {
@@ -2583,8 +2614,8 @@ function FinanceView({ state, up, accentColor }) {
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><span>Total projected cost</span><b>{fmtMoney(stats.plannedTotal)}</b></div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><span>Total actual cost</span><b>{fmtMoney(stats.manualActualTotal)}</b></div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, marginBottom: 8 }}>
-              <span title="A cushion held back from your plan in case you overspend">🛟 Safety buffer</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ color: "var(--color-text-secondary)" }}>£</span><input type="number" step="1" value={state.safetyBuffer || ""} onChange={e => up({ safetyBuffer: parseFloat(e.target.value) || 0 })} placeholder="0" style={{ width: 90, textAlign: "right" }} /></div>
+              <span title="Set at the top of this page">🛟 Safety buffer</span>
+              <b>{fmtMoney(Number(state.safetyBuffer) || 0)}</b>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingTop: 10, borderTop: `0.5px solid ${hex2rgba(ac, 0.25)}` }}><span style={{ fontWeight: 600 }}>Projected balance <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)" }}>after buffer</span></span><b style={{ color: (stats.incomeProjected - stats.plannedTotal - (Number(state.safetyBuffer) || 0)) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeProjected - stats.plannedTotal - (Number(state.safetyBuffer) || 0))}</b></div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginTop: 8 }}><span style={{ fontWeight: 600 }}>Actual balance</span><b style={{ color: (stats.incomeManualActual - stats.manualActualTotal) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeManualActual - stats.manualActualTotal)}</b></div>
@@ -2979,7 +3010,7 @@ function FinanceView({ state, up, accentColor }) {
         }
         const pfld = (p, label, key, opts) => (
           <Field label={label}>
-            <input type="number" step={opts?.step || "any"} placeholder={opts?.ph || ""} value={p[key] === 0 || p[key] ? p[key] : ""} onChange={e => setPensionById(p.id, key, e.target.value === "" ? "" : (parseFloat(e.target.value) || 0))} style={{ width: "100%", boxSizing: "border-box" }} />
+            <input type="number" step={opts?.step || "any"} placeholder={opts?.ph || ""} value={p[key] ? p[key] : ""} onFocus={e => e.target.select()} onChange={e => setPensionById(p.id, key, e.target.value === "" ? "" : (parseFloat(e.target.value) || 0))} style={{ width: "100%", boxSizing: "border-box" }} />
           </Field>
         );
         return (
