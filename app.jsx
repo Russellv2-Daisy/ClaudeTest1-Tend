@@ -62,7 +62,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], dismissedSubs: [], name: "", theme: "purple", mode: "system", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], job: {}, keyDocuments: [], dismissedSubs: [], name: "", theme: "purple", mode: "system", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1355,10 +1355,13 @@ function monthStats(state, mk) {
   const byItem = plan.byItem || {};
 
   // Real transactions grouped by category (the eventual source of "actual").
-  const txnByCat = {}; let txnIncome = 0;
+  // Work expenses (reimbursable spends) and reimbursement income are tracked
+  // separately so they don't distort salary or category spend.
+  const txnByCat = {}; let txnIncome = 0, reimbursementIncome = 0, workExpenseSpend = 0;
   txns.forEach(t => {
     const amt = Number(t.amount) || 0;
-    if (t.type === "income") { txnIncome += amt; return; }
+    if (t.type === "income") { txnIncome += amt; if (t.reimbursement) reimbursementIncome += amt; return; }
+    if (t.workExpense) workExpenseSpend += amt;
     txnByCat[t.categoryId] = (txnByCat[t.categoryId] || 0) + amt;
   });
 
@@ -1413,7 +1416,7 @@ function monthStats(state, mk) {
   const incomeActual = txnIncome > 0 ? txnIncome : incomeManualActual;
   const spend = cats.reduce((s, c) => s + byCat[c.id].spent, 0);
 
-  return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, spend, plannedTotal, manualActualTotal, savingsContrib, debtPayments, pensionContrib, commitments };
+  return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, spend, plannedTotal, manualActualTotal, savingsContrib, debtPayments, pensionContrib, commitments, reimbursementIncome, workExpenseSpend, salaryIncome: Math.max(0, incomeActual - reimbursementIncome) };
 }
 
 // Best-effort, offline plan parser ("groceries 100, fuel 80, spotify 13, income 2289").
@@ -1545,6 +1548,16 @@ function TxnModal({ txn, cats, accentColor, onSave, onClose }) {
           </select>
         </Field>
       )}
+      {t.type === "spend" && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer", marginTop: 2 }}>
+          <input type="checkbox" checked={!!t.workExpense} onChange={e => up("workExpense", e.target.checked)} /> 💼 Work expense — I expect this back
+        </label>
+      )}
+      {t.type === "income" && (
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer", marginTop: 2 }}>
+          <input type="checkbox" checked={!!t.reimbursement} onChange={e => up("reimbursement", e.target.checked)} /> ↩️ Expense reimbursement — not salary
+        </label>
+      )}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
         <button onClick={save} style={{ padding: "9px 20px", fontSize: 13, background: accentColor, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{txn?.id ? "Save" : "Add"}</button>
@@ -1598,6 +1611,7 @@ const FINANCE_TABS = [
   { id: "subs", icon: "🔁", label: "Subscriptions" },
   { id: "trends", icon: "📈", label: "Reports & Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
+  { id: "credit", icon: "📊", label: "Credit score" },
   { id: "categories", icon: "🏷", label: "Categories" },
   { id: "connect", icon: "🏦", label: "Connect bank" }
 ];
@@ -3265,6 +3279,33 @@ function FinanceView({ state, up, accentColor }) {
                 <button onClick={() => setTxnModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Transaction</button>
               </div>
             </div>
+            {(() => {
+              const allTx = state.transactions || [];
+              if (!allTx.some(t => t.workExpense || t.reimbursement)) return null;
+              const outstanding = allTx.filter(t => t.type !== "income" && t.workExpense && !t.reimbursed).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+              const outTotal = outstanding.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+              const reimbIncome = allTx.filter(t => t.type === "income" && t.reimbursement).reduce((s, t) => s + (Number(t.amount) || 0), 0);
+              const markReimbursed = id => up({ transactions: allTx.map(t => t.id === id ? { ...t, reimbursed: true } : t) });
+              return (
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 12, border: "0.5px solid var(--color-border-tertiary)", padding: 16, marginBottom: 12 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>💼 Work expenses</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Money you've paid out for work and expect back. Reimbursements are kept out of your salary.</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: outstanding.length ? 12 : 0 }}>
+                    <StatCard label="Awaiting reimbursement" value={fmtMoney(outTotal)} color={outTotal > 0 ? "#378ADD" : "var(--color-text-secondary)"} sub={`${outstanding.length} expense${outstanding.length !== 1 ? "s" : ""}`} />
+                    <StatCard label="Reimbursed to you" value={fmtMoney(reimbIncome)} color="#1D9E75" sub="logged as reimbursement income" />
+                  </div>
+                  {outstanding.map(t => (
+                    <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                      <span style={{ flex: 1, fontSize: 13 }}>{t.description || "Work expense"} <span style={{ color: "var(--color-text-secondary)", fontSize: 11 }}>· {fmtShort(t.date)}</span></span>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{fmtMoney(t.amount)}</span>
+                      <button onClick={() => markReimbursed(t.id)} style={{ fontSize: 11.5, padding: "4px 10px", borderRadius: 7, cursor: "pointer", color: "#1D9E75" }}>✓ Got it back</button>
+                    </div>
+                  ))}
+                  {outstanding.length === 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>All caught up — nothing awaiting reimbursement. 🎉</div>}
+                  <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 10 }}>Tip: tick <b>Work expense</b> on a spending transaction, and <b>Expense reimbursement</b> when the money comes back in — it then won't count as salary in your Job section.</div>
+                </div>
+              );
+            })()}
             {(state.transactions || []).length > 0 && list.length === 0 && <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>No transactions in this period.</div>}
             {(state.transactions || []).length === 0 && <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 36, marginBottom: 10 }}>💳</div><div style={{ fontSize: 14, marginBottom: 6 }}>No transactions yet</div><div style={{ fontSize: 12 }}>Import a Lloyds CSV export, add manually, or load sample data.</div></div>}
             {list.map(t => {
@@ -3274,7 +3315,7 @@ function FinanceView({ state, up, accentColor }) {
                 <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: "var(--color-background-primary)", borderRadius: 10, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 7 }}>
                   <span style={{ fontSize: 20, width: 26, textAlign: "center" }}>{income ? "💰" : (c?.emoji || "❓")}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (income ? "Income" : "Transaction")}</div>
+                    <div style={{ fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (income ? "Income" : "Transaction")}{t.workExpense && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#378ADD", 0.14), color: "#378ADD", padding: "1px 7px", borderRadius: 10 }}>💼 {t.reimbursed ? "reimbursed" : "expense"}</span>}{t.reimbursement && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#1D9E75", 0.14), color: "#1D9E75", padding: "1px 7px", borderRadius: 10 }}>↩️ reimbursement</span>}</div>
                     <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{fmtDate(t.date)}{t.source === "manual" ? "" : " · 🏦"}</div>
                   </div>
                   {!income && (
@@ -3314,6 +3355,77 @@ function FinanceView({ state, up, accentColor }) {
           ))}
         </div>
       )}
+
+      {/* ── Credit score (Phase B placeholder dashboard) ── */}
+      {tab === "credit" && (() => {
+        // Placeholder layout for the upcoming integration. UK Experian-style 0–999 scale.
+        const SAMPLE = 721, MAX = 999;
+        const bands = [["Very poor", 0, "#E24B4A"], ["Poor", 561, "#D85A30"], ["Fair", 721, "#BA7517"], ["Good", 881, "#639922"], ["Excellent", 961, "#1D9E75"]];
+        const band = bands.slice().reverse().find(b => SAMPLE >= b[1]) || bands[0];
+        const pct = SAMPLE / MAX;
+        const R = 80, CX = 100, CY = 100, circ = Math.PI * R; // semicircle
+        const factors = [
+          ["Payment history", "On-time payments", "💳"],
+          ["Credit utilisation", "How much of your limit you use", "📉"],
+          ["Age of accounts", "Length of credit history", "📅"],
+          ["Recent searches", "Hard searches in last 12 months", "🔍"],
+          ["Total accounts", "Active credit accounts", "🗂"],
+          ["Electoral roll", "Registered at your address", "🗳"],
+        ];
+        return (
+          <div style={{ maxWidth: 640 }}>
+            <SectionHead sub="Coming in Phase B — see your score, what's moving it, and how it trends over time.">📊 Credit score</SectionHead>
+            <div style={{ background: hex2rgba(ac, 0.06), border: `1px solid ${hex2rgba(ac, 0.25)}`, borderRadius: 12, padding: "12px 14px", fontSize: 12.5, marginBottom: 14 }}>
+              🔒 <b>Preview.</b> This is a sample layout. Once live (Phase B) it'll pull a soft-search score from a provider (Experian, Equifax or TransUnion) — read-only, no impact on your score.
+            </div>
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, opacity: 0.96 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap", justifyContent: "center" }}>
+                <div style={{ position: "relative", width: 200, height: 116 }}>
+                  <svg width="200" height="116" viewBox="0 0 200 116">
+                    <path d={`M ${CX - R} ${CY} A ${R} ${R} 0 0 1 ${CX + R} ${CY}`} fill="none" stroke="var(--color-background-secondary)" strokeWidth="14" strokeLinecap="round" />
+                    <path d={`M ${CX - R} ${CY} A ${R} ${R} 0 0 1 ${CX + R} ${CY}`} fill="none" stroke={band[2]} strokeWidth="14" strokeLinecap="round" strokeDasharray={`${pct * circ} ${circ}`} />
+                  </svg>
+                  <div style={{ position: "absolute", inset: 0, top: 28, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ fontSize: 30, fontWeight: 700, color: band[2] }}>{SAMPLE}</div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>of {MAX}</div>
+                  </div>
+                </div>
+                <div style={{ minWidth: 160 }}>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Rating</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: band[2] }}>{band[0]}</div>
+                  <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 4 }}>▲ sample +12 since last month</div>
+                  <div style={{ display: "flex", gap: 3, marginTop: 10 }}>
+                    {bands.map(b => <div key={b[0]} title={b[0]} style={{ flex: 1, height: 6, borderRadius: 3, background: b[0] === band[0] ? b[2] : hex2rgba(b[2], 0.25) }} />)}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>What affects your score</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
+                {factors.map(([t, d, ic]) => (
+                  <div key={t} style={{ display: "flex", gap: 10, padding: "10px 12px", background: "var(--color-background-secondary)", borderRadius: 10 }}>
+                    <span style={{ fontSize: 16 }}>{ic}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 500 }}>{t}</div>
+                      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 1 }}>{d}</div>
+                    </div>
+                    <span style={{ fontSize: 11, color: "var(--color-text-secondary)", alignSelf: "center" }}>—</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Score over time</div>
+              <BarsChart data={[680, 690, 705, 700, 715, 721].map((v, i) => ({ label: monthShort(shiftMonth(curMonthKey(), -(5 - i))), value: v, color: hex2rgba(ac, 0.55) }))} height={120} />
+              <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 8, textAlign: "center" }}>Sample data — your real history will build here once connected.</div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <button disabled style={{ fontSize: 14, padding: "10px 22px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect credit score — coming in Phase B</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Connect bank ── */}
       {tab === "connect" && (
@@ -4154,7 +4266,84 @@ function RiskModal({ risk, accentColor, onSave, onClose }) {
   );
 }
 
-const DOC_TABS = [["insurance", "🛡 Insurance"], ["warranties", "🧾 Warranties"], ["risk", "⚠️ Risk register"], ["audit", "🔐 Digital Life Audit"]];
+// UK tax year helpers (runs 6 Apr → 5 Apr). FY end = next 5 April.
+function genTaxYears(n) { const now = new Date(); let endYear = now.getFullYear() + (now.getMonth() > 3 || (now.getMonth() === 3 && now.getDate() >= 6) ? 1 : 0); const out = []; for (let i = 0; i < (n || 8); i++) { const s = endYear - 1 - i; out.push(`${s}/${String((s + 1) % 100).padStart(2, "0")}`); } return out; }
+function fyEndDate() { const now = new Date(); const y = now.getFullYear() + (now.getMonth() > 3 || (now.getMonth() === 3 && now.getDate() > 5) ? 1 : 0); return `${y}-04-05`; }
+
+// Payslip / P60 entry modal. `kind` is "payslip" or "p60".
+function PayDocModal({ kind, doc, accentColor, onSave, onClose }) {
+  const isP60 = kind === "p60";
+  const blank = isP60 ? { taxYear: genTaxYears(1)[0], gross: "", tax: "", ni: "", pension: "", net: "", fileName: "", notes: "" } : { month: todayStr().slice(0, 7), gross: "", tax: "", ni: "", pension: "", net: "", fileName: "", notes: "" };
+  const [d, setD] = useState({ ...blank, ...(doc || {}) });
+  const up = (k, v) => setD(x => ({ ...x, [k]: v }));
+  const ac = accentColor; const inp = { width: "100%", boxSizing: "border-box" };
+  const num = (label, key) => <Field label={label}><input type="number" step="0.01" placeholder="0.00" value={d[key]} onChange={e => up(key, e.target.value)} style={inp} /></Field>;
+  return (
+    <Modal onClose={onClose} width={500}>
+      <ModalHeader title={(doc?.id ? "Edit " : "New ") + (isP60 ? "P60" : "payslip")} onClose={onClose} />
+      {isP60
+        ? <Field label="Tax year"><select value={d.taxYear} onChange={e => up("taxYear", e.target.value)} style={inp}>{genTaxYears(8).map(y => <option key={y} value={y}>{y}</option>)}</select></Field>
+        : <Field label="Pay month"><input type="month" value={d.month} onChange={e => up("month", e.target.value)} style={inp} /></Field>}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        {num(isP60 ? "Gross pay (£)" : "Gross (£)", "gross")}
+        {num("Income tax (£)", "tax")}
+        {num("National Insurance (£)", "ni")}
+        {num("Pension (£)", "pension")}
+      </div>
+      {num("Net pay (£)", "net")}
+      <Field label="Attachment (PDF)">
+        <input type="file" accept="application/pdf,.pdf" onChange={e => { const f = e.target.files[0]; if (f) up("fileName", f.name); }} style={inp} />
+        {d.fileName && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 4 }}>📎 {d.fileName} — filename recorded. Secure file storage arrives with bank linking (Phase B).</div>}
+      </Field>
+      <Field label="Notes"><textarea placeholder="Anything notable about this pay period" value={d.notes} onChange={e => up("notes", e.target.value)} rows={2} style={{ ...inp, resize: "vertical" }} /></Field>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { const v = k => parseFloat(d[k]) || 0; onSave({ id: doc?.id || genId(), taxYear: d.taxYear, month: d.month, gross: v("gross"), tax: v("tax"), ni: v("ni"), pension: v("pension"), net: v("net"), fileName: (d.fileName || "").trim(), notes: (d.notes || "").trim() }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{doc?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+const KEYDOC_TYPES = [
+  { v: "Passport", icon: "🛂" }, { v: "Driving licence", icon: "🪪" }, { v: "GHIC / EHIC", icon: "🏥" },
+  { v: "Visa / BRP", icon: "🛃" }, { v: "Blue light card", icon: "🔵" }, { v: "Railcard", icon: "🚆" },
+  { v: "Travel pass", icon: "🎫" }, { v: "Membership", icon: "🎟" }, { v: "Other", icon: "📄" }
+];
+const keyDocIcon = type => (KEYDOC_TYPES.find(t => t.v === type) || { icon: "📄" }).icon;
+const KEYDOC_STATUS = [["active", "Active"], ["waiting", "Waiting to arrive"], ["expired", "Expired"]];
+
+function KeyDocModal({ doc, accentColor, onSave, onClose }) {
+  const blank = { type: "Passport", label: "", reference: "", status: "active", issueDate: "", expiryDate: "", remind: true, notes: "" };
+  const [d, setD] = useState({ ...blank, ...(doc || {}) });
+  const up = (k, v) => setD(x => ({ ...x, [k]: v }));
+  const ac = accentColor; const inp = { width: "100%", boxSizing: "border-box" };
+  return (
+    <Modal onClose={onClose} width={500}>
+      <ModalHeader title={doc?.id ? "Edit document" : "New key document"} onClose={onClose} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Type"><select value={d.type} onChange={e => up("type", e.target.value)} style={inp}>{KEYDOC_TYPES.map(t => <option key={t.v} value={t.v}>{t.icon} {t.v}</option>)}</select></Field>
+        <Field label="Status"><select value={d.status} onChange={e => up("status", e.target.value)} style={inp}>{KEYDOC_STATUS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
+      </div>
+      <Field label="Label / whose"><input placeholder="e.g. Josh's passport" value={d.label} onChange={e => up("label", e.target.value)} style={inp} autoFocus /></Field>
+      <Field label="Reference (optional — no full numbers)"><input placeholder="e.g. last 4 digits, or a nickname" value={d.reference} onChange={e => up("reference", e.target.value)} style={inp} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Issued (optional)"><input type="date" value={d.issueDate} onChange={e => up("issueDate", e.target.value)} style={inp} /></Field>
+        <Field label="Expires"><input type="date" value={d.expiryDate} onChange={e => up("expiryDate", e.target.value)} style={inp} disabled={d.status === "waiting"} /></Field>
+      </div>
+      <Field label="Notes"><textarea placeholder="Renewal notes, where it's kept…" value={d.notes} onChange={e => up("notes", e.target.value)} rows={2} style={{ ...inp, resize: "vertical" }} /></Field>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer", marginTop: 4 }}>
+        <input type="checkbox" checked={d.remind !== false} onChange={e => up("remind", e.target.checked)} /> 🔔 Remind me ~90 days before it expires
+      </label>
+      <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>🔒 Don't store full passport/licence numbers — keep only what you need to track renewal.</div>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (d.label.trim() || d.type) onSave({ id: doc?.id || genId(), type: d.type, label: (d.label || "").trim() || d.type, reference: (d.reference || "").trim(), status: d.status, issueDate: d.issueDate, expiryDate: d.status === "waiting" ? "" : d.expiryDate, remind: d.remind !== false, notes: (d.notes || "").trim() }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{doc?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+const DOC_TABS = [["job", "💼 Job"], ["insurance", "🛡 Insurance"], ["keydocs", "🪪 Key documents"], ["warranties", "🧾 Warranties"], ["risk", "⚠️ Risk register"], ["audit", "🔐 Digital Life Audit"]];
 
 function DocsView({ state, up, accentColor, goFinance }) {
   const ac = accentColor;
@@ -4179,9 +4368,11 @@ function DocsView({ state, up, accentColor, goFinance }) {
   function deleteInsurance(id) { if (confirm("Delete this policy?")) up({ insurance: insurance.filter(p => p.id !== id), tasks: (state.tasks || []).filter(t => t.insuranceId !== id) }); }
   function addRenewalTask(p) {
     if (!p.renewalDate) { alert("Add a renewal date to this policy first."); return; }
+    // Don't stack duplicate reminders — one per policy is enough.
+    if ((state.tasks || []).some(t => t.insuranceId === p.id && !t.done)) { alert("A renewal reminder for this policy is already on your task list."); return; }
     const note = [p.provider && `Provider: ${p.provider}`, p.policyNumber && `Policy: ${p.policyNumber}`, `Premium: ${fmtMoney(insAnnual(p), true)}/yr`, p.contactPhone && `Tel: ${p.contactPhone}`].filter(Boolean).join(" · ");
-    const task = { id: genId(), title: `Review ${p.type} insurance${p.provider ? " (" + p.provider + ")" : ""}`, priority: "medium", groupId: "", deadline: p.renewalDate, scheduledDate: "", notes: note, tags: [], subtasks: [], someday: false, repeat: "none", duration: "", cost: "", costCategory: "", done: false };
-    up({ tasks: [task, ...(state.tasks || [])] });
+    const task = { id: "ins_" + p.id, insuranceId: p.id, title: `🔔 Renew ${p.type} insurance${p.provider ? " (" + p.provider + ")" : ""}`, priority: "medium", groupId: "", deadline: p.renewalDate, scheduledDate: "", notes: note, tags: [], subtasks: [], someday: false, repeat: "none", duration: "", cost: "", costCategory: "", done: false };
+    up({ tasks: [task, ...(state.tasks || []).filter(t => t.id !== task.id)] });
     alert("Added a renewal reminder to your task list.");
   }
 
@@ -4210,6 +4401,38 @@ function DocsView({ state, up, accentColor, goFinance }) {
   function saveRisk(r) { up({ risks: risks.some(x => x.id === r.id) ? risks.map(x => x.id === r.id ? r : x) : [...risks, r] }); setRiskModal(null); }
   function deleteRisk(id) { if (confirm("Delete this risk?")) { up({ risks: risks.filter(r => r.id !== id) }); setRiskDetail(null); } }
 
+  // Shared dedup reminder adder — never stacks duplicates (avoids reminder loops).
+  function addReminder(task) { const tasks = state.tasks || []; if (tasks.some(t => t.id === task.id && !t.done)) { alert(`A reminder for "${task.title}" is already on your tasks.`); return; } up({ tasks: [task, ...tasks.filter(t => t.id !== task.id)] }); alert("Added to your tasks."); }
+
+  // ── Job ──
+  const [payDocModal, setPayDocModal] = useState(null); // { kind, doc }
+  const job = state.job || {};
+  function setJob(patch) { up({ job: { ...job, ...patch } }); }
+  const payslips = job.payslips || [];
+  const p60s = job.p60s || [];
+  function savePayslip(s) { setJob({ payslips: payslips.some(x => x.id === s.id) ? payslips.map(x => x.id === s.id ? s : x) : [...payslips, s] }); setPayDocModal(null); }
+  function deletePayslip(id) { setJob({ payslips: payslips.filter(x => x.id !== id) }); }
+  function saveP60(s) { setJob({ p60s: p60s.some(x => x.id === s.id) ? p60s.map(x => x.id === s.id ? s : x) : [...p60s, s] }); setPayDocModal(null); }
+  function deleteP60(id) { setJob({ p60s: p60s.filter(x => x.id !== id) }); }
+  function useSalaryAsIncome() { const monthly = Math.round(((Number(job.salary) || 0) / 12) * 100) / 100; if (!monthly) return alert("Add your annual salary first."); const mk = curMonthKey(); const plans = { ...(state.financePlans || {}) }; const cur = plans[mk] || {}; plans[mk] = { ...cur, income: { ...(cur.income || {}), projected: monthly } }; up({ financePlans: plans }); alert(`Set ${fmtMoney(monthly)} as this month's projected income.`); }
+  function addPensionReview() { addReminder({ id: "pension_review", title: "🏖 Review pension annual statement", priority: "medium", groupId: "", deadline: fyEndDate(), scheduledDate: fyEndDate(), notes: "Check this year's pension statement — contributions, growth, charges.", tags: [], subtasks: [], someday: false, repeat: "yearly", duration: "", cost: "", costCategory: "", done: false }); }
+  function addKeyTermsReview() { addReminder({ id: "job_keyterms_review", title: "💼 Review employment contract key terms", priority: "low", groupId: "", deadline: fyEndDate(), scheduledDate: fyEndDate(), notes: "Notice period, benefits, restrictive covenants, salary review.", tags: [], subtasks: [], someday: false, repeat: "yearly", duration: "", cost: "", costCategory: "", done: false }); }
+
+  // ── Key documents ──
+  const [keyDocModal, setKeyDocModal] = useState(null);
+  const keyDocuments = state.keyDocuments || [];
+  function saveKeyDoc(d) {
+    const list = keyDocuments.some(x => x.id === d.id) ? keyDocuments.map(x => x.id === d.id ? d : x) : [...keyDocuments, d];
+    let tasks = (state.tasks || []).filter(t => t.keyDocId !== d.id);
+    if (d.remind !== false && d.expiryDate && d.status !== "waiting") {
+      const remindDate = addDaysStr(d.expiryDate, -90);
+      tasks = [{ id: "doc_" + d.id, keyDocId: d.id, title: `🪪 Renew ${d.label || d.type} (expires ${fmtShort(d.expiryDate)})`, priority: "medium", groupId: "", deadline: remindDate, scheduledDate: remindDate, notes: [d.reference && `Ref: ${d.reference}`, d.notes].filter(Boolean).join(" · "), tags: [], subtasks: [], someday: false, repeat: "none", duration: "", cost: "", costCategory: "", done: false }, ...tasks];
+    }
+    up({ keyDocuments: list, tasks });
+    setKeyDocModal(null);
+  }
+  function deleteKeyDoc(id) { if (confirm("Delete this document?")) up({ keyDocuments: keyDocuments.filter(d => d.id !== id), tasks: (state.tasks || []).filter(t => t.keyDocId !== id) }); }
+
   const card = { background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 };
 
   return (
@@ -4217,15 +4440,119 @@ function DocsView({ state, up, accentColor, goFinance }) {
       {insModal !== null && <InsuranceModal policy={insModal === "new" ? null : insModal} cats={cats} accentColor={ac} onSave={saveInsurance} onClose={() => setInsModal(null)} />}
       {warModal !== null && <WarrantyModal warranty={warModal === "new" ? null : warModal} accentColor={ac} onSave={saveWarranty} onClose={() => setWarModal(null)} />}
       {riskModal !== null && <RiskModal risk={riskModal === "new" ? null : riskModal} accentColor={ac} onSave={saveRisk} onClose={() => setRiskModal(null)} />}
+      {payDocModal && <PayDocModal kind={payDocModal.kind} doc={payDocModal.doc} accentColor={ac} onSave={payDocModal.kind === "p60" ? saveP60 : savePayslip} onClose={() => setPayDocModal(null)} />}
+      {keyDocModal !== null && <KeyDocModal doc={keyDocModal === "new" ? null : keyDocModal} accentColor={ac} onSave={saveKeyDoc} onClose={() => setKeyDocModal(null)} />}
 
       <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>🗂 Documents &amp; Policies</h1>
-      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>A central place to store and manage the essentials — policies, warranties, risks and your digital life audit.</p>
+      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>A central place to store and manage the essentials — your job, policies, key documents, warranties, risks and your digital life audit.</p>
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
         {DOC_TABS.map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{ fontSize: 13, padding: "7px 13px", borderRadius: 9, cursor: "pointer", border: "none", background: tab === id ? ac : "var(--color-background-secondary)", color: tab === id ? "#fff" : "var(--color-text-secondary)", fontWeight: tab === id ? 500 : 400 }}>{label}</button>
         ))}
       </div>
+
+      {/* ── Job ── */}
+      {tab === "job" && (() => {
+        const monthlySalary = (Number(job.salary) || 0) / 12;
+        const inp = { width: "100%", boxSizing: "border-box" };
+        const lbl = { fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 4, display: "block" };
+        const ta = { ...inp, resize: "vertical", minHeight: 54 };
+        const ytdP60 = p60s.slice().sort((a, b) => (b.taxYear || "").localeCompare(a.taxYear || ""));
+        const sortedPayslips = payslips.slice().sort((a, b) => (b.month || "").localeCompare(a.month || ""));
+        return (
+          <div>
+            <SectionHead sub="Your employment in one place — salary feeds your budget, plus contract terms, payslips, P60s and pension reviews.">💼 Your job</SectionHead>
+
+            {/* Employer + salary */}
+            <div style={card}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>🏢 Employer & pay</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div><label style={lbl}>Employer</label><input value={job.employer || ""} onChange={e => setJob({ employer: e.target.value })} placeholder="e.g. ACME Ltd" style={inp} /></div>
+                <div><label style={lbl}>Job title</label><input value={job.jobTitle || ""} onChange={e => setJob({ jobTitle: e.target.value })} placeholder="e.g. Engineer" style={inp} /></div>
+                <div><label style={lbl}>Annual salary (£)</label><input type="number" step="0.01" value={job.salary || ""} onChange={e => setJob({ salary: e.target.value })} placeholder="0.00" style={inp} /></div>
+                <div><label style={lbl}>Start date</label><input type="date" value={job.startDate || ""} onChange={e => setJob({ startDate: e.target.value })} style={inp} /></div>
+              </div>
+              {monthlySalary > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, flexWrap: "wrap", background: hex2rgba(ac, 0.06), borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 13 }}>≈ <b>{fmtMoney(monthlySalary)}</b>/month gross</div>
+                  <div style={{ flex: 1 }} />
+                  <button onClick={useSalaryAsIncome} style={{ fontSize: 12.5, padding: "6px 12px", borderRadius: 8, cursor: "pointer", background: ac, color: "#fff", border: "none", fontWeight: 500 }}>Use as this month's income →</button>
+                </div>
+              )}
+              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>Your monthly budget's projected income pulls from here. Reimbursed work expenses are tracked separately and won't inflate your salary.</div>
+            </div>
+
+            {/* Contract key terms */}
+            <div style={card}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>📜 Contract key terms</span>
+                <button onClick={addKeyTermsReview} style={{ fontSize: 12, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>🔔 Yearly review</button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div><label style={lbl}>Notice period</label><input value={job.noticePeriod || ""} onChange={e => setJob({ noticePeriod: e.target.value })} placeholder="e.g. 1 month" style={inp} /></div>
+                <div><label style={lbl}>Holiday entitlement</label><input value={job.holiday || ""} onChange={e => setJob({ holiday: e.target.value })} placeholder="e.g. 25 days + bank hols" style={inp} /></div>
+              </div>
+              <div style={{ marginTop: 12 }}><label style={lbl}>Benefits</label><textarea value={job.benefits || ""} onChange={e => setJob({ benefits: e.target.value })} placeholder="Pension match, bonus, private health, car allowance…" style={ta} /></div>
+              <div style={{ marginTop: 12 }}><label style={lbl}>Restrictive covenants</label><textarea value={job.covenants || ""} onChange={e => setJob({ covenants: e.target.value })} placeholder="Non-compete, non-solicitation, garden leave…" style={ta} /></div>
+              <div style={{ marginTop: 12 }}><label style={lbl}>Other notes</label><textarea value={job.notes || ""} onChange={e => setJob({ notes: e.target.value })} placeholder="Anything else worth recording" style={ta} /></div>
+            </div>
+
+            {/* Pension annual statement */}
+            <div style={card}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>🏖 Pension annual statement</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>Set a yearly reminder to review your statement at the end of each tax year.</div>
+                </div>
+                <button onClick={addPensionReview} style={{ fontSize: 12.5, padding: "7px 14px", borderRadius: 9, cursor: "pointer", background: ac, color: "#fff", border: "none", fontWeight: 500 }}>🔔 Add FY review</button>
+              </div>
+            </div>
+
+            {/* P60s */}
+            <div style={card}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>📄 P60s</span>
+                <button onClick={() => setPayDocModal({ kind: "p60", doc: null })} style={{ fontSize: 12.5, padding: "6px 12px", borderRadius: 8, cursor: "pointer", color: ac }}>+ P60</button>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>End-of-year totals per tax year. Backdate as many years as you like.</div>
+              {ytdP60.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>No P60s yet.</div>}
+              {ytdP60.map(p => (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{p.taxYear} {p.fileName && <span style={{ fontSize: 10, color: ac }}>📎</span>}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)" }}>Gross {fmtMoney(p.gross, true)} · Tax {fmtMoney(p.tax, true)} · NI {fmtMoney(p.ni, true)} · Pension {fmtMoney(p.pension, true)}</div>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{fmtMoney(p.net, true)}</div>
+                  <button onClick={() => setPayDocModal({ kind: "p60", doc: p })} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>✏️</button>
+                  <button onClick={() => deleteP60(p.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>🗑</button>
+                </div>
+              ))}
+            </div>
+
+            {/* Payslips */}
+            <div style={card}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>🧾 Payslips</span>
+                <button onClick={() => setPayDocModal({ kind: "payslip", doc: null })} style={{ fontSize: 12.5, padding: "6px 12px", borderRadius: 8, cursor: "pointer", color: ac }}>+ Payslip</button>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>Log each month's gross, tax, NI and pension. Attach the PDF (filename recorded for now).</div>
+              {sortedPayslips.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>No payslips yet.</div>}
+              {sortedPayslips.map(p => (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{p.month ? new Date(p.month + "-01T00:00:00").toLocaleDateString("en-GB", { month: "long", year: "numeric" }) : "—"} {p.fileName && <span style={{ fontSize: 10, color: ac }}>📎</span>}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)" }}>Gross {fmtMoney(p.gross, true)} · Tax {fmtMoney(p.tax, true)} · NI {fmtMoney(p.ni, true)} · Pension {fmtMoney(p.pension, true)}</div>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{fmtMoney(p.net, true)}</div>
+                  <button onClick={() => setPayDocModal({ kind: "payslip", doc: p })} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>✏️</button>
+                  <button onClick={() => deletePayslip(p.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>🗑</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Insurance ── */}
       {tab === "insurance" && (() => {
@@ -4281,6 +4608,63 @@ function DocsView({ state, up, accentColor, goFinance }) {
                         <button onClick={() => addRenewalTask(p)} title="Add a renewal reminder to your tasks" style={{ fontSize: 12, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>🔔 Remind me</button>
                         <button onClick={() => setInsModal(p)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
                         <button onClick={() => deleteInsurance(p.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── Key documents ── */}
+      {tab === "keydocs" && (() => {
+        const statusOf = d => { if (d.status === "waiting") return "waiting"; if (d.expiryDate && daysUntil(d.expiryDate) < 0) return "expired"; return "active"; };
+        const list = [...keyDocuments].sort((a, b) => { const aw = a.status === "waiting", bw = b.status === "waiting"; if (aw !== bw) return aw ? -1 : 1; return (a.expiryDate || "9999").localeCompare(b.expiryDate || "9999"); });
+        const expiringSoon = keyDocuments.filter(d => d.expiryDate && d.status !== "waiting" && daysUntil(d.expiryDate) >= 0 && daysUntil(d.expiryDate) <= 90).length;
+        return (
+          <div>
+            <SectionHead sub="Passports, licences, GHIC, Blue Light Card and more — track expiry and get a renewal nudge. Keep only what you need, no full numbers.">🪪 Key documents</SectionHead>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+              <button onClick={() => setKeyDocModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Document</button>
+            </div>
+            {keyDocuments.length === 0 && (
+              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>🪪</div>
+                <div style={{ fontSize: 15, marginBottom: 6 }}>No documents tracked yet</div>
+                <div style={{ fontSize: 13, marginBottom: 18 }}>Add your passport, driving licence, GHIC, Blue Light Card and we'll watch the expiry dates.</div>
+                <button onClick={() => setKeyDocModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a document</button>
+              </div>
+            )}
+            {keyDocuments.length > 0 && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+                  <StatCard label="Tracked" value={String(keyDocuments.length)} color={ac} />
+                  <StatCard label="Expiring ≤90 days" value={String(expiringSoon)} color={expiringSoon > 0 ? "#BA7517" : "#1D9E75"} />
+                  <StatCard label="Awaiting arrival" value={String(keyDocuments.filter(d => d.status === "waiting").length)} />
+                </div>
+                {list.map(d => {
+                  const st = statusOf(d);
+                  const days = d.expiryDate ? daysUntil(d.expiryDate) : null;
+                  const badge = st === "waiting" ? { t: "Waiting to arrive", c: "#378ADD" } : st === "expired" ? { t: "Expired", c: "#E24B4A" } : (days != null && days <= 90) ? { t: `Renew · ${days}d`, c: "#BA7517" } : { t: "Active", c: "#1D9E75" };
+                  return (
+                    <div key={d.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ fontSize: 24, width: 30, textAlign: "center" }}>{keyDocIcon(d.type)}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 15 }}>{d.label}<span style={{ fontWeight: 400, color: "var(--color-text-secondary)" }}> · {d.type}</span></div>
+                          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{d.reference ? `Ref ${d.reference} · ` : ""}{d.expiryDate ? `expires ${fmtShort(d.expiryDate)}` : (d.status === "waiting" ? "not arrived yet" : "no expiry set")}</div>
+                        </div>
+                        <span style={{ fontSize: 11, fontWeight: 600, background: hex2rgba(badge.c, 0.14), color: badge.c, padding: "3px 10px", borderRadius: 20, whiteSpace: "nowrap" }}>{badge.t}</span>
+                      </div>
+                      {d.notes && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 8, fontStyle: "italic" }}>{d.notes}</div>}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                        {d.remind !== false && d.expiryDate && d.status !== "waiting" && <span style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>🔔 reminder set</span>}
+                        <div style={{ flex: 1 }} />
+                        {d.status === "waiting" && <button onClick={() => saveKeyDoc({ ...d, status: "active" })} style={{ fontSize: 12, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: "#1D9E75" }}>✓ It's arrived</button>}
+                        <button onClick={() => setKeyDocModal(d)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+                        <button onClick={() => deleteKeyDoc(d.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
                       </div>
                     </div>
                   );
