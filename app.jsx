@@ -1114,6 +1114,16 @@ function payPeriodBounds(payday, anchor, offset) {
     const from = ymdLocal(d), to = addDaysStr(from, 6);
     return { from, to, label: `Week of ${fmtShort(from)}` };
   }
+  if (payday.type === "lastWeekday") {
+    const w = Number(payday.day); // 0=Sun..6=Sat
+    const lastOf = (y, m) => { const e = new Date(y, m + 1, 0); while (e.getDay() !== w) e.setDate(e.getDate() - 1); return e; };
+    const a = new Date(anchor + "T00:00:00");
+    let start = lastOf(a.getFullYear(), a.getMonth());
+    if (a < start) start = lastOf(a.getFullYear(), a.getMonth() - 1);
+    start = lastOf(start.getFullYear(), start.getMonth() + offset);
+    const next = lastOf(start.getFullYear(), start.getMonth() + 1);
+    return { from: ymdLocal(start), to: addDaysStr(ymdLocal(next), -1), label: `Pay period from ${fmtShort(ymdLocal(start))}` };
+  }
   const day = Math.min(28, Math.max(1, Number(payday.day) || 1));
   const d = new Date(anchor + "T00:00:00");
   let start = new Date(d.getFullYear(), d.getMonth(), day);
@@ -2138,13 +2148,15 @@ function SectionHead({ children, sub, top = 0 }) {
 
 // Saved monthly report snapshots (forecast vs actual, saved, debt, gifts).
 function MonthlyReports({ state }) {
+  const [showAll, setShowAll] = useState(false);
   const merged = { ...(state.monthlyReports || {}) };
   const recent = new Set((state.transactions || []).map(t => (t.date || "").slice(0, 7)).filter(Boolean));
   recent.add(curMonthKey());
   Object.keys(state.financePlans || {}).forEach(m => recent.add(m));
   recent.forEach(mk => { merged[mk] = computeMonthReport(state, mk); });
-  const keys = Object.keys(merged).filter(k => merged[k]).sort().reverse().slice(0, 24);
-  if (keys.length === 0) return <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>No monthly history yet — it builds up as you use Tend.</div>;
+  const allKeys = Object.keys(merged).filter(k => merged[k]).sort().reverse().slice(0, 24);
+  if (allKeys.length === 0) return <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>No monthly history yet — it builds up as you use Tend.</div>;
+  const keys = showAll ? allKeys : allKeys.slice(0, 4);
   return (
     <div>
       {keys.map(mk => {
@@ -2172,6 +2184,11 @@ function MonthlyReports({ state }) {
           </div>
         );
       })}
+      {allKeys.length > 4 && (
+        <button onClick={() => setShowAll(v => !v)} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 9, cursor: "pointer", width: "100%", color: "var(--color-text-primary)" }}>
+          {showAll ? "Show fewer" : `View all ${allKeys.length} months`}
+        </button>
+      )}
     </div>
   );
 }
@@ -3046,12 +3063,13 @@ function FinanceView({ state, up, accentColor }) {
             )}
 
             <div style={{ display: "flex", gap: 8, margin: "18px 0 14px", flexWrap: "wrap" }}>
-              <button onClick={() => addPension("private")} style={{ fontSize: 13, padding: "8px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Private pension</button>
-              {states.length === 0 && <button onClick={() => addPension("state")} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 9, cursor: "pointer" }}>+ State Pension</button>}
+              {states.length === 0 && <button onClick={() => addPension("state")} style={{ fontSize: 13, padding: "8px 16px", background: "#1D9E75", color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>🇬🇧 + State Pension</button>}
+              <button onClick={() => addPension("private")} style={{ fontSize: 13, padding: "8px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Private / workplace / SIPP</button>
             </div>
+            {states.length === 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 14 }}>Most people get the State Pension too — add it first, then any private, workplace or SIPP pensions.</div>}
 
-            {/* Per-pension calculators */}
-            {pensions.map(p => {
+            {/* Per-pension calculators — State Pension first */}
+            {[...states, ...privates].map(p => {
               if (p.type === "state") {
                 return (
                   <div key={p.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
@@ -3088,7 +3106,12 @@ function FinanceView({ state, up, accentColor }) {
                     {pfld(p, "Growth (%/yr)", "growthPct", { ph: "e.g. 5" })}
                     {pfld(p, "Inflation (%/yr)", "inflationPct", { ph: "e.g. 2.5" })}
                   </div>
-                  {p.contributing === false && <div style={{ fontSize: 12, color: "#BA7517", marginTop: 8 }}>⏸ Paid-up — no new contributions, just growth.</div>}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 4 }}>
+                    <Field label="Employment started"><input type="date" value={p.employmentStart || ""} onChange={e => setPensionById(p.id, "employmentStart", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+                    <Field label="Paying in since"><input type="date" value={p.payingSince || ""} onChange={e => setPensionById(p.id, "payingSince", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+                    {p.contributing === false && <Field label="Stopped paying in"><input type="date" value={p.stoppedPaying || ""} onChange={e => setPensionById(p.id, "stoppedPaying", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>}
+                  </div>
+                  {p.contributing === false && <div style={{ fontSize: 12, color: "#BA7517", marginTop: 8 }}>⏸ Paid-up{p.stoppedPaying ? ` since ${fmtShort(p.stoppedPaying)}` : ""} — no new contributions, just growth.</div>}
                   {ready ? (
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10, marginTop: 14 }}>
                       <StatCard label={`Pot at ${p.retireAge}`} value={fmtMoney(f.finalPot, true)} color={ac} />
@@ -3235,15 +3258,18 @@ function FinanceView({ state, up, accentColor }) {
               {paydayEdit && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12, fontSize: 12.5, background: "var(--color-background-secondary)", borderRadius: 8, padding: "8px 10px" }}>
                   <span style={{ color: "var(--color-text-secondary)" }}>I get paid</span>
-                  <select value={payday.type} onChange={e => up({ payday: { ...payday, type: e.target.value, day: e.target.value === "weekly" ? 5 : 1 } })} style={{ fontSize: 12.5 }}>
-                    <option value="monthly">monthly</option><option value="weekly">weekly</option>
+                  <select value={payday.type} onChange={e => up({ payday: { ...payday, type: e.target.value, day: e.target.value === "monthly" ? 1 : 5 } })} style={{ fontSize: 12.5 }}>
+                    <option value="monthly">monthly (on a date)</option>
+                    <option value="lastWeekday">monthly (last weekday)</option>
+                    <option value="weekly">weekly</option>
                   </select>
                   {payday.type === "monthly" ? (
                     <><span style={{ color: "var(--color-text-secondary)" }}>on day</span><input type="number" min="1" max="28" value={payday.day} onChange={e => up({ payday: { ...payday, day: Math.min(28, Math.max(1, parseInt(e.target.value, 10) || 1)) } })} style={{ width: 60, fontSize: 12.5 }} /></>
                   ) : (
+                    <><span style={{ color: "var(--color-text-secondary)" }}>{payday.type === "lastWeekday" ? "last" : "every"}</span>
                     <select value={payday.day} onChange={e => up({ payday: { ...payday, day: parseInt(e.target.value, 10) } })} style={{ fontSize: 12.5 }}>
                       {["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map((d, i) => <option key={i} value={i}>{d}</option>)}
-                    </select>
+                    </select></>
                   )}
                   <span style={{ color: "var(--color-text-secondary)" }}>· your tracker resets each new period</span>
                 </div>
@@ -3565,11 +3591,14 @@ function buildPersonAuto(person) {
   out.importantDate = { id: "ip_" + person.id, personId: person.id, auto: true, title: `${name}'s Birthday`, type: "birthday", date: person.birthday, notes: "", tags: [], tasks: [], cost: "", costCategory: "" };
   const base = { priority: "medium", groupId: "", notes: "", tags: [], subtasks: [], someday: false, duration: "", cost: "", costCategory: "", done: false };
   out.tasks.push({ ...base, id: "tb_" + person.id, personId: person.id, auto: "birthday", title: `🎂 Wish ${name} a happy birthday`, deadline: occ, scheduledDate: occ, repeat: "yearly" });
-  const leads = (person.reminderLeads && person.reminderLeads.length) ? person.reminderLeads.slice() : [person.reminderLeadDays || 14];
-  const maxLead = Math.max(...leads);
-  out.tasks.push({ ...base, id: "tp_" + person.id, personId: person.id, auto: "birthday", title: `🎁 Get ${name} a present`, deadline: occ, scheduledDate: dateMinusDays(occ, maxLead), repeat: "none", cost: person.typicalBudget || "", costCategory: "g_gifts" });
-  leads.forEach(L => out.tasks.push({ ...base, id: `tr_${person.id}_${L}`, personId: person.id, auto: "reminder", title: `🔔 ${name}'s birthday in ${L} days`, priority: "low", deadline: dateMinusDays(occ, L), scheduledDate: dateMinusDays(occ, L), repeat: "none" }));
-  if (person.reminderDate) out.tasks.push({ ...base, id: `trc_${person.id}`, personId: person.id, auto: "reminder", title: `🔔 Reminder: ${name}'s birthday`, priority: "low", deadline: person.reminderDate, scheduledDate: person.reminderDate, repeat: "none" });
+  // Present + lead reminders are optional — some people you just wish, no gift.
+  if (person.autoPresent !== false) {
+    const leads = (person.reminderLeads && person.reminderLeads.length) ? person.reminderLeads.slice() : [person.reminderLeadDays || 14];
+    const maxLead = Math.max(...leads);
+    out.tasks.push({ ...base, id: "tp_" + person.id, personId: person.id, auto: "birthday", title: `🎁 Get ${name} a present`, deadline: occ, scheduledDate: dateMinusDays(occ, maxLead), repeat: "none", cost: person.typicalBudget || "", costCategory: "g_gifts" });
+    leads.forEach(L => out.tasks.push({ ...base, id: `tr_${person.id}_${L}`, personId: person.id, auto: "reminder", title: `🔔 ${name}'s birthday in ${L} days`, priority: "low", deadline: dateMinusDays(occ, L), scheduledDate: dateMinusDays(occ, L), repeat: "none" }));
+    if (person.reminderDate) out.tasks.push({ ...base, id: `trc_${person.id}`, personId: person.id, auto: "reminder", title: `🔔 Reminder: ${name}'s birthday`, priority: "low", deadline: person.reminderDate, scheduledDate: person.reminderDate, repeat: "none" });
+  }
   return out;
 }
 
@@ -3680,8 +3709,14 @@ function PersonModal({ person, accentColor, onSave, onClose }) {
       </Field>
       <label style={{ display: "flex", alignItems: "flex-start", gap: 9, fontSize: 13, cursor: "pointer", padding: "11px 13px", background: hex2rgba(ac, 0.06), borderRadius: 10, marginBottom: 4 }}>
         <input type="checkbox" checked={!!p.autoBirthday} onChange={e => up("autoBirthday", e.target.checked)} style={{ marginTop: 2 }} />
-        <span>🎂 <b>Set up their birthday automatically</b> — adds it to Important Dates and puts a “wish happy birthday” task, a “get a present” task, and your chosen reminders on the calendar &amp; task list.{!p.birthday && <span style={{ color: "#BA7517" }}> Add a birthday above to enable.</span>}</span>
+        <span>🎂 <b>Set up their birthday automatically</b> — adds it to Important Dates and a “wish happy birthday” task on the calendar.{!p.birthday && <span style={{ color: "#BA7517" }}> Add a birthday above to enable.</span>}</span>
       </label>
+      {p.autoBirthday && (
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 9, fontSize: 13, cursor: "pointer", padding: "10px 13px", marginBottom: 4 }}>
+          <input type="checkbox" checked={p.autoPresent !== false} onChange={e => up("autoPresent", e.target.checked)} style={{ marginTop: 2 }} />
+          <span>🎁 Also get them a present — adds a “get a present” task and your chosen reminders. <span style={{ color: "var(--color-text-secondary)" }}>Untick to just wish them happy birthday.</span></span>
+        </label>
+      )}
       {(p.giftHistory || []).length > 0 && (
         <>
           <Divider />
@@ -3994,6 +4029,12 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
   const nw = cur + sav + investmentTotals(state.investments).value + pensionPotsTotal(state) - debt;
   const st = monthStats(state, curMonthKey());
   const safe = (st.income || st.incomeProjected) - st.plannedTotal - (Number(state.safetyBuffer) || 0);
+  // Cash-flow snippet — are we on track this month?
+  const now = new Date(); const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate(); const dom = now.getDate(); const daysLeft = Math.max(0, dim - dom);
+  const cfIncome = st.income || st.incomeProjected; const spentSoFar = st.spend;
+  const dailyRate = (spentSoFar > 0 && dom >= 3) ? spentSoFar / dom : (st.plannedTotal / dim);
+  const cfProjEnd = cfIncome - (spentSoFar + dailyRate * daysLeft);
+  const hasFinance = cfIncome > 0 || st.plannedTotal > 0 || cur > 0;
   const greeting = (() => { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; })();
   const card = { background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 };
   const Snap = ({ label, value, color, onClick }) => (
@@ -4043,6 +4084,11 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
           <Snap label="Net worth" value={fmtMoney(nw, true)} color={nw >= 0 ? "#1D9E75" : "#E24B4A"} />
           <Snap label="Safe to spend" value={fmtMoney(safe, true)} color={safe >= 0 ? "#639922" : "#E24B4A"} />
         </div>
+        {hasFinance && (
+          <div style={{ marginTop: 10, background: hex2rgba(cfProjEnd >= 0 ? "#1D9E75" : "#E24B4A", 0.08), borderRadius: 10, padding: "10px 12px", fontSize: 12.5 }}>
+            🔮 <b>Cash flow:</b> on this month's pace you'll finish with about <b style={{ color: cfProjEnd >= 0 ? "#1D9E75" : "#E24B4A" }}>{fmtMoney(cfProjEnd, true)}</b>{daysLeft > 0 ? ` (${daysLeft} day${daysLeft !== 1 ? "s" : ""} left, ~${fmtMoney(dailyRate * 7, true)}/wk)` : ""}. {cfProjEnd >= 0 ? "On track 🎉" : "Heading over — ease off."}
+          </div>
+        )}
       </div>
 
       {/* Today + upcoming */}
