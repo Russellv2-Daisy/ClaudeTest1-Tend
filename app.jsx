@@ -35,14 +35,14 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["home","today","important-dates","people","finance","audit","settings"];
+const VIEWS = ["home","today","important-dates","people","docs","finance","settings"];
 const VIEW_META = {
   home: { icon: "🏠", label: "Home" },
   today: { icon: "☀️", label: "Tasks" },
   "important-dates": { icon: "🎂", label: "Important Dates" },
   people: { icon: "🎁", label: "People" },
-  finance: { icon: "💷", label: "Finance" },
-  audit: { icon: "🛡️", label: "Life Audit" },
+  docs: { icon: "🗂", label: "Documents & Policies" },
+  finance: { icon: "💵", label: "Finance" },
   settings: { icon: "⚙️", label: "Settings" }
 };
 
@@ -50,11 +50,19 @@ function genId() { return Math.random().toString(36).slice(2, 10); }
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function fmtDate(d) { if (!d) return ""; return new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }); }
 function fmtShort(d) { if (!d) return ""; return new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }); }
+// Ordinal suffix for a day-of-month (1 → "1st", 22 → "22nd"). Used for the longer date styles.
+function ord(n) { const v = n % 100; const s = ["th", "st", "nd", "rd"]; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+// "Thursday 12th June 2026" — accepts a Date or a "YYYY-MM-DD" string.
+function fmtLongDate(d) { const x = d instanceof Date ? d : (d ? new Date(d + "T00:00:00") : new Date()); return x.toLocaleDateString("en-GB", { weekday: "long" }) + " " + ord(x.getDate()) + " " + x.toLocaleDateString("en-GB", { month: "long", year: "numeric" }); }
+// "29th May" — day with ordinal + full month, for pay-period ranges.
+function fmtDM(d) { if (!d) return ""; const x = new Date(d + "T00:00:00"); return ord(x.getDate()) + " " + x.toLocaleDateString("en-GB", { month: "long" }); }
+// 24-hour clock, e.g. "14:05".
+function fmtTime24(d) { return (d instanceof Date ? d : new Date()).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }); }
 function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T00:00:00") - new Date(new Date().toDateString())) / 86400000); }
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], theme: "purple", mode: "system", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], dismissedSubs: [], name: "", theme: "purple", mode: "system", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -387,7 +395,7 @@ function DateModal({ item, tags, groups, financeCats, accentColor, onSave, onClo
 
 // ── Task Row ──────────────────────────────────────────────────────────────────
 
-function TaskRow({ task, tags, groups, onToggle, onEdit, onDelete }) {
+function TaskRow({ task, tags, groups, onToggle, onEdit, onDelete, onToggleSubtask }) {
   const du = daysUntil(task.deadline);
   const overdue = du !== null && du < 0 && !task.done;
   const grp = groups.find(g => g.id === task.groupId);
@@ -417,8 +425,8 @@ function TaskRow({ task, tags, groups, onToggle, onEdit, onDelete }) {
         {task.subtasks?.length > 0 && (
           <div style={{ marginTop: 7, paddingLeft: 10, borderLeft: "2px solid var(--color-border-tertiary)" }}>
             {task.subtasks.map(s => (
-              <div key={s.id} style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                <span style={{ width: 13, height: 13, border: "1.5px solid var(--color-border-secondary)", borderRadius: "50%", background: s.done ? "#639922" : "transparent", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{s.done && <span style={{ color: "#fff", fontSize: 8 }}>✓</span>}</span>
+              <div key={s.id} onClick={onToggleSubtask ? () => onToggleSubtask(task.id, s.id) : undefined} style={{ fontSize: 12, color: "var(--color-text-secondary)", display: "flex", alignItems: "center", gap: 6, marginBottom: 3, cursor: onToggleSubtask ? "pointer" : "default" }}>
+                <span style={{ width: 13, height: 13, border: `1.5px solid ${s.done ? "#639922" : "var(--color-border-secondary)"}`, borderRadius: "50%", background: s.done ? "#639922" : "transparent", display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{s.done && <span style={{ color: "#fff", fontSize: 8 }}>✓</span>}</span>
                 <span style={{ textDecoration: s.done ? "line-through" : "none" }}>{s.title}</span>
               </div>
             ))}
@@ -597,8 +605,15 @@ function SettingsView({ state, up, accentColor, user, calendarToken }) {
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "all-tasks.ics"; a.click();
   }
 
+  const metaName = (user && user.user_metadata && (user.user_metadata.full_name || user.user_metadata.name)) || "";
   return (
     <div style={{ maxWidth: 560 }}>
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>Your name</h3>
+        <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--color-text-secondary)" }}>Used to greet you on the Home dashboard.</p>
+        <input type="text" placeholder={metaName || "e.g. Josh"} value={state.name || ""} onChange={e => up({ name: e.target.value })} style={{ width: "100%", padding: "10px 12px", fontSize: 14, boxSizing: "border-box" }} />
+      </div>
+
       <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
         <h3 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 500 }}>Appearance</h3>
         <div style={{ display: "flex", gap: 8 }}>
@@ -904,6 +919,7 @@ function QuickAdd({ ctx, accentColor, defaults, onAdd }) {
 
 function LoginScreen() {
   const [mode, setMode] = useState("signin"); // signin | signup
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [msg, setMsg] = useState(null);
@@ -912,10 +928,12 @@ function LoginScreen() {
 
   async function emailAuth() {
     if (!email.trim() || !pw) { setMsg({ t: "err", m: "Enter your email and password." }); return; }
+    if (mode === "signup" && !name.trim()) { setMsg({ t: "err", m: "Enter your name so we can say hello." }); return; }
     setBusy(true); setMsg(null);
     try {
-      const fn = mode === "signup" ? "signUpWithEmail" : "signInWithEmail";
-      const { data, error } = await window.TendCloud[fn](email.trim(), pw);
+      const { data, error } = mode === "signup"
+        ? await window.TendCloud.signUpWithEmail(email.trim(), pw, name.trim())
+        : await window.TendCloud.signInWithEmail(email.trim(), pw);
       if (error) { setMsg({ t: "err", m: error.message }); }
       else if (mode === "signup" && data && data.user && !data.session) {
         setMsg({ t: "ok", m: "Check your email to confirm your account, then sign in." });
@@ -950,6 +968,10 @@ function LoginScreen() {
           <div style={{ flex: 1, height: 1, background: "var(--color-border-tertiary)" }} /> or <div style={{ flex: 1, height: 1, background: "var(--color-border-tertiary)" }} />
         </div>
 
+        {mode === "signup" && (
+          <input type="text" placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)}
+            style={{ width: "100%", marginBottom: 10, padding: "11px 12px", fontSize: 15 }} />
+        )}
         <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)}
           style={{ width: "100%", marginBottom: 10, padding: "11px 12px", fontSize: 15 }} />
         <input type="password" placeholder="Password" value={pw} onChange={(e) => setPw(e.target.value)}
@@ -1112,7 +1134,8 @@ function payPeriodBounds(payday, anchor, offset) {
     const d = new Date(anchor + "T00:00:00");
     const back = (d.getDay() - w + 7) % 7; d.setDate(d.getDate() - back + offset * 7);
     const from = ymdLocal(d), to = addDaysStr(from, 6);
-    return { from, to, label: `Week of ${fmtShort(from)}` };
+    // Payday-to-next-payday so the boundaries read clearly, e.g. "29th May to 5th June".
+    return { from, to, label: `${fmtDM(from)} to ${fmtDM(addDaysStr(from, 7))}` };
   }
   if (payday.type === "lastWeekday") {
     const w = Number(payday.day); // 0=Sun..6=Sat
@@ -1122,24 +1145,37 @@ function payPeriodBounds(payday, anchor, offset) {
     if (a < start) start = lastOf(a.getFullYear(), a.getMonth() - 1);
     start = lastOf(start.getFullYear(), start.getMonth() + offset);
     const next = lastOf(start.getFullYear(), start.getMonth() + 1);
-    return { from: ymdLocal(start), to: addDaysStr(ymdLocal(next), -1), label: `Pay period from ${fmtShort(ymdLocal(start))}` };
+    // Show the actual paydays at each end, e.g. "29th May to 29th June".
+    return { from: ymdLocal(start), to: addDaysStr(ymdLocal(next), -1), label: `${fmtDM(ymdLocal(start))} to ${fmtDM(ymdLocal(next))}` };
   }
   const day = Math.min(28, Math.max(1, Number(payday.day) || 1));
   const d = new Date(anchor + "T00:00:00");
   let start = new Date(d.getFullYear(), d.getMonth(), day);
   if (d < start) start = new Date(d.getFullYear(), d.getMonth() - 1, day);
   start = new Date(start.getFullYear(), start.getMonth() + offset, day);
-  const endD = new Date(start.getFullYear(), start.getMonth() + 1, day); endD.setDate(endD.getDate() - 1);
+  const next = new Date(start.getFullYear(), start.getMonth() + 1, day);
+  const endD = new Date(next); endD.setDate(endD.getDate() - 1);
   const from = ymdLocal(start), to = ymdLocal(endD);
-  return { from, to, label: day === 1 ? start.toLocaleDateString("en-GB", { month: "long", year: "numeric" }) : `${fmtShort(from)} – ${fmtShort(to)}` };
+  return { from, to, label: `${fmtDM(from)} to ${fmtDM(ymdLocal(next))}` };
 }
 // One month's report snapshot (persisted so it survives the 6-month txn prune).
+// Current net worth (assets − debts) from today's balances. Used for the home
+// snapshot and as a fallback when a month has no saved net-worth snapshot.
+function currentNetWorth(state) {
+  const cur = (state.currentAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const sav = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const debt = (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0);
+  return cur + sav + investmentTotals(state.investments).value + pensionPotsTotal(state) - debt;
+}
 function computeMonthReport(state, mk) {
   const st = monthStats(state, mk);
   const giftsCat = (state.financeCategories || []).find(c => c.id === "g_gifts") || (state.financeCategories || []).find(c => /gift/i.test(c.name));
   const giftId = giftsCat && giftsCat.id;
   const gifts = (state.transactions || []).filter(t => t.type !== "income" && (t.date || "").slice(0, 7) === mk && t.categoryId === giftId).length;
+  const nwHist = state.netWorthHistory || {};
+  const netWorth = nwHist[mk] != null ? nwHist[mk] : currentNetWorth(state);
   return { forecast: st.plannedTotal, actual: st.spend, income: st.income, saved: Math.max(0, st.income - st.spend),
+    savedInto: st.savingsContrib, debtPaid: st.debtPayments, netWorth,
     debt: (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0), gifts };
 }
 
@@ -1559,7 +1595,6 @@ const FINANCE_TABS = [
   { id: "savings", icon: "🐖", label: "Savings & Debts" },
   { id: "investments", icon: "💹", label: "Investments" },
   { id: "pension", icon: "🏖", label: "Pension" },
-  { id: "insurance", icon: "🛡", label: "Insurance" },
   { id: "subs", icon: "🔁", label: "Subscriptions" },
   { id: "trends", icon: "📈", label: "Reports & Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
@@ -2172,7 +2207,10 @@ function MonthlyReports({ state }) {
               {[["Forecast", fmtMoney(r.forecast, true), "var(--color-text-secondary)"],
                 ["Actual", fmtMoney(r.actual, true), over ? "#E24B4A" : "#639922"],
                 ["Income", fmtMoney(r.income, true), "#1D9E75"],
-                ["Debt", fmtMoney(r.debt, true), r.debt > 0 ? "#E24B4A" : "var(--color-text-secondary)"],
+                ["Saved", fmtMoney(r.savedInto || 0, true), "#1D9E75"],
+                ["Debt paid", fmtMoney(r.debtPaid || 0, true), (r.debtPaid || 0) > 0 ? "#BA7517" : "var(--color-text-secondary)"],
+                ["Net worth", fmtMoney(r.netWorth || 0, true), (r.netWorth || 0) >= 0 ? "#1D9E75" : "#E24B4A"],
+                ["Owed", fmtMoney(r.debt, true), r.debt > 0 ? "#E24B4A" : "var(--color-text-secondary)"],
                 ["Gifts", String(r.gifts || 0), "var(--color-text-primary)"]].map(([l, v, c]) => (
                 <div key={l} style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "8px 10px" }}>
                   <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.03em" }}>{l}</div>
@@ -2200,7 +2238,6 @@ function FinanceView({ state, up, accentColor }) {
   const [catModal, setCatModal] = useState(null);
   const [savModal, setSavModal] = useState(null);
   const [invModal, setInvModal] = useState(null);
-  const [insModal, setInsModal] = useState(null);
   const [potModal, setPotModal] = useState(null);
   const [subModal, setSubModal] = useState(null);
   const [debtModal, setDebtModal] = useState(null);
@@ -2306,27 +2343,9 @@ function FinanceView({ state, up, accentColor }) {
     setInvModal(null);
   }
   function deleteInvestment(id) { if (confirm("Delete this holding?")) up({ investments: investments.filter(h => h.id !== id) }); }
+  // Insurance is managed under Documents & Policies; the list is still read here so
+  // premiums show as projected commitments in the breakdown plan.
   const insurance = state.insurance || [];
-  function saveInsurance(p) {
-    const exists = insurance.some(x => x.id === p.id);
-    const newInsurance = exists ? insurance.map(x => x.id === p.id ? p : x) : [...insurance, p];
-    // Maintain a linked yearly renewal task (deterministic id) when requested.
-    let tasks = (state.tasks || []).filter(t => t.insuranceId !== p.id);
-    if (p.renewTask !== false && p.renewalDate) {
-      const note = [p.provider && `Provider: ${p.provider}`, p.policyNumber && `Policy: ${p.policyNumber}`, `Premium: ${fmtMoney(insAnnual(p), true)}/yr`, p.contactPhone && `Tel: ${p.contactPhone}`].filter(Boolean).join(" · ");
-      tasks = [{ id: "ins_" + p.id, insuranceId: p.id, title: `🔔 Renew ${p.type} insurance${p.provider ? " (" + p.provider + ")" : ""}`, priority: "medium", groupId: "", deadline: p.renewalDate, scheduledDate: p.renewalDate, notes: note, tags: [], subtasks: [], someday: false, repeat: "yearly", duration: "", cost: "", costCategory: "", done: false }, ...tasks];
-    }
-    up({ insurance: newInsurance, tasks });
-    setInsModal(null);
-  }
-  function deleteInsurance(id) { if (confirm("Delete this policy?")) up({ insurance: insurance.filter(p => p.id !== id), tasks: (state.tasks || []).filter(t => t.insuranceId !== id) }); }
-  function addRenewalTask(p) {
-    if (!p.renewalDate) { alert("Add a renewal date to this policy first."); return; }
-    const note = [p.provider && `Provider: ${p.provider}`, p.policyNumber && `Policy: ${p.policyNumber}`, `Premium: ${fmtMoney(insAnnual(p), true)}/yr`, p.contactPhone && `Tel: ${p.contactPhone}`].filter(Boolean).join(" · ");
-    const task = { id: genId(), title: `Review ${p.type} insurance${p.provider ? " (" + p.provider + ")" : ""}`, priority: "medium", groupId: "", deadline: p.renewalDate, scheduledDate: "", notes: note, tags: [], subtasks: [], someday: false, repeat: "none", duration: "", cost: "", costCategory: "", done: false };
-    up({ tasks: [task, ...(state.tasks || [])] });
-    alert("Added a renewal reminder to your task list.");
-  }
   function setPensionField(k, v) { up({ pension: { ...(state.pension || {}), [k]: v } }); }
   function savePot(accId, pot) {
     up({ savingsAccounts: savings.map(s => s.id === accId ? { ...s, pots: (s.pots || []).some(p => p.id === pot.id) ? (s.pots || []).map(p => p.id === pot.id ? pot : p) : [...(s.pots || []), pot] } : s) });
@@ -2392,7 +2411,6 @@ function FinanceView({ state, up, accentColor }) {
       {catModal !== null && <FinanceCatModal cat={catModal === "new" ? null : catModal} accentColor={ac} onSave={saveCat} onClose={() => setCatModal(null)} />}
       {savModal !== null && <SavingsModal account={savModal === "new" ? null : savModal} accentColor={ac} onSave={saveSav} onClose={() => setSavModal(null)} />}
       {invModal !== null && <InvestmentModal holding={invModal === "new" ? null : invModal} accentColor={ac} onSave={saveInvestment} onClose={() => setInvModal(null)} />}
-      {insModal !== null && <InsuranceModal policy={insModal === "new" ? null : insModal} cats={cats} accentColor={ac} onSave={saveInsurance} onClose={() => setInsModal(null)} />}
       {potModal && <PotModal pot={potModal.pot} importantDates={state.importantDates || []} accentColor={ac} onSave={p => savePot(potModal.accId, p)} onClose={() => setPotModal(null)} />}
       {subModal !== null && <SubModal sub={subModal === "new" ? null : subModal} cats={cats} accentColor={ac} onSave={saveSub} onClose={() => setSubModal(null)} />}
       {debtModal !== null && <DebtModal debt={debtModal === "new" ? null : debtModal} accentColor={ac} onSave={saveDebt} onClose={() => setDebtModal(null)} />}
@@ -2934,72 +2952,6 @@ function FinanceView({ state, up, accentColor }) {
       })()}
 
       {/* ── Insurance ── */}
-      {tab === "insurance" && (() => {
-        const totalMonthly = insurance.reduce((s, p) => s + insMonthly(p), 0);
-        const sorted = insurance.filter(p => p.renewalDate).sort((a, b) => a.renewalDate.localeCompare(b.renewalDate));
-        const next = sorted.find(p => (daysUntil(p.renewalDate) ?? -1) >= 0) || sorted[0];
-        return (
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>All your policies in one place. Premiums feed your monthly budget (annual spread over 12); renewals can drop straight onto your to-do list.</div>
-              <button onClick={() => setInsModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Policy</button>
-            </div>
-
-            {insurance.length === 0 && (
-              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
-                <div style={{ fontSize: 38, marginBottom: 12 }}>🛡</div>
-                <div style={{ fontSize: 15, marginBottom: 6 }}>No policies yet</div>
-                <div style={{ fontSize: 13, marginBottom: 18 }}>Add car, home, phone, travel or any other insurance to track renewals, costs and cover.</div>
-                <button onClick={() => setInsModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a policy</button>
-              </div>
-            )}
-
-            {insurance.length > 0 && (
-              <>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
-                  <StatCard label="Total / month" value={fmtMoney(totalMonthly)} color={ac} />
-                  <StatCard label="Total / year" value={fmtMoney(totalMonthly * 12)} />
-                  <StatCard label="Policies" value={String(insurance.length)} />
-                  {next && <StatCard label="Next renewal" value={insIcon(next.type) + " " + fmtShort(next.renewalDate)} sub={(() => { const d = daysUntil(next.renewalDate); return d == null ? null : d < 0 ? "overdue" : d === 0 ? "today" : `in ${d} day${d !== 1 ? "s" : ""}`; })()} />}
-                </div>
-
-                {insurance.map(p => {
-                  const d = p.renewalDate ? daysUntil(p.renewalDate) : null;
-                  const due = d != null && d <= 30;
-                  const cat = catById(p.budgetCategory);
-                  const info = [p.policyNumber && `#${p.policyNumber}`, (Number(p.excess) > 0) && `£${p.excess} excess`, p.coverAmount && `cover ${p.coverAmount}`, p.contactPhone && `☎ ${p.contactPhone}`, p.autoRenew && "auto-renews"].filter(Boolean).join("  ·  ");
-                  return (
-                    <div key={p.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <div style={{ fontSize: 24, width: 30, textAlign: "center" }}>{insIcon(p.type)}</div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, fontSize: 15 }}>{p.type}{p.provider ? <span style={{ fontWeight: 400, color: "var(--color-text-secondary)" }}> · {p.provider}</span> : null}</div>
-                          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{fmtMoney(insMonthly(p), true)}/mo · {fmtMoney(insAnnual(p), true)}/yr ({p.frequency === "annual" ? "paid yearly" : "paid monthly"})</div>
-                        </div>
-                        <div style={{ textAlign: "right" }}>
-                          {p.renewalDate && <div style={{ fontSize: 13, fontWeight: 500, color: due ? "#BA7517" : "var(--color-text-primary)" }}>Renews {fmtShort(p.renewalDate)}</div>}
-                          {d != null && <div style={{ fontSize: 11.5, color: due ? "#BA7517" : "var(--color-text-secondary)" }}>{d < 0 ? "overdue" : d === 0 ? "today" : `in ${d} day${d !== 1 ? "s" : ""}`}</div>}
-                        </div>
-                      </div>
-                      {info && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>{info}</div>}
-                      {p.notes && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6, fontStyle: "italic" }}>{p.notes}</div>}
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
-                        {cat && <span style={{ fontSize: 10.5, background: hex2rgba(cat.color, 0.14), color: cat.color, padding: "2px 8px", borderRadius: 10 }}>{cat.emoji} {cat.name}</span>}
-                        {!cat && <span style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>not in budget</span>}
-                        <div style={{ flex: 1 }} />
-                        <button onClick={() => addRenewalTask(p)} title="Add a renewal reminder to your tasks" style={{ fontSize: 12, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>🔔 Remind me</button>
-                        <button onClick={() => setInsModal(p)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
-                        <button onClick={() => deleteInsurance(p.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </>
-            )}
-          </div>
-        );
-      })()}
-
       {/* ── Pension ── */}
       {tab === "pension" && (() => {
         const privates = pensions.filter(p => p.type !== "state");
@@ -3131,7 +3083,8 @@ function FinanceView({ state, up, accentColor }) {
         const ymd = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
         const nextFromDay = day => { const t = new Date(); t.setHours(0, 0, 0, 0); const mk2 = (yy, mm) => { const dim = new Date(yy, mm + 1, 0).getDate(); return new Date(yy, mm, Math.min(day || 1, dim)); }; let d = mk2(t.getFullYear(), t.getMonth()); if (d < t) d = mk2(t.getFullYear(), t.getMonth() + 1); return ymd(d); };
         const manual = subs.map(s => ({ id: s.id, name: s.name, amount: Number(s.amount) || 0, next: nextFromDay(Number(s.day) || 1), categoryId: s.categoryId, auto: false }));
-        const auto = detectSubscriptions(state).filter(a => !manual.some(m => m.name.toLowerCase() === a.name.toLowerCase())).map(a => ({ id: "auto_" + a.name, name: a.name, amount: a.amount, next: a.lastDate ? (() => { const d = new Date(a.lastDate + "T00:00:00"); d.setMonth(d.getMonth() + 1); return ymd(d); })() : "", categoryId: a.categoryId, auto: true }));
+        const dismissed = state.dismissedSubs || [];
+        const auto = detectSubscriptions(state).filter(a => !manual.some(m => m.name.toLowerCase() === a.name.toLowerCase()) && !dismissed.includes(a.name.toLowerCase())).map(a => ({ id: "auto_" + a.name, name: a.name, amount: a.amount, next: a.lastDate ? (() => { const d = new Date(a.lastDate + "T00:00:00"); d.setMonth(d.getMonth() + 1); return ymd(d); })() : "", categoryId: a.categoryId, auto: true }));
         const items = [...manual, ...auto].sort((x, y) => (x.next || "z").localeCompare(y.next || "z"));
         const totalM = items.reduce((s, i) => s + i.amount, 0);
         return (
@@ -3167,6 +3120,7 @@ function FinanceView({ state, up, accentColor }) {
                       {!it.auto && <button onClick={() => setSubModal(subs.find(s => s.id === it.id))} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>✏️</button>}
                       {!it.auto && <button onClick={() => deleteSub(it.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>🗑</button>}
                       {it.auto && <button onClick={() => setSubModal({ name: it.name, amount: it.amount, day: 1, categoryId: it.categoryId })} title="Save as tracked subscription" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>＋</button>}
+                      {it.auto && <button onClick={() => { if (confirm(`Dismiss "${it.name}"? It won't show as a detected subscription anymore.`)) up({ dismissedSubs: [...(state.dismissedSubs || []), it.name.toLowerCase()] }); }} title="Dismiss this detected subscription" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>🗑</button>}
                     </div>
                   );
                 })}
@@ -3431,7 +3385,7 @@ function AuditView({ state, up, accentColor, goFinance }) {
   const addCustom = (sec, label) => { const id = "cust_" + genId(); up({ audit: { ...audit, customItems: { ...custom, [sec]: [...(custom[sec] || []), { id, label }] } } }); };
   const delCustom = (sec, id) => { const c = { ...checks }; delete c[id]; up({ audit: { ...audit, checks: c, customItems: { ...custom, [sec]: (custom[sec] || []).filter(i => i.id !== id) } } }); };
   const setFreq = v => up({ audit: { ...audit, frequencyDays: Number(v) || 90 } });
-  const complete = () => { const today = todayStr(); up({ audit: { ...audit, lastCompleted: today, history: [...(audit.history || []), today], checks: {} } }); };
+  const complete = () => { const today = todayStr(); up({ audit: { ...audit, lastCompleted: today, history: [...(audit.history || []), today], checks: {}, subsReviewed: {} } }); };
 
   const fh = financialHealth(state);
   const manual = state.subscriptions || [];
@@ -3840,8 +3794,8 @@ function PeopleView({ state, up, accentColor, onAddTask }) {
       {personModal !== null && <PersonModal person={personModal === "new" ? null : personModal} accentColor={ac} onSave={savePerson} onClose={() => setPersonModal(null)} />}
       {giftModal && <GiftIdeasModal person={giftModal.person} occasion={giftModal.occasion} accentColor={ac} onChoose={idea => chooseGift(giftModal.person, idea, giftModal.occasion)} onClose={() => setGiftModal(null)} />}
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Important people — profiles power AI gift ideas, aligned to your dates & budget.</div>
+      <SectionHead sub="Important people — profiles power AI gift ideas, aligned to your dates & budget.">🎁 People</SectionHead>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <button onClick={() => setPersonModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ New person</button>
       </div>
 
@@ -4001,11 +3955,14 @@ function runAssistant(state, prompt) {
   return { reply: "I can plan your day, summarise your finances, or add tasks. Try “what should I focus on today?”, “how are my finances?”, or “add buy milk tomorrow”. Full conversational Claude arrives with the API key (Phase B)." };
 }
 
-function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTasks }) {
+function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTasks, userName }) {
   const ac = accentColor;
   const today = todayStr();
   const [q, setQ] = useState("");
   const [resp, setResp] = useState(null);
+  // Live clock for the long date + 24-hour time line. Ticks each minute.
+  const [now, setNow] = useState(new Date());
+  useEffect(() => { const id = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(id); }, []);
   const ask = () => {
     if (!q.trim()) return;
     const r = runAssistant(state, q);
@@ -4029,13 +3986,14 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
   const nw = cur + sav + investmentTotals(state.investments).value + pensionPotsTotal(state) - debt;
   const st = monthStats(state, curMonthKey());
   const safe = (st.income || st.incomeProjected) - st.plannedTotal - (Number(state.safetyBuffer) || 0);
-  // Cash-flow snippet — are we on track this month?
-  const now = new Date(); const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate(); const dom = now.getDate(); const daysLeft = Math.max(0, dim - dom);
+  // Cash-flow snippet — are we on track this month? (reuses the live clock `now`)
+  const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate(); const dom = now.getDate(); const daysLeft = Math.max(0, dim - dom);
   const cfIncome = st.income || st.incomeProjected; const spentSoFar = st.spend;
   const dailyRate = (spentSoFar > 0 && dom >= 3) ? spentSoFar / dom : (st.plannedTotal / dim);
   const cfProjEnd = cfIncome - (spentSoFar + dailyRate * daysLeft);
   const hasFinance = cfIncome > 0 || st.plannedTotal > 0 || cur > 0;
-  const greeting = (() => { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; })();
+  const firstName = (userName || "").trim().split(/\s+/)[0] || "";
+  const greeting = (() => { const h = now.getHours(); const g = h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; return firstName ? `${g}, ${firstName}` : g; })();
   const card = { background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 };
   const Snap = ({ label, value, color, onClick }) => (
     <div onClick={onClick} style={{ background: "var(--color-background-secondary)", borderRadius: 10, padding: "10px 12px", cursor: onClick ? "pointer" : "default" }}>
@@ -4045,8 +4003,8 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
   );
   return (
     <div style={{ maxWidth: 760 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 2px" }}>{greeting} 👋</h1>
-      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}{overdueTasks.length > 0 ? ` · ⚠ ${overdueTasks.length} overdue` : ""}</p>
+      <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>{greeting} 👋</h1>
+      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>{fmtLongDate(now)} · <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmtTime24(now)}</span>{overdueTasks.length > 0 ? ` · ⚠ ${overdueTasks.length} overdue` : ""}</p>
 
       {/* Ask Claude */}
       <div style={{ ...card, background: hex2rgba(ac, 0.06), borderColor: hex2rgba(ac, 0.25) }}>
@@ -4116,6 +4074,361 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
   );
 }
 
+// ── Documents & Policies ─────────────────────────────────────────────────────
+
+const WARRANTY_CATEGORIES = ["Electronics", "Appliance", "Vehicle", "Furniture", "Tools", "Jewellery", "Other"];
+const WARRANTY_ICON = { Electronics: "📱", Appliance: "🧺", Vehicle: "🚗", Furniture: "🛋", Tools: "🔧", Jewellery: "💍", Other: "🧾" };
+function warrantyExpiry(w) { if (!w || !w.purchaseDate || !w.coverMonths) return ""; const d = new Date(w.purchaseDate + "T00:00:00"); d.setMonth(d.getMonth() + Number(w.coverMonths)); return ymdLocal(d); }
+
+function WarrantyModal({ warranty, accentColor, onSave, onClose }) {
+  const blank = { item: "", category: "Electronics", provider: "", purchaseDate: "", coverMonths: 12, cost: "", reference: "", notes: "", remind: true };
+  const [w, setW] = useState({ ...blank, ...(warranty || {}) });
+  const up = (k, v) => setW(x => ({ ...x, [k]: v }));
+  const ac = accentColor; const inp = { width: "100%", boxSizing: "border-box" };
+  const expiry = warrantyExpiry(w);
+  return (
+    <Modal onClose={onClose} width={500}>
+      <ModalHeader title={warranty?.id ? "Edit warranty" : "New warranty"} onClose={onClose} />
+      <Field label="Item"><input placeholder="e.g. Samsung TV, Bosch dishwasher" value={w.item} onChange={e => up("item", e.target.value)} style={inp} autoFocus /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Category"><select value={w.category} onChange={e => up("category", e.target.value)} style={inp}>{WARRANTY_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select></Field>
+        <Field label="Retailer / brand"><input placeholder="e.g. Currys, John Lewis" value={w.provider} onChange={e => up("provider", e.target.value)} style={inp} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <Field label="Bought on"><input type="date" value={w.purchaseDate} onChange={e => up("purchaseDate", e.target.value)} style={inp} /></Field>
+        <Field label="Cover (months)"><input type="number" min="0" placeholder="12" value={w.coverMonths} onChange={e => up("coverMonths", e.target.value)} style={inp} /></Field>
+        <Field label="Cost (£)"><input type="number" step="0.01" placeholder="0.00" value={w.cost} onChange={e => up("cost", e.target.value)} style={inp} /></Field>
+      </div>
+      <Field label="Reference / serial (optional)"><input placeholder="Order or serial number" value={w.reference} onChange={e => up("reference", e.target.value)} style={inp} /></Field>
+      <Field label="Notes"><textarea placeholder="Where the receipt is, what's covered…" value={w.notes} onChange={e => up("notes", e.target.value)} rows={2} style={{ ...inp, resize: "vertical" }} /></Field>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer", marginTop: 4 }}>
+        <input type="checkbox" checked={w.remind !== false} onChange={e => up("remind", e.target.checked)} /> 🔔 Add a task two weeks before cover ends
+      </label>
+      {expiry && <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 8 }}>Cover ends <b>{fmtDate(expiry)}</b> ({daysUntil(expiry) >= 0 ? `in ${daysUntil(expiry)} days` : "expired"}).</div>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (w.item.trim()) onSave({ id: warranty?.id || genId(), item: w.item.trim(), category: w.category, provider: (w.provider || "").trim(), purchaseDate: w.purchaseDate, coverMonths: Number(w.coverMonths) || 0, cost: parseFloat(w.cost) || 0, reference: (w.reference || "").trim(), notes: (w.notes || "").trim(), remind: w.remind !== false }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{warranty?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+const RISK_CATEGORIES = ["Financial", "Health", "Home & property", "Career / income", "Family", "Legal", "Digital / cyber", "Other"];
+const RISK_STATUS = [["open", "Open"], ["monitoring", "Monitoring"], ["mitigated", "Mitigated"], ["closed", "Closed"]];
+function riskScore(r) { return (Number(r.likelihood) || 0) * (Number(r.impact) || 0); }
+function riskLevel(score) { return score >= 15 ? { label: "Critical", color: "#E24B4A" } : score >= 8 ? { label: "High", color: "#D85A30" } : score >= 4 ? { label: "Medium", color: "#BA7517" } : { label: "Low", color: "#1D9E75" }; }
+const LIKELIHOOD_LABELS = ["", "Rare", "Unlikely", "Possible", "Likely", "Almost certain"];
+const IMPACT_LABELS = ["", "Negligible", "Minor", "Moderate", "Major", "Severe"];
+
+function RiskModal({ risk, accentColor, onSave, onClose }) {
+  const blank = { title: "", category: "Financial", likelihood: 3, impact: 3, description: "", mitigation: "", crisisPlan: "", owner: "", status: "open" };
+  const [r, setR] = useState({ ...blank, ...(risk || {}) });
+  const up = (k, v) => setR(x => ({ ...x, [k]: v }));
+  const ac = accentColor; const inp = { width: "100%", boxSizing: "border-box" };
+  const lvl = riskLevel(riskScore(r));
+  return (
+    <Modal onClose={onClose} width={560}>
+      <ModalHeader title={risk?.id ? "Edit risk" : "New risk"} onClose={onClose} />
+      <Field label="Risk"><input placeholder="e.g. Loss of main income" value={r.title} onChange={e => up("title", e.target.value)} style={inp} autoFocus /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Category"><select value={r.category} onChange={e => up("category", e.target.value)} style={inp}>{RISK_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select></Field>
+        <Field label="Status"><select value={r.status} onChange={e => up("status", e.target.value)} style={inp}>{RISK_STATUS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Likelihood"><select value={r.likelihood} onChange={e => up("likelihood", Number(e.target.value))} style={inp}>{[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} · {LIKELIHOOD_LABELS[n]}</option>)}</select></Field>
+        <Field label="Impact"><select value={r.impact} onChange={e => up("impact", Number(e.target.value))} style={inp}>{[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} · {IMPACT_LABELS[n]}</option>)}</select></Field>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, margin: "2px 0 4px" }}>
+        <span style={{ color: "var(--color-text-secondary)" }}>Risk rating</span>
+        <span style={{ background: hex2rgba(lvl.color, 0.15), color: lvl.color, fontWeight: 600, padding: "3px 10px", borderRadius: 20 }}>{lvl.label} · {riskScore(r)}</span>
+      </div>
+      <Field label="Description — what could happen?"><textarea placeholder="Describe the risk and its triggers" value={r.description} onChange={e => up("description", e.target.value)} rows={2} style={{ ...inp, resize: "vertical" }} /></Field>
+      <Field label="Mitigation — how do you reduce it?"><textarea placeholder="Steps to lower the likelihood or impact (e.g. emergency fund, insurance)" value={r.mitigation} onChange={e => up("mitigation", e.target.value)} rows={2} style={{ ...inp, resize: "vertical" }} /></Field>
+      <Field label="🚨 Crisis management plan — what to do if it happens"><textarea placeholder="Step-by-step response if this risk kicks off: who to call, what to access, first actions" value={r.crisisPlan} onChange={e => up("crisisPlan", e.target.value)} rows={3} style={{ ...inp, resize: "vertical" }} /></Field>
+      <Field label="Owner (optional)"><input placeholder="Who's responsible" value={r.owner} onChange={e => up("owner", e.target.value)} style={inp} /></Field>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (r.title.trim()) onSave({ ...r, id: risk?.id || genId(), title: r.title.trim() }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{risk?.id ? "Save" : "Add"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+const DOC_TABS = [["insurance", "🛡 Insurance"], ["warranties", "🧾 Warranties"], ["risk", "⚠️ Risk register"], ["audit", "🔐 Digital Life Audit"]];
+
+function DocsView({ state, up, accentColor, goFinance }) {
+  const ac = accentColor;
+  const [tab, setTab] = useState("insurance");
+  const cats = state.financeCategories || [];
+  const catById = id => cats.find(c => c.id === id);
+
+  // ── Insurance (moved here from Finance, behaviour unchanged) ──
+  const [insModal, setInsModal] = useState(null);
+  const insurance = state.insurance || [];
+  function saveInsurance(p) {
+    const exists = insurance.some(x => x.id === p.id);
+    const newInsurance = exists ? insurance.map(x => x.id === p.id ? p : x) : [...insurance, p];
+    let tasks = (state.tasks || []).filter(t => t.insuranceId !== p.id);
+    if (p.renewTask !== false && p.renewalDate) {
+      const note = [p.provider && `Provider: ${p.provider}`, p.policyNumber && `Policy: ${p.policyNumber}`, `Premium: ${fmtMoney(insAnnual(p), true)}/yr`, p.contactPhone && `Tel: ${p.contactPhone}`].filter(Boolean).join(" · ");
+      tasks = [{ id: "ins_" + p.id, insuranceId: p.id, title: `🔔 Renew ${p.type} insurance${p.provider ? " (" + p.provider + ")" : ""}`, priority: "medium", groupId: "", deadline: p.renewalDate, scheduledDate: p.renewalDate, notes: note, tags: [], subtasks: [], someday: false, repeat: "yearly", duration: "", cost: "", costCategory: "", done: false }, ...tasks];
+    }
+    up({ insurance: newInsurance, tasks });
+    setInsModal(null);
+  }
+  function deleteInsurance(id) { if (confirm("Delete this policy?")) up({ insurance: insurance.filter(p => p.id !== id), tasks: (state.tasks || []).filter(t => t.insuranceId !== id) }); }
+  function addRenewalTask(p) {
+    if (!p.renewalDate) { alert("Add a renewal date to this policy first."); return; }
+    const note = [p.provider && `Provider: ${p.provider}`, p.policyNumber && `Policy: ${p.policyNumber}`, `Premium: ${fmtMoney(insAnnual(p), true)}/yr`, p.contactPhone && `Tel: ${p.contactPhone}`].filter(Boolean).join(" · ");
+    const task = { id: genId(), title: `Review ${p.type} insurance${p.provider ? " (" + p.provider + ")" : ""}`, priority: "medium", groupId: "", deadline: p.renewalDate, scheduledDate: "", notes: note, tags: [], subtasks: [], someday: false, repeat: "none", duration: "", cost: "", costCategory: "", done: false };
+    up({ tasks: [task, ...(state.tasks || [])] });
+    alert("Added a renewal reminder to your task list.");
+  }
+
+  // ── Warranties ──
+  const [warModal, setWarModal] = useState(null);
+  const warranties = state.warranties || [];
+  function saveWarranty(w) {
+    const exists = warranties.some(x => x.id === w.id);
+    const list = exists ? warranties.map(x => x.id === w.id ? w : x) : [...warranties, w];
+    const expiry = warrantyExpiry(w);
+    let tasks = (state.tasks || []).filter(t => t.warrantyId !== w.id);
+    if (w.remind !== false && expiry) {
+      const remindDate = addDaysStr(expiry, -14);
+      const note = [w.provider && `Retailer: ${w.provider}`, w.reference && `Ref: ${w.reference}`, `Cover ends ${fmtDate(expiry)}`, w.notes].filter(Boolean).join(" · ");
+      tasks = [{ id: "war_" + w.id, warrantyId: w.id, title: `🧾 ${w.item} warranty ending soon`, priority: "medium", groupId: "", deadline: remindDate, scheduledDate: remindDate, notes: note, tags: [], subtasks: [], someday: false, repeat: "none", duration: "", cost: "", costCategory: "", done: false }, ...tasks];
+    }
+    up({ warranties: list, tasks });
+    setWarModal(null);
+  }
+  function deleteWarranty(id) { if (confirm("Delete this warranty?")) up({ warranties: warranties.filter(w => w.id !== id), tasks: (state.tasks || []).filter(t => t.warrantyId !== id) }); }
+
+  // ── Risk register ──
+  const [riskModal, setRiskModal] = useState(null);
+  const [riskDetail, setRiskDetail] = useState(null);
+  const risks = state.risks || [];
+  function saveRisk(r) { up({ risks: risks.some(x => x.id === r.id) ? risks.map(x => x.id === r.id ? r : x) : [...risks, r] }); setRiskModal(null); }
+  function deleteRisk(id) { if (confirm("Delete this risk?")) { up({ risks: risks.filter(r => r.id !== id) }); setRiskDetail(null); } }
+
+  const card = { background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 };
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      {insModal !== null && <InsuranceModal policy={insModal === "new" ? null : insModal} cats={cats} accentColor={ac} onSave={saveInsurance} onClose={() => setInsModal(null)} />}
+      {warModal !== null && <WarrantyModal warranty={warModal === "new" ? null : warModal} accentColor={ac} onSave={saveWarranty} onClose={() => setWarModal(null)} />}
+      {riskModal !== null && <RiskModal risk={riskModal === "new" ? null : riskModal} accentColor={ac} onSave={saveRisk} onClose={() => setRiskModal(null)} />}
+
+      <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>🗂 Documents &amp; Policies</h1>
+      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>A central place to store and manage the essentials — policies, warranties, risks and your digital life audit.</p>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
+        {DOC_TABS.map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{ fontSize: 13, padding: "7px 13px", borderRadius: 9, cursor: "pointer", border: "none", background: tab === id ? ac : "var(--color-background-secondary)", color: tab === id ? "#fff" : "var(--color-text-secondary)", fontWeight: tab === id ? 500 : 400 }}>{label}</button>
+        ))}
+      </div>
+
+      {/* ── Insurance ── */}
+      {tab === "insurance" && (() => {
+        const totalMonthly = insurance.reduce((s, p) => s + insMonthly(p), 0);
+        const sorted = insurance.filter(p => p.renewalDate).sort((a, b) => a.renewalDate.localeCompare(b.renewalDate));
+        const next = sorted.find(p => (daysUntil(p.renewalDate) ?? -1) >= 0) || sorted[0];
+        return (
+          <div>
+            <SectionHead sub="All your policies in one place. Premiums feed your monthly budget (annual spread over 12); renewals can drop straight onto your to-do list.">🛡 Insurance policies</SectionHead>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+              <button onClick={() => setInsModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Policy</button>
+            </div>
+            {insurance.length === 0 && (
+              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>🛡</div>
+                <div style={{ fontSize: 15, marginBottom: 6 }}>No policies yet</div>
+                <div style={{ fontSize: 13, marginBottom: 18 }}>Add car, home, phone, travel or any other insurance to track renewals, costs and cover.</div>
+                <button onClick={() => setInsModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a policy</button>
+              </div>
+            )}
+            {insurance.length > 0 && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+                  <StatCard label="Total / month" value={fmtMoney(totalMonthly)} color={ac} />
+                  <StatCard label="Total / year" value={fmtMoney(totalMonthly * 12)} />
+                  <StatCard label="Policies" value={String(insurance.length)} />
+                  {next && <StatCard label="Next renewal" value={insIcon(next.type) + " " + fmtShort(next.renewalDate)} sub={(() => { const d = daysUntil(next.renewalDate); return d == null ? null : d < 0 ? "overdue" : d === 0 ? "today" : `in ${d} day${d !== 1 ? "s" : ""}`; })()} />}
+                </div>
+                {insurance.map(p => {
+                  const d = p.renewalDate ? daysUntil(p.renewalDate) : null;
+                  const due = d != null && d <= 30;
+                  const cat = catById(p.budgetCategory);
+                  const info = [p.policyNumber && `#${p.policyNumber}`, (Number(p.excess) > 0) && `£${p.excess} excess`, p.coverAmount && `cover ${p.coverAmount}`, p.contactPhone && `☎ ${p.contactPhone}`, p.autoRenew && "auto-renews"].filter(Boolean).join("  ·  ");
+                  return (
+                    <div key={p.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ fontSize: 24, width: 30, textAlign: "center" }}>{insIcon(p.type)}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 15 }}>{p.type}{p.provider ? <span style={{ fontWeight: 400, color: "var(--color-text-secondary)" }}> · {p.provider}</span> : null}</div>
+                          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{fmtMoney(insMonthly(p), true)}/mo · {fmtMoney(insAnnual(p), true)}/yr ({p.frequency === "annual" ? "paid yearly" : "paid monthly"})</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          {p.renewalDate && <div style={{ fontSize: 13, fontWeight: 500, color: due ? "#BA7517" : "var(--color-text-primary)" }}>Renews {fmtShort(p.renewalDate)}</div>}
+                          {d != null && <div style={{ fontSize: 11.5, color: due ? "#BA7517" : "var(--color-text-secondary)" }}>{d < 0 ? "overdue" : d === 0 ? "today" : `in ${d} day${d !== 1 ? "s" : ""}`}</div>}
+                        </div>
+                      </div>
+                      {info && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>{info}</div>}
+                      {p.notes && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6, fontStyle: "italic" }}>{p.notes}</div>}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                        {cat && <span style={{ fontSize: 10.5, background: hex2rgba(cat.color, 0.14), color: cat.color, padding: "2px 8px", borderRadius: 10 }}>{cat.emoji} {cat.name}</span>}
+                        {!cat && <span style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>not in budget</span>}
+                        <div style={{ flex: 1 }} />
+                        <button onClick={() => addRenewalTask(p)} title="Add a renewal reminder to your tasks" style={{ fontSize: 12, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>🔔 Remind me</button>
+                        <button onClick={() => setInsModal(p)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+                        <button onClick={() => deleteInsurance(p.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── Warranties ── */}
+      {tab === "warranties" && (() => {
+        const list = [...warranties].sort((a, b) => (warrantyExpiry(a) || "9999").localeCompare(warrantyExpiry(b) || "9999"));
+        const active = list.filter(w => { const e = warrantyExpiry(w); return e && daysUntil(e) >= 0; });
+        const next = active[0];
+        return (
+          <div>
+            <SectionHead sub="Track what you bought, how long cover lasts, and get a reminder before it runs out.">🧾 Warranty tracker</SectionHead>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+              <button onClick={() => setWarModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Warranty</button>
+            </div>
+            {list.length === 0 && (
+              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>🧾</div>
+                <div style={{ fontSize: 15, marginBottom: 6 }}>No warranties tracked yet</div>
+                <div style={{ fontSize: 13, marginBottom: 18 }}>Add appliances, electronics or anything with cover — we'll remind you before it lapses.</div>
+                <button onClick={() => setWarModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a warranty</button>
+              </div>
+            )}
+            {list.length > 0 && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+                  <StatCard label="Items tracked" value={String(list.length)} color={ac} />
+                  <StatCard label="In cover" value={String(active.length)} color="#1D9E75" />
+                  {next && <StatCard label="Next to expire" value={fmtShort(warrantyExpiry(next))} sub={next.item} />}
+                </div>
+                {list.map(w => {
+                  const e = warrantyExpiry(w);
+                  const d = e ? daysUntil(e) : null;
+                  const expired = d != null && d < 0;
+                  const soon = d != null && d >= 0 && d <= 30;
+                  const col = expired ? "#E24B4A" : soon ? "#BA7517" : "#1D9E75";
+                  return (
+                    <div key={w.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ fontSize: 24, width: 30, textAlign: "center" }}>{WARRANTY_ICON[w.category] || "🧾"}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 15 }}>{w.item}{w.provider ? <span style={{ fontWeight: 400, color: "var(--color-text-secondary)" }}> · {w.provider}</span> : null}</div>
+                          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{w.category}{w.purchaseDate ? ` · bought ${fmtShort(w.purchaseDate)}` : ""}{w.coverMonths ? ` · ${w.coverMonths}-month cover` : ""}{w.cost ? ` · ${fmtMoney(w.cost, true)}` : ""}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          {e && <div style={{ fontSize: 13, fontWeight: 500, color: col }}>{expired ? "Expired" : "Covered until"}</div>}
+                          {e && <div style={{ fontSize: 11.5, color: col }}>{fmtShort(e)}{d != null && !expired ? ` · in ${d}d` : ""}</div>}
+                        </div>
+                      </div>
+                      {(w.reference || w.notes) && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>{[w.reference && `Ref ${w.reference}`, w.notes].filter(Boolean).join("  ·  ")}</div>}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                        <div style={{ flex: 1 }} />
+                        <button onClick={() => setWarModal(w)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+                        <button onClick={() => deleteWarranty(w.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── Risk register ── */}
+      {tab === "risk" && (() => {
+        if (riskDetail) {
+          const r = risks.find(x => x.id === riskDetail);
+          if (!r) { setRiskDetail(null); return null; }
+          const lvl = riskLevel(riskScore(r));
+          const Block = ({ icon, title, body, empty }) => (
+            <div style={{ ...card }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{icon} {title}</div>
+              <div style={{ fontSize: 13, color: body ? "var(--color-text-primary)" : "var(--color-text-secondary)", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{body || empty}</div>
+            </div>
+          );
+          return (
+            <div>
+              <button onClick={() => setRiskDetail(null)} style={{ fontSize: 12.5, padding: "5px 12px", borderRadius: 8, cursor: "pointer", marginBottom: 14, color: ac }}>← Back to register</button>
+              <div style={{ ...card, background: hex2rgba(lvl.color, 0.07), borderColor: hex2rgba(lvl.color, 0.3) }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <div style={{ fontSize: 18, fontWeight: 700 }}>{r.title}</div>
+                    <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 3 }}>{r.category} · {(RISK_STATUS.find(s => s[0] === r.status) || [, "Open"])[1]}{r.owner ? ` · owner ${r.owner}` : ""}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ background: hex2rgba(lvl.color, 0.15), color: lvl.color, fontWeight: 700, padding: "4px 12px", borderRadius: 20, fontSize: 13 }}>{lvl.label} · {riskScore(r)}</span>
+                    <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 4 }}>likelihood {r.likelihood} × impact {r.impact}</div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                  <button onClick={() => setRiskModal(r)} style={{ fontSize: 12.5, padding: "6px 14px", borderRadius: 8, cursor: "pointer" }}>✏️ Edit</button>
+                  <button onClick={() => deleteRisk(r.id)} style={{ fontSize: 12.5, padding: "6px 14px", borderRadius: 8, cursor: "pointer", color: "#E24B4A" }}>🗑 Delete</button>
+                </div>
+              </div>
+              <Block icon="📋" title="What could happen" body={r.description} empty="No description added yet." />
+              <Block icon="🛡" title="Mitigation — reducing the risk" body={r.mitigation} empty="No mitigation plan yet." />
+              <Block icon="🚨" title="Crisis management plan" body={r.crisisPlan} empty="No crisis plan yet — add the steps you'd take if this risk kicks off." />
+            </div>
+          );
+        }
+        const sorted = [...risks].sort((a, b) => riskScore(b) - riskScore(a));
+        return (
+          <div>
+            <SectionHead sub="Log what could go wrong, rate it, and plan how you'd respond if it happens.">⚠️ Risk register</SectionHead>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+              <button onClick={() => setRiskModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Risk</button>
+            </div>
+            {risks.length === 0 && (
+              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>⚠️</div>
+                <div style={{ fontSize: 15, marginBottom: 6 }}>No risks logged yet</div>
+                <div style={{ fontSize: 13, marginBottom: 18 }}>Think job loss, illness, a boiler failure — note it, rate it, and write a plan.</div>
+                <button onClick={() => setRiskModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a risk</button>
+              </div>
+            )}
+            {sorted.map(r => {
+              const lvl = riskLevel(riskScore(r));
+              return (
+                <div key={r.id} onClick={() => setRiskDetail(r.id)} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: "13px 16px", border: "0.5px solid var(--color-border-tertiary)", marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 44, height: 44, borderRadius: 10, background: hex2rgba(lvl.color, 0.13), color: lvl.color, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <span style={{ fontSize: 16, fontWeight: 700, lineHeight: 1 }}>{riskScore(r)}</span>
+                    <span style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>{lvl.label}</span>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>{r.title}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>{r.category} · L{r.likelihood}×I{r.impact} · {(RISK_STATUS.find(s => s[0] === r.status) || [, "Open"])[1]}{r.crisisPlan ? " · 🚨 plan ready" : ""}</div>
+                  </div>
+                  <span style={{ color: "var(--color-text-secondary)", fontSize: 16 }}>›</span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      {/* ── Digital Life Audit ── */}
+      {tab === "audit" && <AuditView state={state} up={up} accentColor={ac} goFinance={goFinance} />}
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 
 function App({ user }) {
@@ -4173,6 +4486,8 @@ function App({ user }) {
 
   const ac = accent(state.theme);
   const today = todayStr();
+  // Greeting name: an explicit Settings name wins, else the name from sign-up metadata.
+  const displayName = ((state.name || "").trim()) || (user && user.user_metadata && (user.user_metadata.full_name || user.user_metadata.name)) || "";
   const sidebarCollapsed = narrow ? false : collapsed; // on phones the drawer always shows full labels
 
   // While the user's cloud data is loading for the first time, show a spinner
@@ -4192,6 +4507,10 @@ function App({ user }) {
   }
 
   function deleteTask(id) { up({ tasks: state.tasks.filter(t => t.id !== id) }); }
+
+  function toggleSubtask(taskId, subId) {
+    up({ tasks: state.tasks.map(t => t.id !== taskId ? t : { ...t, subtasks: (t.subtasks || []).map(s => s.id === subId ? { ...s, done: !s.done } : s) }) });
+  }
 
   function saveGroup(g) {
     const exists = state.groups.find(x => x.id === g.id);
@@ -4243,7 +4562,7 @@ function App({ user }) {
   const weekMissed = allTasks.filter(t => !t.done && t.deadline && new Date(t.deadline + "T00:00:00") < new Date() && new Date(t.deadline + "T00:00:00") >= weekAgo).length;
   const overdueTasks = allTasks.filter(t => !t.done && t.deadline && t.deadline < today);
 
-  const taskRowProps = { tags: state.tags, groups: state.groups, onToggle: toggleTask, onEdit: setModal, onDelete: deleteTask };
+  const taskRowProps = { tags: state.tags, groups: state.groups, onToggle: toggleTask, onEdit: setModal, onDelete: deleteTask, onToggleSubtask: toggleSubtask };
 
   return (
     <div style={{ display: "flex", minHeight: "600px", fontFamily: "var(--font-sans)", background: "var(--color-background-tertiary)" }}>
@@ -4332,22 +4651,23 @@ function App({ user }) {
               {view === "today" && <button onClick={() => setFocusMode(!focusMode)} style={{ fontSize: 12, padding: "5px 12px", background: focusMode ? ac : "transparent", color: focusMode ? "#fff" : "var(--color-text-primary)", border: `1px solid ${ac}`, borderRadius: 7, cursor: "pointer" }}>🎯 Focus</button>}
             </>
           )}
-          {!["home","insights","settings","calendar","finance","people"].includes(view) && (
+          {!["home","insights","settings","calendar","finance","people","docs"].includes(view) && (
             <button onClick={() => setModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ New task</button>
           )}
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
+        <div style={{ flex: 1, overflowY: "auto", padding: "22px 24px 44px" }}>
 
           {/* Central home dashboard */}
-          {view === "home" && <HomeView state={state} accentColor={ac} setView={setView} onAddTask={saveTask} allTasks={allTasks} overdueTasks={overdueTasks} />}
+          {view === "home" && <HomeView state={state} accentColor={ac} setView={setView} onAddTask={saveTask} allTasks={allTasks} overdueTasks={overdueTasks} userName={displayName} />}
 
           {/* Today hub — List (Today + Unsorted + Upcoming) or Calendar */}
           {view === "today" && (
             <div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-                {[["list", "📋 List"], ["calendar", "🗓 Calendar"], ["groups", "📁 Groups"], ["insights", "📊 Insights"]].map(([m, l]) => (
+              <SectionHead sub="Everything on your plate — schedule it, group it, or tick it off.">☀️ Your tasks</SectionHead>
+              <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+                {[["list", "📋 List"], ["calendar", "🗓 Calendar"], ["groups", "📁 Groups"], ["done", "✓ Done"], ["insights", "📊 Insights"]].map(([m, l]) => (
                   <button key={m} onClick={() => setTodayMode(m)} style={{ fontSize: 13, padding: "7px 14px", borderRadius: 9, cursor: "pointer", border: "none", background: todayMode === m ? ac : "var(--color-background-secondary)", color: todayMode === m ? "#fff" : "var(--color-text-secondary)", fontWeight: todayMode === m ? 500 : 400 }}>{l}</button>
                 ))}
               </div>
@@ -4363,7 +4683,6 @@ function App({ user }) {
                     {tasks.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
                   </>
                 );
-                const completed = allTasks.filter(t => t.done && t.completedDate === today);
                 const allEmpty = viewTasks.length === 0 && upcomingTasks.length === 0 && unsortedTasks.length === 0 && somedayTasks.length === 0;
                 return (
                   <div>
@@ -4388,13 +4707,35 @@ function App({ user }) {
                     {!focusMode && <Section icon="📌" label="Later" tasks={upcomingBuckets.later} />}
                     {!focusMode && <Section icon="📥" label="Unsorted" hint="no day set — schedule it or file into a group" tasks={unsortedTasks} />}
                     {!focusMode && <Section icon="🌂" label="Rainy Day" hint="for when you have free time" tasks={somedayTasks} />}
-                    {completed.length > 0 && (
-                      <>
-                        <Divider />
-                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, fontWeight: 500 }}>Completed today</div>
-                        {completed.map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
-                      </>
-                    )}
+                    {allTasks.some(t => t.done) && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 16, textAlign: "center" }}>Completed tasks now live in the <b>✓ Done</b> tab.</div>}
+                  </div>
+                );
+              })()}
+
+              {todayMode === "done" && (() => {
+                const completed = filterTasks(allTasks.filter(t => t.done)).sort((a, b) => (b.completedDate || "").localeCompare(a.completedDate || ""));
+                if (completed.length === 0) return (
+                  <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-secondary)" }}>
+                    <div style={{ fontSize: 36, marginBottom: 10 }}>✓</div>
+                    <div style={{ fontSize: 15 }}>Nothing completed yet — tick a task off and it lands here.</div>
+                  </div>
+                );
+                // Group by completion day so the history reads like a timeline.
+                const groupsByDay = {};
+                completed.forEach(t => { const k = t.completedDate || "Earlier"; (groupsByDay[k] = groupsByDay[k] || []).push(t); });
+                const dayKeys = Object.keys(groupsByDay).sort((a, b) => b.localeCompare(a));
+                return (
+                  <div>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
+                      <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Every task you've completed, newest first. Tap the circle to bring one back.</div>
+                      <button onClick={() => { if (confirm(`Permanently delete all ${completed.length} completed task${completed.length !== 1 ? "s" : ""}?`)) up({ tasks: state.tasks.filter(t => !t.done) }); }} style={{ fontSize: 12.5, padding: "6px 12px", borderRadius: 8, cursor: "pointer", color: "#E24B4A" }}>🗑 Clear all</button>
+                    </div>
+                    {dayKeys.map(k => (
+                      <div key={k}>
+                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 600, margin: "14px 0 8px" }}>{k === "Earlier" ? "Earlier" : fmtLongDate(k)}</div>
+                        {groupsByDay[k].map(t => <TaskRow key={t.id} task={t} {...taskRowProps} />)}
+                      </div>
+                    ))}
                   </div>
                 );
               })()}
@@ -4448,6 +4789,7 @@ function App({ user }) {
           {/* Important dates */}
           {view === "important-dates" && (
             <div>
+              <SectionHead sub="Birthdays, anniversaries and events — with their own to-do lists and budgets.">🎂 Important dates</SectionHead>
               <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
                 <button onClick={() => setDateModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add date</button>
               </div>
@@ -4506,8 +4848,8 @@ function App({ user }) {
           {/* Finance */}
           {view === "finance" && <FinanceView state={state} up={up} accentColor={ac} />}
 
-          {/* Digital Life Audit */}
-          {view === "audit" && <AuditView state={state} up={up} accentColor={ac} goFinance={() => setView("finance")} />}
+          {/* Documents & Policies (Insurance, Warranties, Risk register, Digital Life Audit) */}
+          {view === "docs" && <DocsView state={state} up={up} accentColor={ac} goFinance={() => setView("finance")} />}
 
           {/* Settings */}
           {view === "settings" && <SettingsView state={state} up={up} accentColor={ac} user={user} calendarToken={meta.calendarToken} />}
