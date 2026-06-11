@@ -10,73 +10,383 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon.svg" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <!-- Almanac type system: Newsreader (literary serif display), Hanken Grotesk
+       (warm humanist UI), Space Mono (ledger figures + eyebrow labels). -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,500&family=Space+Mono:wght@400;700&display=swap" />
   <title>Tend — your tasks, tended</title>
   <style>
-    /* Light is the default. Dark applies either via an explicit data-mode="dark"
-       override (set by the app), or via the OS setting when the user hasn't
-       forced a mode (data-mode absent / not light|dark). data-mode="light"
-       therefore wins over the OS preference. */
+    /* ───────────────────────────────────────────────────────────────────────
+       Tend — "Modern Almanac" aesthetic. Warm paper & ink, an editorial serif
+       (Newsreader) over a humanist grotesque (Hanken Grotesk), with Space Mono
+       for ledger figures & eyebrow labels. Atmosphere comes from a dotted-paper
+       texture, not gradients. Light is default; dark = warm ink. CSS variable
+       NAMES are unchanged so every inline style keeps working — only values,
+       typography, texture and motion are new. --accent is set live by the app.
+       ─────────────────────────────────────────────────────────────────────── */
     :root {
-      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      --color-background-primary: #ffffff;
-      --color-background-secondary: #f5f5f7;
-      --color-background-tertiary: #ececf0;
-      --color-text-primary: #1c1c1e;
-      --color-text-secondary: #6b6b70;
-      --color-border-secondary: #c7c7cc;
-      --color-border-tertiary: #e3e3e6;
+      --font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+      --font-mono: "Space Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+      --color-background-primary: #fbf8f1;     /* raised "paper" cards */
+      --color-background-secondary: #f1ead9;   /* insets / tinted paper */
+      --color-background-tertiary: #ece3d0;     /* the desk / canvas */
+      --color-text-primary: #2a2620;           /* warm ink */
+      --color-text-secondary: #7c7263;         /* faded ink */
+      --color-border-secondary: #d8cdb6;
+      --color-border-tertiary: #e6dcc8;
+      --accent: #4f7a52;                        /* default; overridden by theme */
+      --accent-soft: rgba(79,122,82,0.14);
+      --gilt: #b9892f;                          /* antique gold leaf */
+      --gilt-soft: rgba(185,137,47,0.16);
+      --glass: rgba(251,248,241,0.66);          /* frosted chrome */
+      --glass-border: rgba(120,100,60,0.16);
+      --card-sheen: rgba(255,255,255,0.45);     /* top-edge highlight on cards */
+      --dot: rgba(60,48,30,0.045);              /* paper grid speckle — gentle */
+      --aurora-1: rgba(79,122,82,0.10);
+      --aurora-2: rgba(185,137,47,0.10);
+      --aurora-3: rgba(120,94,167,0.07);
+      --radius-sm: 9px;
+      --radius: 14px;
+      --radius-lg: 20px;
+      --shadow-xs: 0 1px 2px rgba(60,45,25,0.06);
+      --shadow-sm: 0 1px 2px rgba(60,45,25,0.05), 0 2px 8px -3px rgba(60,45,25,0.10);
+      --shadow-md: 0 8px 22px -8px rgba(60,45,25,0.18), 0 2px 6px -2px rgba(60,45,25,0.08);
+      --shadow-lg: 0 30px 60px -18px rgba(45,33,18,0.34);
+      --ring: 0 0 0 3px var(--accent-soft);
+      color-scheme: light;
     }
     :root[data-mode="dark"] {
-      --color-background-primary: #1c1c1e;
-      --color-background-secondary: #2c2c2e;
-      --color-background-tertiary: #000000;
-      --color-text-primary: #f2f2f7;
-      --color-text-secondary: #98989f;
-      --color-border-secondary: #48484a;
-      --color-border-tertiary: #38383a;
+      --color-background-primary: #211d17;     /* aged-paper-in-lamplight cards */
+      --color-background-secondary: #2a261d;
+      --color-background-tertiary: #161309;     /* deep ink desk */
+      --color-text-primary: #efe7d6;
+      --color-text-secondary: #a89c86;
+      --color-border-secondary: #423b2d;
+      --color-border-tertiary: #312b20;
+      --gilt: #d8b25a;
+      --gilt-soft: rgba(216,178,90,0.18);
+      --glass: rgba(33,29,23,0.55);
+      --glass-border: rgba(220,200,150,0.12);
+      --card-sheen: rgba(255,255,255,0.05);
+      --dot: rgba(225,210,170,0.05);
+      --aurora-1: rgba(79,122,82,0.16);
+      --aurora-2: rgba(216,178,90,0.12);
+      --aurora-3: rgba(140,110,200,0.13);
+      --shadow-xs: 0 1px 2px rgba(0,0,0,0.5);
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.5), 0 2px 10px -3px rgba(0,0,0,0.6);
+      --shadow-md: 0 10px 26px -8px rgba(0,0,0,0.7), 0 2px 8px -2px rgba(0,0,0,0.5);
+      --shadow-lg: 0 32px 70px -18px rgba(0,0,0,0.8);
+      color-scheme: dark;
     }
     @media (prefers-color-scheme: dark) {
       :root:not([data-mode="light"]):not([data-mode="dark"]) {
-        --color-background-primary: #1c1c1e;
-        --color-background-secondary: #2c2c2e;
-        --color-background-tertiary: #000000;
-        --color-text-primary: #f2f2f7;
-        --color-text-secondary: #98989f;
-        --color-border-secondary: #48484a;
-        --color-border-tertiary: #38383a;
+        --color-background-primary: #211d17;
+        --color-background-secondary: #2a261d;
+        --color-background-tertiary: #161309;
+        --color-text-primary: #efe7d6;
+        --color-text-secondary: #a89c86;
+        --color-border-secondary: #423b2d;
+        --color-border-tertiary: #312b20;
+        --gilt: #d8b25a;
+        --gilt-soft: rgba(216,178,90,0.18);
+        --glass: rgba(33,29,23,0.55);
+        --glass-border: rgba(220,200,150,0.12);
+        --card-sheen: rgba(255,255,255,0.05);
+        --dot: rgba(225,210,170,0.05);
+        --aurora-1: rgba(79,122,82,0.16);
+        --aurora-2: rgba(216,178,90,0.12);
+        --aurora-3: rgba(140,110,200,0.13);
+        --shadow-xs: 0 1px 2px rgba(0,0,0,0.5);
+        --shadow-sm: 0 1px 2px rgba(0,0,0,0.5), 0 2px 10px -3px rgba(0,0,0,0.6);
+        --shadow-md: 0 10px 26px -8px rgba(0,0,0,0.7), 0 2px 8px -2px rgba(0,0,0,0.5);
+        --shadow-lg: 0 32px 70px -18px rgba(0,0,0,0.8);
+        color-scheme: dark;
       }
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; height: 100%; }
+    html { background: var(--color-background-tertiary); }
     body {
       font-family: var(--font-sans);
-      background: var(--color-background-tertiary);
+      position: relative;
+      /* Base layer: ruled graph-paper grid over warm paper. */
+      background-color: var(--color-background-tertiary);
+      background-image:
+        linear-gradient(var(--dot) 1px, transparent 1px),
+        linear-gradient(90deg, var(--dot) 1px, transparent 1px);
+      background-size: 26px 26px, 26px 26px;
       color: var(--color-text-primary);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.003em;
       -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
       -webkit-tap-highlight-color: transparent;
+      overflow-x: hidden;
     }
-    #root { min-height: 100vh; }
+    /* Living celestial-almanac atmosphere — drifting aurora light + faint orbital
+       ring motifs, fixed behind the content (the app shell is transparent, so this
+       shows between the paper cards). Pointer-events off; purely decorative. */
+    body::before {
+      content: "";
+      position: fixed; inset: -10%;
+      z-index: 0; pointer-events: none;
+      background:
+        radial-gradient(38% 30% at 82% 8%, var(--aurora-2), transparent 70%),
+        radial-gradient(46% 38% at 12% 18%, var(--aurora-1), transparent 70%),
+        radial-gradient(50% 42% at 70% 92%, var(--aurora-3), transparent 72%),
+        radial-gradient(40% 34% at 30% 80%, var(--aurora-1), transparent 70%);
+      background-repeat: no-repeat;
+      animation: tendAurora 34s ease-in-out infinite alternate;
+      will-change: transform, background-position;
+    }
+    /* Orbital rings + a few stars, top-right; and a soft vignette. SVG baked in a
+       muted ink that reads in both themes thanks to low opacity. */
+    body::after {
+      content: "";
+      position: fixed; inset: 0;
+      z-index: 0; pointer-events: none; opacity: 0.5;
+      background-image:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='560' height='560'%3E%3Cg fill='none' stroke='%238a7a55' stroke-opacity='0.5'%3E%3Ccircle cx='430' cy='150' r='70'/%3E%3Ccircle cx='430' cy='150' r='130' stroke-dasharray='1 9'/%3E%3Ccircle cx='430' cy='150' r='190' stroke-opacity='0.3'/%3E%3C/g%3E%3Cg fill='%238a7a55' fill-opacity='0.55'%3E%3Ccircle cx='500' cy='150' r='3'/%3E%3Ccircle cx='360' cy='110' r='2'/%3E%3Ccircle cx='300' cy='250' r='1.6'/%3E%3Ccircle cx='470' cy='300' r='2'/%3E%3C/g%3E%3C/svg%3E"),
+        radial-gradient(120% 90% at 50% 0%, transparent 60%, rgba(40,28,12,0.10) 100%);
+      background-repeat: no-repeat, no-repeat;
+      background-position: right -120px top -80px, center;
+      background-size: 560px 560px, cover;
+    }
+    @keyframes tendAurora {
+      0%   { transform: translate3d(0,0,0) scale(1); }
+      50%  { transform: translate3d(-2%, 1.5%, 0) scale(1.06); }
+      100% { transform: translate3d(2%, -1.5%, 0) scale(1.03); }
+    }
+    @media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
+
+    /* The five live skies are dark, so they carry a dark surface palette (cards,
+       text, glass) regardless of the light/dark toggle — content reads clearly
+       over the colourful background, like an Outlook dark scene. "almanac" keeps
+       the paper palette. */
+    :root[data-scene="starfield"], :root[data-scene="aurora"], :root[data-scene="nebula"],
+    :root[data-scene="sunset"], :root[data-scene="ocean"] {
+      --color-background-primary: #1d1b29;
+      --color-background-secondary: #272536;
+      --color-text-primary: #f2eee9;
+      --color-text-secondary: #b4adc2;
+      --color-border-secondary: #423e58;
+      --color-border-tertiary: #322f44;
+      --glass: rgba(14,12,26,0.46);
+      --glass-border: rgba(200,205,255,0.16);
+      --card-sheen: rgba(255,255,255,0.06);
+      --gilt: #d8b25a;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.5), 0 10px 26px -10px rgba(0,0,0,0.7);
+      --shadow-md: 0 14px 34px -10px rgba(0,0,0,0.75);
+      --shadow-lg: 0 36px 80px -20px rgba(0,0,0,0.85);
+      color-scheme: dark;
+    }
+
+    /* ════════ LIVE SCENE BACKGROUNDS (Outlook-style, set via [data-scene]) ════════
+       Default (no attr / "almanac") = the warm paper aurora above. Others paint a
+       living sky; the glass sidebar/topbar let it glow through. Decorative only. */
+    @keyframes tendStars { from { background-position: 0 0, 0 0, 0 0; } to { background-position: 340px 680px, -260px 520px, 180px -400px; } }
+    @keyframes tendTwinkle { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
+    @keyframes tendFlow {
+      0%   { transform: translate3d(-6%,-3%,0) rotate(-3deg) scale(1.15); }
+      50%  { transform: translate3d(5%,2%,0) rotate(2deg) scale(1.28); }
+      100% { transform: translate3d(-3%,4%,0) rotate(-1deg) scale(1.18); }
+    }
+    @keyframes tendShoot { 0% { transform: translate(0,0) rotate(18deg); opacity: 0; } 6% { opacity: 1; } 14% { opacity: 0; } 100% { transform: translate(-520px,170px) rotate(18deg); opacity: 0; } }
+
+    /* —— Starfield —— */
+    :root[data-scene="starfield"] body { background-color: #0a1026; background-image: none; }
+    :root[data-scene="starfield"] body::before {
+      inset: 0;
+      background-image:
+        radial-gradient(1.6px 1.6px at 18% 28%, #fff, transparent),
+        radial-gradient(1.2px 1.2px at 62% 66%, #cfe0ff, transparent),
+        radial-gradient(1.8px 1.8px at 82% 18%, #fff, transparent),
+        radial-gradient(1.1px 1.1px at 33% 78%, #bcd2ff, transparent),
+        radial-gradient(1.3px 1.3px at 90% 52%, #fff, transparent),
+        radial-gradient(1.6px 1.6px at 10% 60%, #fff, transparent),
+        radial-gradient(1.1px 1.1px at 48% 12%, #a9c6ff, transparent);
+      background-size: 340px 340px, 280px 280px, 420px 420px, 340px 340px, 280px 280px, 420px 420px, 340px 340px;
+      background-repeat: repeat;
+      animation: tendStars 120s linear infinite, tendTwinkle 7s ease-in-out infinite;
+    }
+    :root[data-scene="starfield"] body::after {
+      inset: 0; opacity: 1;
+      background:
+        radial-gradient(60% 50% at 76% 12%, rgba(120,140,255,0.20), transparent 70%),
+        radial-gradient(55% 50% at 18% 88%, rgba(180,120,255,0.16), transparent 70%);
+      animation: tendAurora 44s ease-in-out infinite alternate;
+    }
+    /* a lone shooting star */
+    :root[data-scene="starfield"] #root::after {
+      content: ""; position: fixed; top: 14%; right: 8%; width: 120px; height: 2px; z-index: 0; pointer-events: none;
+      background: linear-gradient(90deg, transparent, #fff); border-radius: 2px;
+      box-shadow: 0 0 8px 1px rgba(255,255,255,0.6);
+      animation: tendShoot 9s ease-in infinite; animation-delay: 3s;
+    }
+
+    /* —— Aurora (flowing ribbons, framer-style) —— */
+    :root[data-scene="aurora"] body { background-color: #06140f; background-image: none; }
+    :root[data-scene="aurora"] body::before {
+      inset: -25%;
+      background:
+        radial-gradient(40% 55% at 68% 32%, rgba(74,210,160,0.42), transparent 70%),
+        radial-gradient(46% 50% at 30% 64%, rgba(120,96,220,0.36), transparent 72%),
+        radial-gradient(40% 44% at 52% 20%, rgba(64,170,200,0.32), transparent 70%);
+      filter: blur(26px);
+      animation: tendFlow 26s ease-in-out infinite alternate;
+    }
+    :root[data-scene="aurora"] body::after {
+      inset: 0; opacity: 0.9;
+      background-image:
+        radial-gradient(1.3px 1.3px at 22% 24%, rgba(255,255,255,0.7), transparent),
+        radial-gradient(1.1px 1.1px at 70% 60%, rgba(220,255,240,0.6), transparent),
+        radial-gradient(1.4px 1.4px at 85% 30%, rgba(255,255,255,0.6), transparent);
+      background-size: 360px 360px; background-repeat: repeat;
+      animation: tendTwinkle 6s ease-in-out infinite;
+    }
+
+    /* —— Nebula —— */
+    :root[data-scene="nebula"] body { background-color: #0a0818; background-image: none; }
+    :root[data-scene="nebula"] body::before {
+      inset: -15%;
+      background:
+        radial-gradient(44% 40% at 26% 26%, rgba(196,72,170,0.40), transparent 70%),
+        radial-gradient(50% 46% at 74% 66%, rgba(86,96,224,0.38), transparent 72%),
+        radial-gradient(40% 40% at 60% 22%, rgba(60,168,206,0.28), transparent 70%);
+      filter: blur(16px);
+      animation: tendAurora 40s ease-in-out infinite alternate;
+    }
+    :root[data-scene="nebula"] body::after {
+      inset: 0; opacity: 0.9;
+      background-image:
+        radial-gradient(1.4px 1.4px at 16% 22%, #fff, transparent),
+        radial-gradient(1.1px 1.1px at 64% 70%, #e7d8ff, transparent),
+        radial-gradient(1.5px 1.5px at 88% 16%, #fff, transparent),
+        radial-gradient(1.1px 1.1px at 40% 84%, #d8e6ff, transparent);
+      background-size: 300px 300px; background-repeat: repeat;
+      animation: tendStars 150s linear infinite, tendTwinkle 8s ease-in-out infinite;
+    }
+
+    /* —— Sunset —— */
+    :root[data-scene="sunset"] body {
+      background-color: #2a1a46;
+      background-image: linear-gradient(180deg, #241a46 0%, #5e2a5a 42%, #b3473d 76%, #d98a4e 100%);
+    }
+    :root[data-scene="sunset"] body::before {
+      inset: 0;
+      background: radial-gradient(46% 34% at 50% 92%, rgba(255,205,130,0.55), transparent 70%);
+      animation: tendAurora 30s ease-in-out infinite alternate;
+    }
+    :root[data-scene="sunset"] body::after {
+      inset: 0; opacity: 0.8;
+      background-image:
+        radial-gradient(1.3px 1.3px at 22% 16%, rgba(255,255,255,0.8), transparent),
+        radial-gradient(1.1px 1.1px at 66% 12%, rgba(255,240,220,0.7), transparent),
+        radial-gradient(1.2px 1.2px at 84% 22%, rgba(255,255,255,0.7), transparent);
+      background-size: 320px 320px; background-repeat: repeat;
+      animation: tendTwinkle 7s ease-in-out infinite;
+    }
+
+    /* —— Ocean —— */
+    :root[data-scene="ocean"] body {
+      background-color: #06283d;
+      background-image: linear-gradient(180deg, #06283d 0%, #0a4a5e 58%, #0e6e66 100%);
+    }
+    :root[data-scene="ocean"] body::before {
+      inset: -10%;
+      background:
+        radial-gradient(48% 40% at 30% 18%, rgba(96,206,214,0.26), transparent 70%),
+        radial-gradient(50% 42% at 80% 82%, rgba(40,150,180,0.30), transparent 72%);
+      animation: tendAurora 32s ease-in-out infinite alternate;
+    }
+    :root[data-scene="ocean"] body::after {
+      inset: 0; opacity: 0.5;
+      background-image: repeating-linear-gradient(180deg, transparent 0, transparent 22px, rgba(255,255,255,0.035) 23px, transparent 24px);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      body::before, body::after, #root::after { animation: none !important; }
+    }
+
+    #root { min-height: 100vh; position: relative; z-index: 1; }
+    h1, h2, h3 { letter-spacing: -0.012em; }
+    /* Literary serif for page titles. */
+    #root h1 { font-family: var(--font-display); font-weight: 600; letter-spacing: -0.01em; }
     input, textarea, select, button { font-family: inherit; color: var(--color-text-primary); }
     input, textarea, select {
       background: var(--color-background-secondary);
       border: 1px solid var(--color-border-tertiary);
-      border-radius: 8px;
-      padding: 8px 10px;
+      border-radius: 10px;
+      padding: 9px 11px;
       font-size: 14px;
       outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
     }
-    input:focus, textarea:focus, select:focus { border-color: var(--color-border-secondary); }
+    input::placeholder, textarea::placeholder { color: var(--color-text-secondary); opacity: 0.7; }
+    input:hover, textarea:hover, select:hover { border-color: var(--color-border-secondary); }
+    input:focus, textarea:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: var(--ring);
+      background: var(--color-background-primary);
+    }
     button {
       background: var(--color-background-secondary);
       border: 1px solid var(--color-border-tertiary);
-      border-radius: 8px;
+      border-radius: 10px;
       cursor: pointer;
+      font-weight: 600;
+      transition: transform 0.12s cubic-bezier(.2,.7,.2,1), box-shadow 0.15s ease, border-color 0.15s ease, filter 0.15s ease, background 0.15s ease;
     }
-    button:active { transform: scale(0.98); }
-    ::-webkit-scrollbar { width: 9px; height: 9px; }
-    ::-webkit-scrollbar-thumb { background: var(--color-border-secondary); border-radius: 8px; }
+    button:hover { border-color: var(--color-border-secondary); transform: translateY(-1px); }
+    button:active { transform: translateY(0.5px) scale(0.985); }
+    button:focus-visible, a:focus-visible { outline: none; box-shadow: var(--ring); }
+    a { color: var(--accent); }
+    ::selection { background: var(--accent-soft); color: var(--color-text-primary); }
+    ::-webkit-scrollbar { width: 11px; height: 11px; }
+    ::-webkit-scrollbar-thumb { background: var(--color-border-secondary); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--color-text-secondary); background-clip: padding-box; }
     ::-webkit-scrollbar-track { background: transparent; }
-    .boot-msg { padding: 40px; text-align: center; color: var(--color-text-secondary); font-size: 14px; }
+
+    /* Elevation on the app's raised paper surfaces (cards, rows, sidebar, topbar,
+       modals) — everything painted with the primary colour. Inline box-shadows
+       (e.g. modals) still win, so nothing regresses. */
+    #root [style*="var(--color-background-primary)"] {
+      box-shadow: var(--shadow-sm), inset 0 1px 0 var(--card-sheen);
+      transition: box-shadow 0.22s ease, transform 0.22s cubic-bezier(.2,.7,.2,1), border-color 0.22s ease;
+    }
+    /* Cards (rounded paper surfaces) gently lift on hover; full-height chrome
+       like the sidebar/topbar has no border-radius so it stays put. */
+    #root [style*="var(--color-background-primary)"][style*="border-radius"]:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--shadow-md), inset 0 1px 0 var(--card-sheen);
+    }
+
+    /* ── Orchestrated page-load: each view rises in with a staggered cascade ── */
+    @keyframes tendRise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+    @keyframes tendFade { from { opacity: 0; } to { opacity: 1; } }
+    .view-enter { animation: tendFade 0.3s ease both; }
+    .view-enter > div > * { animation: tendRise 0.55s cubic-bezier(.2,.7,.2,1) both; }
+    .view-enter > div > *:nth-child(1) { animation-delay: 0.02s; }
+    .view-enter > div > *:nth-child(2) { animation-delay: 0.07s; }
+    .view-enter > div > *:nth-child(3) { animation-delay: 0.12s; }
+    .view-enter > div > *:nth-child(4) { animation-delay: 0.17s; }
+    .view-enter > div > *:nth-child(5) { animation-delay: 0.22s; }
+    .view-enter > div > *:nth-child(6) { animation-delay: 0.27s; }
+    .view-enter > div > *:nth-child(7) { animation-delay: 0.31s; }
+    .view-enter > div > *:nth-child(n+8) { animation-delay: 0.35s; }
+    @media (prefers-reduced-motion: reduce) {
+      .view-enter, .view-enter > div > * { animation: none !important; }
+    }
+
+    /* ── Charts: pies pop in, bars grow up from the baseline, both react to hover ── */
+    @keyframes tendPop { from { opacity: 0; transform: scale(0.82); } to { opacity: 1; transform: scale(1); } }
+    @keyframes tendGrow { from { transform: scaleY(0.001); opacity: 0.3; } to { transform: scaleY(1); opacity: 1; } }
+    .tend-pop { animation: tendPop 0.55s cubic-bezier(.2,.8,.2,1) both; }
+    .tend-bar { transform-origin: bottom; animation: tendGrow 0.65s cubic-bezier(.2,.8,.2,1) both; transition: filter 0.18s ease, transform 0.18s ease; }
+    .tend-bar:hover { filter: brightness(1.08) saturate(1.08); }
+    @media (prefers-reduced-motion: reduce) { .tend-pop, .tend-bar { animation: none !important; } }
+    .boot-msg { padding: 48px; text-align: center; color: var(--color-text-secondary); font-size: 14px; font-family: var(--font-mono); letter-spacing: 0.02em; }
   </style>
 </head>
 <body>

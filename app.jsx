@@ -5,7 +5,21 @@ const PRIORITY = {
   medium: { label: "Medium", color: "#EF9F27", bg: "#FAEEDA", text: "#854F0B" },
   low: { label: "Low", color: "#639922", bg: "#EAF3DE", text: "#3B6D11" }
 };
-const THEMES = { purple: "#7F77DD", blue: "#378ADD", teal: "#1D9E75", coral: "#D85A30", pink: "#D4537E" };
+// Earthy "almanac" accent set — richer, more characterful than the stock brights.
+const THEMES = {
+  purple: "#7B5EA7", blue: "#356A87", teal: "#4F7A52", coral: "#C2542F", pink: "#A84E68",
+  indigo: "#4B57C9", emerald: "#2E8B6B", amber: "#C7902B", crimson: "#B23A48", cyan: "#2C8FB0",
+  rose: "#C75C7A", slate: "#5C6B7A", plum: "#8E4585", forest: "#3E6B43", sand: "#B07D4B"
+};
+// Live background scenes (Outlook-style). [key, label, preview-gradient, dark?]
+const SCENES = [
+  ["almanac", "Almanac", "linear-gradient(135deg,#ece3d0,#cdbf9f)", false],
+  ["starfield", "Starfield", "radial-gradient(120% 120% at 70% 20%,#1b2350,#0a1026)", true],
+  ["aurora", "Aurora", "linear-gradient(135deg,#06140f,#2e8b6b 55%,#7860dc)", true],
+  ["nebula", "Nebula", "linear-gradient(135deg,#0a0818,#c448aa 55%,#5660e0)", true],
+  ["sunset", "Sunset", "linear-gradient(180deg,#241a46,#b3473d 72%,#d98a4e)", true],
+  ["ocean", "Ocean", "linear-gradient(180deg,#06283d,#0e6e66)", true],
+];
 const DEFAULT_TAGS = ["Quick", "Errands", "Focus", "Admin", "Personal", "Work"];
 const TAG_COLORS = ["#7F77DD","#378ADD","#1D9E75","#D85A30","#D4537E","#BA7517","#639922","#888780"];
 const REPEAT_OPTIONS = ["none","daily","weekly","monthly","yearly"];
@@ -62,7 +76,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], job: {}, keyDocuments: [], dismissedSubs: [], name: "", theme: "purple", mode: "system", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], job: {}, keyDocuments: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -147,8 +161,8 @@ function Pill({ active, color, onClick, children }) {
 
 function Modal({ onClose, children, width = 480 }) {
   return (
-    <div onClick={e => e.target === e.currentTarget && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
-      <div style={{ background: "var(--color-background-primary)", borderRadius: 18, padding: 28, width: "100%", maxWidth: width, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 24px 64px rgba(0,0,0,0.2)" }}>
+    <div onClick={e => e.target === e.currentTarget && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(15,18,24,0.5)", backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 20, padding: 28, width: "100%", maxWidth: width, maxHeight: "90vh", overflowY: "auto", border: "1px solid var(--color-border-tertiary)", boxShadow: "var(--shadow-lg)" }}>
         {children}
       </div>
     </div>
@@ -167,7 +181,7 @@ function ModalHeader({ title, onClose }) {
 function Field({ label, children }) {
   return (
     <div style={{ marginBottom: 14 }}>
-      <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--color-text-secondary)", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.04em" }}>{label}</label>
+      <label style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 400, color: "var(--color-text-secondary)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</label>
       {children}
     </div>
   );
@@ -402,7 +416,7 @@ function TaskRow({ task, tags, groups, onToggle, onEdit, onDelete, onToggleSubta
   const taskTags = (task.tags || []).map(id => tags.find(t => t.id === id)).filter(Boolean);
 
   return (
-    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 14px", borderRadius: 11, background: "var(--color-background-primary)", border: `0.5px solid ${overdue ? "#E24B4A" : "var(--color-border-tertiary)"}`, marginBottom: 6, opacity: task.done ? 0.5 : 1, transition: "opacity 0.2s" }}>
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", borderRadius: 18, background: "var(--color-background-primary)", border: `0.5px solid ${overdue ? "#E24B4A" : "var(--color-border-tertiary)"}`, marginBottom: 9, opacity: task.done ? 0.5 : 1, transition: "opacity 0.2s" }}>
       <div onClick={() => onToggle(task.id)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${task.done ? "#639922" : "var(--color-border-secondary)"}`, background: task.done ? "#639922" : "transparent", cursor: "pointer", flexShrink: 0, marginTop: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
         {task.done && <span style={{ color: "#fff", fontSize: 11 }}>✓</span>}
       </div>
@@ -608,6 +622,7 @@ function SettingsView({ state, up, accentColor, user, calendarToken }) {
   const metaName = (user && user.user_metadata && (user.user_metadata.full_name || user.user_metadata.name)) || "";
   return (
     <div style={{ maxWidth: 560 }}>
+      <PageHeader title="⚙️ Settings" sub="Personalise Tend — your name, appearance, theme, tags and calendar feed." />
       <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
         <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>Your name</h3>
         <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--color-text-secondary)" }}>Used to greet you on the Home dashboard.</p>
@@ -639,6 +654,24 @@ function SettingsView({ state, up, accentColor, user, calendarToken }) {
               <span style={{ fontSize: 11, color: state.theme === name ? color : "var(--color-text-secondary)", fontWeight: state.theme === name ? 500 : 400, textTransform: "capitalize" }}>{name}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>Background scene</h3>
+        <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--color-text-secondary)" }}>A living backdrop behind your cards. Animated and easy on the battery.</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(118px,1fr))", gap: 12 }}>
+          {SCENES.map(([key, label, grad]) => {
+            const sel = (state.scene || "almanac") === key;
+            return (
+              <div key={key} onClick={() => up({ scene: key })} style={{ cursor: "pointer" }}>
+                <div style={{ height: 64, borderRadius: 14, background: grad, border: `2px solid ${sel ? accentColor : "transparent"}`, outline: sel ? "none" : "0.5px solid var(--color-border-tertiary)", boxShadow: sel ? `0 6px 18px -6px ${hex2rgba(accentColor, 0.5)}` : "var(--shadow-sm)", position: "relative", overflow: "hidden" }}>
+                  {sel && <span style={{ position: "absolute", top: 6, right: 8, fontSize: 13 }}>✓</span>}
+                </div>
+                <div style={{ fontSize: 11.5, textAlign: "center", marginTop: 6, color: sel ? accentColor : "var(--color-text-secondary)", fontWeight: sel ? 600 : 400 }}>{label}</div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -1041,6 +1074,28 @@ function AuthGate() {
 const GBP2 = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const GBP0 = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", maximumFractionDigits: 0 });
 function fmtMoney(n, round) { return (round ? GBP0 : GBP2).format(Number(n) || 0); }
+// Eased count-up: animates a number from its previous value to the target on change.
+function useCountUp(target, ms = 850) {
+  const [v, setV] = useState(Number(target) || 0);
+  const ref = useRef(Number(target) || 0);
+  useEffect(() => {
+    const to = Number(target) || 0, from = ref.current;
+    if (from === to) return;
+    const start = performance.now(); let raf;
+    const tick = now => {
+      const t = Math.min(1, (now - start) / ms);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const cur = from + (to - from) * eased;
+      ref.current = cur; setV(cur);
+      if (t < 1) raf = requestAnimationFrame(tick); else { ref.current = to; setV(to); }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target]);
+  return v;
+}
+// Money figure that counts up to its value when it changes (hero numbers).
+function CountMoney({ amount, round = true }) { return fmtMoney(useCountUp(amount), round); }
 function curMonthKey() { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); }
 function monthLabel(k) { const [y, m] = k.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" }); }
 function monthShort(k) { const [y, m] = k.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "short" }); }
@@ -1479,17 +1534,28 @@ function makeSampleTransactions(cats) {
 
 // ── Finance: charts (lightweight SVG, no libraries) ──────────────────────────
 
+// Soft gradient fill from a hex colour; passes other colour strings through.
+function vGrad(c) { return (typeof c === "string" && c[0] === "#") ? `linear-gradient(180deg, ${c}, ${hex2rgba(c, 0.55)})` : c; }
+
 function Donut({ segments, size = 150, thickness = 24, center }) {
-  const total = segments.reduce((s, x) => s + (x.value || 0), 0);
+  const live = segments.filter(s => (s.value || 0) > 0);
+  const total = live.reduce((s, x) => s + (x.value || 0), 0);
   const r = (size - thickness) / 2, cx = size / 2, cy = size / 2, circ = 2 * Math.PI * r;
+  // Rounded caps + small gaps between slices = softer, less blocky pie.
+  const gap = live.length > 1 ? Math.min(circ * 0.014, 6) : 0;
   let offset = 0;
+  const gid = "dsh" + Math.round(size + thickness);
   return (
-    <div style={{ position: "relative", width: size, height: size }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+    <div className="tend-pop" style={{ position: "relative", width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: "rotate(-90deg)", overflow: "visible", filter: "drop-shadow(0 4px 6px rgba(40,28,12,0.18))" }}>
+        <defs>
+          <filter id={gid} x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="0" stdDeviation="1.4" floodColor="#000" floodOpacity="0.12" /></filter>
+        </defs>
         <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--color-background-secondary)" strokeWidth={thickness} />
-        {total > 0 && segments.map((s, i) => {
+        {total > 0 && live.map((s, i) => {
           const len = (s.value / total) * circ;
-          const el = <circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={s.color} strokeWidth={thickness} strokeDasharray={`${len} ${circ - len}`} strokeDashoffset={-offset} transform={`rotate(-90 ${cx} ${cy})`} />;
+          const draw = Math.max(0.01, len - gap);
+          const el = <circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={s.color} strokeWidth={thickness} strokeLinecap="round" strokeDasharray={`${draw} ${circ - draw}`} strokeDashoffset={-offset} filter={`url(#${gid})`} />;
           offset += len;
           return el;
         })}
@@ -1504,10 +1570,10 @@ function BarsChart({ data, height = 150, money }) {
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height }}>
       {data.map((d, i) => (
-        <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 5, height: "100%", justifyContent: "flex-end" }}>
-          <div style={{ fontSize: 10, color: "var(--color-text-secondary)", fontWeight: 500 }}>{d.value ? (money ? fmtMoney(d.value, true) : d.value) : ""}</div>
-          <div title={`${d.label}: ${money ? fmtMoney(d.value) : d.value}`} style={{ width: "100%", maxWidth: 44, height: `${(d.value / max) * 100}%`, minHeight: d.value > 0 ? 4 : 0, background: d.color, borderRadius: "6px 6px 0 0", transition: "height 0.4s" }} />
-          <div style={{ fontSize: 10, color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>{d.label}</div>
+        <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, height: "100%", justifyContent: "flex-end", minWidth: 0 }}>
+          <div style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--color-text-secondary)", fontWeight: 400 }}>{d.value ? (money ? fmtMoney(d.value, true) : d.value) : ""}</div>
+          <div className="tend-bar" title={`${d.label}: ${money ? fmtMoney(d.value) : d.value}`} style={{ width: "100%", maxWidth: 46, height: `${(d.value / max) * 100}%`, minHeight: d.value > 0 ? 5 : 0, background: vGrad(d.color), borderRadius: "9px 9px 4px 4px", boxShadow: "0 3px 8px -3px rgba(40,28,12,0.3)", animationDelay: `${0.04 * i}s` }} />
+          <div style={{ fontSize: 10, color: "var(--color-text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{d.label}</div>
         </div>
       ))}
     </div>
@@ -1660,10 +1726,10 @@ function parseBankCSV(text, cats) {
 
 function StatCard({ label, value, color, sub }) {
   return (
-    <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: "16px 16px", border: "0.5px solid var(--color-border-tertiary)" }}>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>{label}</div>
-      <div style={{ fontSize: 23, fontWeight: 600, color: color || "var(--color-text-primary)" }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 4 }}>{sub}</div>}
+    <div style={{ background: "var(--color-background-primary)", borderRadius: 20, padding: "18px 20px", border: "0.5px solid var(--color-border-tertiary)" }}>
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-secondary)", marginBottom: 8 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 600, color: color || "var(--color-text-primary)" }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 5 }}>{sub}</div>}
     </div>
   );
 }
@@ -2188,9 +2254,21 @@ function DebtModal({ debt, accentColor, onSave, onClose }) {
 // Consistent section header with breathing room (used to space out finance pages).
 function SectionHead({ children, sub, top = 0 }) {
   return (
-    <div style={{ marginTop: top, marginBottom: 12 }}>
+    <div style={{ marginTop: top, marginBottom: 16 }}>
       <div style={{ fontSize: 15, fontWeight: 600 }}>{children}</div>
-      {sub && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 3, lineHeight: 1.5 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// The big page header used at the top of every view — serif <h1> title (styled
+// by #root h1 in index.html) + a one-line subtitle. Mirrors the Documents page.
+function PageHeader({ title, sub }) {
+  return (
+    <div>
+      <h1 style={{ fontSize: 30, fontWeight: 600, margin: "0 0 10px", lineHeight: 1.1 }}>{title}</h1>
+      <div style={{ width: 54, height: 3, borderRadius: 3, background: "linear-gradient(90deg, var(--accent), var(--gilt))", boxShadow: "0 0 12px var(--accent-soft)", margin: "0 0 14px" }} />
+      {sub && <p style={{ fontSize: 13.5, color: "var(--color-text-secondary)", margin: "0 0 30px", lineHeight: 1.55, maxWidth: 560 }}>{sub}</p>}
     </div>
   );
 }
@@ -2206,38 +2284,79 @@ function MonthlyReports({ state }) {
   const allKeys = Object.keys(merged).filter(k => merged[k]).sort().reverse().slice(0, 24);
   if (allKeys.length === 0) return <div style={{ textAlign: "center", padding: 30, color: "var(--color-text-secondary)", fontSize: 13 }}>No monthly history yet — it builds up as you use Tend.</div>;
   const keys = showAll ? allKeys : allKeys.slice(0, 4);
+  // Ascending trend of monthly surplus for the spark strip.
+  const asc = allKeys.slice().reverse();
+  const sparks = asc.map(k => ({ mk: k, v: merged[k].saved || 0 }));
+  const sparkMax = Math.max(1, ...sparks.map(s => Math.abs(s.v)));
+  const mInitial = mk => monthLabel(mk).slice(0, 1);
+  const idxOf = mk => allKeys.indexOf(mk);
   return (
     <div>
+      {/* Surplus trend strip — at-a-glance shape of the months. */}
+      {sparks.length >= 2 && (
+        <div style={{ background: "var(--color-background-primary)", borderRadius: 18, padding: "16px 18px", border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, overflow: "hidden" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>Surplus trend</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{sparks.length} months</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 64 }}>
+            {sparks.slice(-12).map((s, i) => (
+              <div key={s.mk} title={`${monthLabel(s.mk)}: ${fmtMoney(s.v, true)}`} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 5, height: "100%", justifyContent: "flex-end" }}>
+                <div className="tend-bar" style={{ width: "100%", maxWidth: 30, height: `${Math.max(4, Math.abs(s.v) / sparkMax * 100)}%`, borderRadius: "7px 7px 3px 3px", background: s.v >= 0 ? "linear-gradient(180deg, var(--accent), var(--accent-soft))" : "linear-gradient(180deg, #E24B4A, rgba(226,75,74,0.4))", animationDelay: `${i * 0.04}s` }} />
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)" }}>{mInitial(s.mk)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {keys.map(mk => {
         const r = merged[mk];
         const over = r.actual > r.forecast && r.forecast > 0;
+        const prevKey = allKeys[idxOf(mk) + 1];
+        const nwDelta = prevKey ? (r.netWorth || 0) - (merged[prevKey].netWorth || 0) : null;
+        const actPct = r.forecast > 0 ? Math.min(120, (r.actual / r.forecast) * 100) : null;
+        const verdict = r.saved > 0 ? { t: `Saved ${fmtMoney(r.saved, true)}`, c: "#1D9E75", bg: "rgba(29,158,117,0.14)" } : { t: "No surplus", c: "#C2542F", bg: "rgba(194,84,47,0.14)" };
+        const chip = (icon, label, val, col) => (
+          <div style={{ background: "var(--color-background-secondary)", borderRadius: 12, padding: "10px 12px", flex: 1, minWidth: 92 }}>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-secondary)" }}>{icon} {label}</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: col || "var(--color-text-primary)", marginTop: 3 }}>{val}</div>
+          </div>
+        );
         return (
-          <div key={mk} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-              <div style={{ fontSize: 15, fontWeight: 600 }}>{monthLabel(mk)}</div>
-              <div style={{ fontSize: 12, color: r.saved > 0 ? "#1D9E75" : "var(--color-text-secondary)" }}>{r.saved > 0 ? `saved ${fmtMoney(r.saved, true)}` : "no surplus"}</div>
+          <div key={mk} style={{ position: "relative", background: "var(--color-background-primary)", borderRadius: 20, padding: "18px 20px 18px 24px", border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, overflow: "hidden" }}>
+            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 6, background: "linear-gradient(180deg, var(--accent), var(--gilt))" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 600 }}>{monthLabel(mk)}</div>
+              <span style={{ fontSize: 12, fontWeight: 600, color: verdict.c, background: verdict.bg, padding: "5px 12px", borderRadius: 20 }}>{verdict.t}</span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(96px,1fr))", gap: 8 }}>
-              {[["Forecast", fmtMoney(r.forecast, true), "var(--color-text-secondary)"],
-                ["Actual", fmtMoney(r.actual, true), over ? "#E24B4A" : "#639922"],
-                ["Income", fmtMoney(r.income, true), "#1D9E75"],
-                ["Saved", fmtMoney(r.savedInto || 0, true), "#1D9E75"],
-                ["Debt paid", fmtMoney(r.debtPaid || 0, true), (r.debtPaid || 0) > 0 ? "#BA7517" : "var(--color-text-secondary)"],
-                ["Net worth", fmtMoney(r.netWorth || 0, true), (r.netWorth || 0) >= 0 ? "#1D9E75" : "#E24B4A"],
-                ["Owed", fmtMoney(r.debt, true), r.debt > 0 ? "#E24B4A" : "var(--color-text-secondary)"],
-                ["Gifts", String(r.gifts || 0), "var(--color-text-primary)"]].map(([l, v, c]) => (
-                <div key={l} style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "8px 10px" }}>
-                  <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.03em" }}>{l}</div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: c }}>{v}</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+              {chip("↘", "Income", fmtMoney(r.income, true), "#1D9E75")}
+              {chip("↗", "Spent", fmtMoney(r.actual, true), over ? "#E24B4A" : "var(--color-text-primary)")}
+              {chip("🐖", "Into savings", fmtMoney(r.savedInto || 0, true), "#1D9E75")}
+              {chip("💳", "Debt paid", fmtMoney(r.debtPaid || 0, true), (r.debtPaid || 0) > 0 ? "#BA7517" : "var(--color-text-secondary)")}
+            </div>
+            {actPct != null && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 5 }}>
+                  <span>Spent vs forecast</span>
+                  <span style={{ color: over ? "#E24B4A" : "#1D9E75", fontWeight: 600 }}>{over ? `${fmtMoney(r.actual - r.forecast, true)} over` : `${fmtMoney(r.forecast - r.actual, true)} under`}</span>
                 </div>
-              ))}
+                <div style={{ position: "relative", height: 10, background: "var(--color-background-secondary)", borderRadius: 6, overflow: "hidden" }}>
+                  <div style={{ position: "absolute", inset: 0, width: `${actPct}%`, background: over ? "linear-gradient(90deg, #E2954B, #E24B4A)" : "linear-gradient(90deg, var(--accent), #1D9E75)", borderRadius: 6, transition: "width 0.6s cubic-bezier(.2,.8,.2,1)" }} />
+                </div>
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
+              <span style={{ color: "var(--color-text-secondary)" }}>Net worth <b style={{ color: (r.netWorth || 0) >= 0 ? "var(--color-text-primary)" : "#E24B4A" }}>{fmtMoney(r.netWorth || 0, true)}</b>{nwDelta != null && nwDelta !== 0 && <span style={{ color: nwDelta > 0 ? "#1D9E75" : "#E24B4A", fontWeight: 600 }}> {nwDelta > 0 ? "▲" : "▼"} {fmtMoney(Math.abs(nwDelta), true)}</span>}</span>
+              {r.debt > 0 && <span style={{ color: "var(--color-text-secondary)" }}>Owed <b style={{ color: "#E24B4A" }}>{fmtMoney(r.debt, true)}</b></span>}
+              {(r.gifts || 0) > 0 && <span style={{ color: "var(--color-text-secondary)" }}>🎁 {r.gifts} gift{r.gifts !== 1 ? "s" : ""}</span>}
             </div>
-            {r.forecast > 0 && <div style={{ fontSize: 11.5, color: over ? "#E24B4A" : "#639922", marginTop: 8 }}>{over ? `Over forecast by ${fmtMoney(r.actual - r.forecast, true)}` : `Under forecast by ${fmtMoney(r.forecast - r.actual, true)}`}</div>}
           </div>
         );
       })}
       {allKeys.length > 4 && (
-        <button onClick={() => setShowAll(v => !v)} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 9, cursor: "pointer", width: "100%", color: "var(--color-text-primary)" }}>
+        <button onClick={() => setShowAll(v => !v)} style={{ fontSize: 13, padding: "10px 16px", borderRadius: 12, cursor: "pointer", width: "100%", color: "var(--color-text-primary)" }}>
           {showAll ? "Show fewer" : `View all ${allKeys.length} months`}
         </button>
       )}
@@ -2420,7 +2539,7 @@ function FinanceView({ state, up, accentColor }) {
   const donutSegs = cats.map(c => ({ value: stats.byCat[c.id]?.spent || 0, color: c.color, label: c.name })).filter(s => s.value > 0);
 
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth: 880 }}>
       {txnModal !== null && <TxnModal txn={txnModal === "new" ? null : txnModal} cats={cats} accentColor={ac} onSave={saveTxn} onClose={() => setTxnModal(null)} />}
       {catModal !== null && <FinanceCatModal cat={catModal === "new" ? null : catModal} accentColor={ac} onSave={saveCat} onClose={() => setCatModal(null)} />}
       {savModal !== null && <SavingsModal account={savModal === "new" ? null : savModal} accentColor={ac} onSave={saveSav} onClose={() => setSavModal(null)} />}
@@ -2429,6 +2548,8 @@ function FinanceView({ state, up, accentColor }) {
       {subModal !== null && <SubModal sub={subModal === "new" ? null : subModal} cats={cats} accentColor={ac} onSave={saveSub} onClose={() => setSubModal(null)} />}
       {debtModal !== null && <DebtModal debt={debtModal === "new" ? null : debtModal} accentColor={ac} onSave={saveDebt} onClose={() => setDebtModal(null)} />}
       {caModal !== null && <CurrentAccountModal account={caModal === "new" ? null : caModal} accentColor={ac} onSave={saveCA} onClose={() => setCaModal(null)} />}
+
+      <PageHeader title="💵 Finance" sub="Budgets, savings, debts, pensions, investments and reports — your whole money picture." />
 
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
@@ -3508,7 +3629,7 @@ function AuditView({ state, up, accentColor, goFinance }) {
   const subsReviewed = audit.subsReviewed || {};
   const toggleSub = name => up({ audit: { ...audit, subsReviewed: { ...subsReviewed, [name]: !subsReviewed[name] } } });
 
-  const card = { background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 };
+  const card = { background: "var(--color-background-primary)", borderRadius: 20, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 18 };
   const sectionTitle = (icon, title, right) => (
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
       <span style={{ fontSize: 16 }}>{icon}</span>
@@ -3518,7 +3639,7 @@ function AuditView({ state, up, accentColor, goFinance }) {
   );
 
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth: 880 }}>
       <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>🛡️ Digital Life Audit</h1>
       <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>A periodic review of your accounts, subscriptions, security, data hygiene and financial health.</p>
 
@@ -3902,11 +4023,11 @@ function PeopleView({ state, up, accentColor, onAddTask }) {
   const reminders = people.map(p => ({ p, k: nextKeyDate(p) })).filter(x => x.k && x.k.days != null && x.k.days >= 0 && x.k.days <= (x.p.reminderLeadDays || 14)).sort((a, b) => a.k.days - b.k.days);
 
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth: 880 }}>
       {personModal !== null && <PersonModal person={personModal === "new" ? null : personModal} accentColor={ac} onSave={savePerson} onClose={() => setPersonModal(null)} />}
       {giftModal && <GiftIdeasModal person={giftModal.person} occasion={giftModal.occasion} accentColor={ac} onChoose={idea => chooseGift(giftModal.person, idea, giftModal.occasion)} onClose={() => setGiftModal(null)} />}
 
-      <SectionHead sub="Important people — profiles power AI gift ideas, aligned to your dates & budget.">🎁 People</SectionHead>
+      <PageHeader title="🎁 People" sub="Important people — profiles power AI gift ideas, aligned to your dates & budget." />
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
         <button onClick={() => setPersonModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ New person</button>
       </div>
@@ -4106,7 +4227,7 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
   const hasFinance = cfIncome > 0 || st.plannedTotal > 0 || cur > 0;
   const firstName = (userName || "").trim().split(/\s+/)[0] || "";
   const greeting = (() => { const h = now.getHours(); const g = h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; return firstName ? `${g}, ${firstName}` : g; })();
-  const card = { background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 };
+  const card = { background: "var(--color-background-primary)", borderRadius: 20, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 18 };
   const Snap = ({ label, value, color, onClick }) => (
     <div onClick={onClick} style={{ background: "var(--color-background-secondary)", borderRadius: 10, padding: "10px 12px", cursor: onClick ? "pointer" : "default" }}>
       <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{label}</div>
@@ -4114,7 +4235,7 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
     </div>
   );
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth: 880 }}>
       <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>{greeting} 👋</h1>
       <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>{fmtLongDate(now)} · <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmtTime24(now)}</span>{overdueTasks.length > 0 ? ` · ⚠ ${overdueTasks.length} overdue` : ""}</p>
 
@@ -4148,12 +4269,38 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
           <button onClick={() => setView("finance")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Open Finance →</button>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))", gap: 8 }}>
-          <Snap label="In the bank" value={fmtMoney(cur, true)} color={ac} />
-          <Snap label="Savings" value={fmtMoney(sav, true)} color="#1D9E75" />
-          <Snap label="Debt" value={fmtMoney(debt, true)} color={debt > 0 ? "#E24B4A" : undefined} />
-          <Snap label="Net worth" value={fmtMoney(nw, true)} color={nw >= 0 ? "#1D9E75" : "#E24B4A"} />
-          <Snap label="Safe to spend" value={fmtMoney(safe, true)} color={safe >= 0 ? "#639922" : "#E24B4A"} />
+          <Snap label="In the bank" value={<CountMoney amount={cur} />} color={ac} />
+          <Snap label="Savings" value={<CountMoney amount={sav} />} color="#1D9E75" />
+          <Snap label="Debt" value={<CountMoney amount={debt} />} color={debt > 0 ? "#E24B4A" : undefined} />
+          <Snap label="Net worth" value={<CountMoney amount={nw} />} color={nw >= 0 ? "#1D9E75" : "#E24B4A"} />
+          <Snap label="Safe to spend" value={<CountMoney amount={safe} />} color={safe >= 0 ? "#639922" : "#E24B4A"} />
         </div>
+        {(() => {
+          const inv = investmentTotals(state.investments).value, pen = pensionPotsTotal(state);
+          const segs = [
+            { label: "In the bank", value: cur, color: ac },
+            { label: "Savings", value: sav, color: "#4F7A52" },
+            { label: "Investments", value: inv, color: "#356A87" },
+            { label: "Pensions", value: pen, color: "#b9892f" },
+          ].filter(s => s.value > 0);
+          const assets = segs.reduce((s, x) => s + x.value, 0);
+          if (assets <= 0) return null;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 22, marginTop: 16, flexWrap: "wrap" }}>
+              <Donut segments={segs} size={132} thickness={20} center={<div><div style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.1, color: nw >= 0 ? "#1D9E75" : "#E24B4A" }}><CountMoney amount={nw} /></div><div style={{ fontFamily: "var(--font-mono)", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-secondary)", marginTop: 2 }}>net worth</div></div>} />
+              <div style={{ flex: 1, minWidth: 150 }}>
+                {segs.map(s => (
+                  <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 0", fontSize: 12.5 }}>
+                    <span style={{ width: 11, height: 11, borderRadius: 4, background: s.color, flexShrink: 0, boxShadow: "0 1px 2px rgba(40,28,12,0.25)" }} />
+                    <span style={{ flex: 1, color: "var(--color-text-secondary)" }}>{s.label}</span>
+                    <span style={{ fontWeight: 600 }}>{fmtMoney(s.value, true)}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--color-text-secondary)", width: 38, textAlign: "right" }}>{Math.round(s.value / assets * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
         {hasFinance && (
           <div style={{ marginTop: 10, background: hex2rgba(cfProjEnd >= 0 ? "#1D9E75" : "#E24B4A", 0.08), borderRadius: 10, padding: "10px 12px", fontSize: 12.5 }}>
             🔮 <b>Cash flow:</b> on this month's pace you'll finish with about <b style={{ color: cfProjEnd >= 0 ? "#1D9E75" : "#E24B4A" }}>{fmtMoney(cfProjEnd, true)}</b>{daysLeft > 0 ? ` (${daysLeft} day${daysLeft !== 1 ? "s" : ""} left, ~${fmtMoney(dailyRate * 7, true)}/wk)` : ""}. {cfProjEnd >= 0 ? "On track 🎉" : "Heading over — ease off."}
@@ -4433,18 +4580,17 @@ function DocsView({ state, up, accentColor, goFinance }) {
   }
   function deleteKeyDoc(id) { if (confirm("Delete this document?")) up({ keyDocuments: keyDocuments.filter(d => d.id !== id), tasks: (state.tasks || []).filter(t => t.keyDocId !== id) }); }
 
-  const card = { background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 };
+  const card = { background: "var(--color-background-primary)", borderRadius: 20, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 18 };
 
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth: 880 }}>
       {insModal !== null && <InsuranceModal policy={insModal === "new" ? null : insModal} cats={cats} accentColor={ac} onSave={saveInsurance} onClose={() => setInsModal(null)} />}
       {warModal !== null && <WarrantyModal warranty={warModal === "new" ? null : warModal} accentColor={ac} onSave={saveWarranty} onClose={() => setWarModal(null)} />}
       {riskModal !== null && <RiskModal risk={riskModal === "new" ? null : riskModal} accentColor={ac} onSave={saveRisk} onClose={() => setRiskModal(null)} />}
       {payDocModal && <PayDocModal kind={payDocModal.kind} doc={payDocModal.doc} accentColor={ac} onSave={payDocModal.kind === "p60" ? saveP60 : savePayslip} onClose={() => setPayDocModal(null)} />}
       {keyDocModal !== null && <KeyDocModal doc={keyDocModal === "new" ? null : keyDocModal} accentColor={ac} onSave={saveKeyDoc} onClose={() => setKeyDocModal(null)} />}
 
-      <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>🗂 Documents &amp; Policies</h1>
-      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>A central place to store and manage the essentials — your job, policies, key documents, warranties, risks and your digital life audit.</p>
+      <PageHeader title="🗂 Documents & Policies" sub="A central place to store and manage the essentials — your job, policies, key documents, warranties, risks and your digital life audit." />
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
         {DOC_TABS.map(([id, label]) => (
@@ -4846,8 +4992,19 @@ function App({ user }) {
     // Keep the iOS status-bar / PWA theme-color in step with the active scheme.
     const dark = mode === "dark" || (mode === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
     const metaEl = document.querySelector('meta[name="theme-color"]');
-    if (metaEl) metaEl.setAttribute("content", dark ? "#1c1c1e" : "#ffffff");
+    if (metaEl) metaEl.setAttribute("content", dark ? "#161309" : "#ece3d0");
   }, [mode]);
+
+  // Expose the chosen theme accent to CSS (focus rings, links, selection, canvas glow).
+  useEffect(() => {
+    const c = accent(state.theme);
+    const root = document.documentElement;
+    root.style.setProperty("--accent", c);
+    root.style.setProperty("--accent-soft", hex2rgba(c, 0.13));
+  }, [state.theme]);
+
+  // Live background scene (Outlook-style) — drives [data-scene] CSS in index.html.
+  useEffect(() => { document.documentElement.dataset.scene = state.scene || "almanac"; }, [state.scene]);
 
   // Once loaded: snapshot each month's report (so history survives pruning), then
   // drop transactions older than 6 months (Tend keeps a 6-month rolling window).
@@ -4949,7 +5106,7 @@ function App({ user }) {
   const taskRowProps = { tags: state.tags, groups: state.groups, onToggle: toggleTask, onEdit: setModal, onDelete: deleteTask, onToggleSubtask: toggleSubtask };
 
   return (
-    <div style={{ display: "flex", minHeight: "600px", fontFamily: "var(--font-sans)", background: "var(--color-background-tertiary)" }}>
+    <div style={{ display: "flex", minHeight: "600px", fontFamily: "var(--font-sans)", background: "transparent" }}>
       {modal && <TaskModal task={modal === "new" ? null : (typeof modal === "object" && modal.prefill) ? { deadline: modal.prefill } : modal} groups={state.groups} tags={state.tags} financeCats={state.financeCategories} accentColor={ac} onSave={saveTask} onClose={() => setModal(null)} />}
       {groupModal !== null && <GroupModal group={groupModal === "new" ? null : groupModal} accentColor={ac} onSave={saveGroup} onClose={() => setGroupModal(null)} />}
       {dateModal !== null && <DateModal item={dateModal === "new" ? null : dateModal} tags={state.tags} groups={state.groups} financeCats={state.financeCategories} accentColor={ac} onSave={saveDate} onClose={() => setDateModal(null)} />}
@@ -4980,8 +5137,8 @@ function App({ user }) {
 
       {/* Sidebar */}
       <div style={narrow
-        ? { position: "fixed", top: 0, left: 0, bottom: 0, width: 230, background: "var(--color-background-primary)", borderRight: "0.5px solid var(--color-border-tertiary)", display: "flex", flexDirection: "column", zIndex: 1100, transform: drawerOpen ? "translateX(0)" : "translateX(-100%)", transition: "transform 0.22s", boxShadow: drawerOpen ? "2px 0 18px rgba(0,0,0,0.25)" : "none" }
-        : { width: collapsed ? 56 : 210, background: "var(--color-background-primary)", borderRight: "0.5px solid var(--color-border-tertiary)", display: "flex", flexDirection: "column", flexShrink: 0, transition: "width 0.2s" }}>
+        ? { position: "fixed", top: 0, left: 0, bottom: 0, width: 230, background: "var(--glass)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRight: "0.5px solid var(--glass-border)", display: "flex", flexDirection: "column", zIndex: 1100, transform: drawerOpen ? "translateX(0)" : "translateX(-100%)", transition: "transform 0.22s", boxShadow: drawerOpen ? "2px 0 28px rgba(0,0,0,0.35)" : "none" }
+        : { width: collapsed ? 56 : 210, background: "var(--glass)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRight: "0.5px solid var(--glass-border)", display: "flex", flexDirection: "column", flexShrink: 0, transition: "width 0.2s" }}>
         <div style={{ padding: sidebarCollapsed ? "14px 10px" : "16px 14px", display: "flex", alignItems: "center", justifyContent: sidebarCollapsed ? "center" : "space-between", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
           {!sidebarCollapsed && <span style={{ fontWeight: 600, fontSize: 16, color: ac, letterSpacing: "-0.01em" }}>Tend</span>}
           <button onClick={() => narrow ? setDrawerOpen(false) : setCollapsed(!collapsed)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 17, color: "var(--color-text-secondary)", padding: 2 }}>{narrow ? "✕" : "☰"}</button>
@@ -5011,7 +5168,7 @@ function App({ user }) {
       {/* Main content */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {/* Topbar */}
-        <div style={{ padding: "12px 20px", background: "var(--color-background-primary)", borderBottom: "0.5px solid var(--color-border-tertiary)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ padding: "15px 28px", background: "var(--glass)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "0.5px solid var(--glass-border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", position: "sticky", top: 0, zIndex: 20 }}>
           {narrow && <button onClick={() => setDrawerOpen(true)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, padding: "0 4px", color: "var(--color-text-secondary)" }}>☰</button>}
           <h1 style={{ margin: 0, fontSize: 17, fontWeight: 500, flex: 1 }}>{VIEW_META[view].icon} {VIEW_META[view].label}</h1>
           {(() => {
@@ -5041,7 +5198,9 @@ function App({ user }) {
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "22px 24px 44px" }}>
+        <div style={{ flex: 1, overflowY: "auto", padding: "32px 40px 64px" }}>
+         {/* keyed on the view so each switch re-triggers the staggered reveal (index.html) */}
+         <div key={view} className="view-enter">
 
           {/* Central home dashboard */}
           {view === "home" && <HomeView state={state} accentColor={ac} setView={setView} onAddTask={saveTask} allTasks={allTasks} overdueTasks={overdueTasks} userName={displayName} />}
@@ -5049,7 +5208,7 @@ function App({ user }) {
           {/* Today hub — List (Today + Unsorted + Upcoming) or Calendar */}
           {view === "today" && (
             <div>
-              <SectionHead sub="Everything on your plate — schedule it, group it, or tick it off.">☀️ Your tasks</SectionHead>
+              <PageHeader title="☀️ Your tasks" sub="Everything on your plate — schedule it, group it, or tick it off." />
               <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
                 {[["list", "📋 List"], ["calendar", "🗓 Calendar"], ["groups", "📁 Groups"], ["done", "✓ Done"], ["insights", "📊 Insights"]].map(([m, l]) => (
                   <button key={m} onClick={() => setTodayMode(m)} style={{ fontSize: 13, padding: "7px 14px", borderRadius: 9, cursor: "pointer", border: "none", background: todayMode === m ? ac : "var(--color-background-secondary)", color: todayMode === m ? "#fff" : "var(--color-text-secondary)", fontWeight: todayMode === m ? 500 : 400 }}>{l}</button>
@@ -5173,7 +5332,7 @@ function App({ user }) {
           {/* Important dates */}
           {view === "important-dates" && (
             <div>
-              <SectionHead sub="Birthdays, anniversaries and events — with their own to-do lists and budgets.">🎂 Important dates</SectionHead>
+              <PageHeader title="🎂 Important dates" sub="Birthdays, anniversaries and events — with their own to-do lists and budgets." />
               <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
                 <button onClick={() => setDateModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add date</button>
               </div>
@@ -5238,6 +5397,7 @@ function App({ user }) {
           {/* Settings */}
           {view === "settings" && <SettingsView state={state} up={up} accentColor={ac} user={user} calendarToken={meta.calendarToken} />}
 
+         </div>
         </div>
       </div>
     </div>
