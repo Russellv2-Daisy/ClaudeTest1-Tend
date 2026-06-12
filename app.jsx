@@ -20,6 +20,17 @@ const SCENES = [
   ["sunset", "Sunset", "linear-gradient(180deg,#241a46,#b3473d 72%,#d98a4e)", true],
   ["ocean", "Ocean", "linear-gradient(180deg,#06283d,#0e6e66)", true],
 ];
+// Theme Studio presets — one click sets scene + accent + light/dark together,
+// like an IDE colour theme. Granular pickers below still override any part.
+const THEME_PRESETS = [
+  { id: "paper", name: "Almanac Day", desc: "Warm paper, fern ink — the classic.", mode: "light", scene: "almanac", theme: "teal", bg: "linear-gradient(135deg,#ece3d0,#cdbf9f)" },
+  { id: "inkwell", name: "Inkwell", desc: "Lamplit paper, aubergine ink.", mode: "dark", scene: "almanac", theme: "purple", bg: "linear-gradient(135deg,#2a261d,#161309)" },
+  { id: "observatory", name: "Midnight Observatory", desc: "Star charts and indigo ink.", mode: "dark", scene: "starfield", theme: "indigo", bg: "radial-gradient(120% 120% at 70% 20%,#1b2350,#0a1026)" },
+  { id: "borealis", name: "Borealis", desc: "Emerald ribbons, polar sky.", mode: "dark", scene: "aurora", theme: "emerald", bg: "linear-gradient(135deg,#06140f,#2e8b6b 55%,#7860dc)" },
+  { id: "rosenebula", name: "Rose Nebula", desc: "Plum clouds in deep space.", mode: "dark", scene: "nebula", theme: "plum", bg: "linear-gradient(135deg,#0a0818,#c448aa 55%,#5660e0)" },
+  { id: "goldenhour", name: "Golden Hour", desc: "Amber dusk, violet horizon.", mode: "dark", scene: "sunset", theme: "amber", bg: "linear-gradient(180deg,#241a46,#b3473d 72%,#d98a4e)" },
+  { id: "deepcurrent", name: "Deep Current", desc: "Cyan depths, calm focus.", mode: "dark", scene: "ocean", theme: "cyan", bg: "linear-gradient(180deg,#06283d,#0e6e66)" },
+];
 const DEFAULT_TAGS = ["Quick", "Errands", "Focus", "Admin", "Personal", "Work"];
 const TAG_COLORS = ["#7F77DD","#378ADD","#1D9E75","#D85A30","#D4537E","#BA7517","#639922","#888780"];
 const REPEAT_OPTIONS = ["none","daily","weekly","monthly","yearly"];
@@ -188,6 +199,107 @@ function Field({ label, children }) {
 }
 
 function Divider() { return <div style={{ height: "0.5px", background: "var(--color-border-tertiary)", margin: "18px 0" }} />; }
+
+// ── Celebration confetti ─────────────────────────────────────────────────────
+// A tiny canvas particle burst. Anything can fire it:
+//   window.dispatchEvent(new CustomEvent("tend:celebrate", { detail: { x, y } }))
+function Celebrate() {
+  const ref = useRef(null);
+  useEffect(() => {
+    const cv = ref.current; if (!cv) return;
+    const ctx = cv.getContext("2d");
+    let parts = [], raf = null;
+    const resize = () => { cv.width = window.innerWidth; cv.height = window.innerHeight; };
+    resize();
+    const tick = () => {
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      parts.forEach(p => { p.vy += 0.18; p.x += p.vx; p.y += p.vy; p.rot += p.vr; p.life -= 1; });
+      parts = parts.filter(p => p.life > 0 && p.y < cv.height + 24);
+      parts.forEach(p => { ctx.save(); ctx.globalAlpha = Math.min(1, p.life / 28); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.fillStyle = p.c; ctx.fillRect(-p.s / 2, -p.s / 2, p.s, p.s * 0.62); ctx.restore(); });
+      if (parts.length) raf = requestAnimationFrame(tick); else { raf = null; ctx.clearRect(0, 0, cv.width, cv.height); }
+    };
+    const burst = e => {
+      if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      const d = (e && e.detail) || {};
+      const x = d.x != null ? d.x : cv.width / 2, y = d.y != null ? d.y : cv.height * 0.35;
+      const colors = ["#4F7A52", "#b9892f", "#7B5EA7", "#C2542F", "#2C8FB0", "#A84E68"];
+      for (let i = 0; i < 36; i++) {
+        const a = Math.random() * Math.PI * 2, sp = 2.6 + Math.random() * 5;
+        parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 3.2, vr: (Math.random() - 0.5) * 0.3, rot: Math.random() * Math.PI, s: 5 + Math.random() * 6, c: colors[i % colors.length], life: 56 + Math.random() * 30 });
+      }
+      // Paint the first frame synchronously so the burst is instant even if
+      // requestAnimationFrame is throttled (e.g. backgrounded tab).
+      if (raf) cancelAnimationFrame(raf);
+      tick();
+    };
+    window.addEventListener("tend:celebrate", burst);
+    window.addEventListener("resize", resize);
+    return () => { window.removeEventListener("tend:celebrate", burst); window.removeEventListener("resize", resize); if (raf) cancelAnimationFrame(raf); };
+  }, []);
+  return <canvas ref={ref} style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 3000 }} />;
+}
+
+// ── ⌘K Command palette ───────────────────────────────────────────────────────
+// Fuzzy launcher over navigation, quick actions, scenes, accents and open tasks.
+function CommandPalette({ open, onClose, state, up, setView, onNewTask, onEditTask, accentColor }) {
+  const [q, setQ] = useState("");
+  const [idx, setIdx] = useState(0);
+  const inputRef = useRef(null);
+  useEffect(() => { if (open) { setQ(""); setIdx(0); setTimeout(() => inputRef.current && inputRef.current.focus(), 30); } }, [open]);
+  useEffect(() => { setIdx(0); }, [q]);
+  if (!open) return null;
+  const ac = accentColor;
+  const navItems = VIEWS.map(v => ({ group: "Go to", icon: VIEW_META[v].icon, label: VIEW_META[v].label, run: () => setView(v) }));
+  const actionItems = [
+    { group: "Actions", icon: "➕", label: "New task", run: onNewTask },
+    { group: "Actions", icon: "🌗", label: "Toggle light / dark", run: () => { const dark = state.mode === "dark" || (state.mode !== "light" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); up({ mode: dark ? "light" : "dark" }); } },
+    ...SCENES.map(([k, l]) => ({ group: "Scenes", icon: "🎬", label: `Scene · ${l}`, run: () => up({ scene: k }) })),
+    ...Object.entries(THEMES).map(([n, c]) => ({ group: "Accent", icon: "●", iconColor: c, label: `Accent · ${n}`, run: () => up({ theme: n }) })),
+  ];
+  const taskItems = (state.tasks || []).filter(t => !t.done).slice(0, 200).map(t => ({ group: "Tasks", icon: "○", label: t.title, sub: t.deadline ? fmtShort(t.deadline) : "", run: () => onEditTask(t) }));
+  const all = [...navItems, ...actionItems, ...taskItems];
+  const ql = q.trim().toLowerCase();
+  const items = (ql ? all.filter(i => i.label.toLowerCase().includes(ql)) : [...navItems, ...actionItems.slice(0, 2), ...taskItems.slice(0, 5)]).slice(0, 12);
+  const pick = it => { if (!it) return; it.run(); onClose(); };
+  const onKey = e => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setIdx(i => Math.min(items.length - 1, i + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setIdx(i => Math.max(0, i - 1)); }
+    else if (e.key === "Enter") { e.preventDefault(); pick(items[idx]); }
+    else if (e.key === "Escape") { e.preventDefault(); onClose(); }
+  };
+  let lastGroup = null;
+  return (
+    <div onClick={e => e.target === e.currentTarget && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(10,8,20,0.45)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)", zIndex: 2500, display: "flex", justifyContent: "center", alignItems: "flex-start", paddingTop: "16vh" }}>
+      <div className="tend-pop" style={{ width: "100%", maxWidth: 580, margin: "0 16px", background: "var(--color-background-primary)", borderRadius: 20, border: "1px solid var(--color-border-tertiary)", boxShadow: "var(--shadow-lg)", overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+          <span style={{ fontSize: 15, opacity: 0.7 }}>🔎</span>
+          <input ref={inputRef} value={q} onChange={e => setQ(e.target.value)} onKeyDown={onKey} placeholder="Search tasks, pages, scenes, accents…" style={{ flex: 1, background: "transparent", border: "none", boxShadow: "none", fontSize: 15.5, padding: "4px 0" }} />
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", border: "1px solid var(--color-border-tertiary)", borderRadius: 6, padding: "2px 7px" }}>esc</span>
+        </div>
+        <div style={{ maxHeight: 380, overflowY: "auto", padding: "8px 8px 6px" }}>
+          {items.length === 0 && <div style={{ padding: "26px 0", textAlign: "center", fontSize: 13.5, color: "var(--color-text-secondary)" }}>Nothing matches “{q}” — try a task name or “scene”.</div>}
+          {items.map((it, i) => {
+            const head = it.group !== lastGroup ? it.group : null; lastGroup = it.group;
+            return (
+              <div key={i}>
+                {head && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--color-text-secondary)", padding: "8px 12px 4px" }}>{head}</div>}
+                <div onClick={() => pick(it)} onMouseEnter={() => setIdx(i)} style={{ display: "flex", alignItems: "center", gap: 11, padding: "9px 12px", borderRadius: 11, cursor: "pointer", background: i === idx ? hex2rgba(ac, 0.12) : "transparent", borderLeft: i === idx ? `3px solid ${ac}` : "3px solid transparent" }}>
+                  <span style={{ fontSize: 15, width: 22, textAlign: "center", color: it.iconColor || "inherit", flexShrink: 0 }}>{it.icon}</span>
+                  <span style={{ flex: 1, fontSize: 14, fontWeight: i === idx ? 600 : 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textTransform: it.group === "Accent" ? "capitalize" : "none" }}>{it.label}</span>
+                  {it.sub && <span style={{ fontSize: 11.5, color: "var(--color-text-secondary)", flexShrink: 0 }}>{it.sub}</span>}
+                  {i === idx && <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: ac }}>↵</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 14, padding: "10px 18px", borderTop: "0.5px solid var(--color-border-tertiary)", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>
+          <span>↑↓ navigate</span><span>↵ select</span><span style={{ marginLeft: "auto" }}>Ctrl + K anytime</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── Task Modal ────────────────────────────────────────────────────────────────
 
@@ -417,7 +529,7 @@ function TaskRow({ task, tags, groups, onToggle, onEdit, onDelete, onToggleSubta
 
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", borderRadius: 18, background: "var(--color-background-primary)", border: `0.5px solid ${overdue ? "#E24B4A" : "var(--color-border-tertiary)"}`, marginBottom: 9, opacity: task.done ? 0.5 : 1, transition: "opacity 0.2s" }}>
-      <div onClick={() => onToggle(task.id)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${task.done ? "#639922" : "var(--color-border-secondary)"}`, background: task.done ? "#639922" : "transparent", cursor: "pointer", flexShrink: 0, marginTop: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={e => { if (!task.done) window.dispatchEvent(new CustomEvent("tend:celebrate", { detail: { x: e.clientX, y: e.clientY } })); onToggle(task.id); }} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${task.done ? "#639922" : "var(--color-border-secondary)"}`, background: task.done ? "#639922" : "transparent", cursor: "pointer", flexShrink: 0, marginTop: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
         {task.done && <span style={{ color: "#fff", fontSize: 11 }}>✓</span>}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -627,6 +739,28 @@ function SettingsView({ state, up, accentColor, user, calendarToken }) {
         <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>Your name</h3>
         <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--color-text-secondary)" }}>Used to greet you on the Home dashboard.</p>
         <input type="text" placeholder={metaName || "e.g. Josh"} value={state.name || ""} onChange={e => up({ name: e.target.value })} style={{ width: "100%", padding: "10px 12px", fontSize: 14, boxSizing: "border-box" }} />
+      </div>
+
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>🎨 Theme studio</h3>
+        <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--color-text-secondary)" }}>Curated looks — one tap sets the scene, accent and light/dark together. Fine-tune below.</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: 12 }}>
+          {THEME_PRESETS.map(p => {
+            const active = (state.scene || "almanac") === p.scene && (state.theme || "teal") === p.theme && (state.mode || "system") === p.mode;
+            return (
+              <div key={p.id} onClick={() => up({ mode: p.mode, scene: p.scene, theme: p.theme })} style={{ cursor: "pointer", borderRadius: 16, overflow: "hidden", border: `2px solid ${active ? accentColor : "var(--color-border-tertiary)"}`, boxShadow: active ? `0 8px 22px -8px ${hex2rgba(accentColor, 0.55)}` : "var(--shadow-sm)", transition: "transform 0.15s ease, box-shadow 0.2s ease" }}>
+                <div style={{ height: 62, background: p.bg, position: "relative" }}>
+                  <span style={{ position: "absolute", bottom: 7, left: 9, width: 14, height: 14, borderRadius: "50%", background: THEMES[p.theme], border: "2px solid rgba(255,255,255,0.7)" }} />
+                  {active && <span style={{ position: "absolute", top: 6, right: 8, fontSize: 12, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.5)" }}>✓</span>}
+                </div>
+                <div style={{ padding: "8px 10px 10px", background: "var(--color-background-secondary)" }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{p.name}</div>
+                  <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)", marginTop: 2, lineHeight: 1.4 }}>{p.desc}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
@@ -1061,6 +1195,11 @@ function AuthGate() {
     return off;
   }, []);
 
+  // Dev/demo preview: ?demo=1 renders the app with an in-memory demo user.
+  // Cloud saves are no-ops without a real session, so nothing persists.
+  if (typeof window !== "undefined" && /[?&]demo=1/.test(window.location.search)) {
+    return <App user={{ id: "demo", email: "demo@tend.local", user_metadata: { full_name: "Demo" } }} />;
+  }
   if (window.TendCloud && !window.TendCloud.isConfigured) return <SetupNeeded />;
   if (user === undefined) {
     return <div className="boot-msg" style={{ paddingTop: 80 }}>Loading Tend…</div>;
@@ -2273,9 +2412,76 @@ function PageHeader({ title, sub }) {
   );
 }
 
+// ── Tend Wrapped: a full-screen, story-style recap of one month ──────────────
+function MonthStory({ state, mk, onClose }) {
+  const r = computeMonthReport(state, mk);
+  const st = monthStats(state, mk);
+  const cats = state.financeCategories || [];
+  let topCat = null, topSpent = 0;
+  cats.forEach(c => { const sp = (st.byCat[c.id] || {}).spent || 0; if (sp > topSpent) { topSpent = sp; topCat = c; } });
+  const tasksDone = (state.tasks || []).filter(t => t.done && (t.completedDate || "").slice(0, 7) === mk).length;
+  const slides = [
+    { eyebrow: monthLabel(mk), text: "Your month,", sub: "the story ✨", color: "#cfc8e8" },
+    { eyebrow: "Came in", money: r.income, sub: "of income", color: "#4ad2a0" },
+    { eyebrow: "Went out", money: r.actual, sub: topCat ? `most of it on ${topCat.emoji} ${topCat.name}` : "in spending", color: "#e2954b" },
+    r.saved > 0
+      ? { eyebrow: "The verdict", money: r.saved, sub: "saved this month 🎉", color: "#4ad2a0", confetti: true }
+      : { eyebrow: "The verdict", text: "No surplus", sub: "next month is a fresh page", color: "#e2724b" },
+    { eyebrow: "Net worth", money: r.netWorth || 0, sub: "where you stand", color: "#d8b25a" },
+    tasksDone > 0 ? { eyebrow: "Tasks tended", text: String(tasksDone), sub: `task${tasksDone !== 1 ? "s" : ""} completed`, color: "#9b8cff" } : null,
+    { eyebrow: "Keep tending", text: "🌱", sub: "See you next month.", color: "#cfc8e8", last: true },
+  ].filter(Boolean);
+  const [idx, setIdx] = useState(0);
+  const s = slides[idx];
+  // Auto-advance like a story; stop on the last slide.
+  useEffect(() => {
+    if (idx >= slides.length - 1) return;
+    const t = setTimeout(() => setIdx(i => i + 1), 3600);
+    return () => clearTimeout(t);
+  }, [idx, slides.length]);
+  useEffect(() => { if (s && s.confetti) window.dispatchEvent(new CustomEvent("tend:celebrate")); }, [idx]);
+  useEffect(() => {
+    const h = e => { if (e.key === "Escape") onClose(); if (e.key === "ArrowRight") setIdx(i => Math.min(slides.length - 1, i + 1)); if (e.key === "ArrowLeft") setIdx(i => Math.max(0, i - 1)); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [slides.length, onClose]);
+  const zoneClick = e => {
+    const x = e.clientX / window.innerWidth;
+    if (x < 0.34) setIdx(i => Math.max(0, i - 1));
+    else idx < slides.length - 1 ? setIdx(idx + 1) : onClose();
+  };
+  return (
+    <div onClick={zoneClick} style={{ position: "fixed", inset: 0, zIndex: 2600, cursor: "pointer", color: "#f2eefb", background: "radial-gradient(60% 50% at 72% 14%, rgba(120,96,220,0.30), transparent 70%), radial-gradient(52% 46% at 22% 86%, rgba(64,170,200,0.24), transparent 72%), #0b0a16", overflow: "hidden" }}>
+      {/* stars */}
+      <div style={{ position: "absolute", inset: 0, pointerEvents: "none", backgroundImage: "radial-gradient(1.5px 1.5px at 20% 26%, #fff, transparent), radial-gradient(1.1px 1.1px at 64% 64%, #d9d2ff, transparent), radial-gradient(1.6px 1.6px at 84% 20%, #fff, transparent), radial-gradient(1.1px 1.1px at 38% 82%, #cfe0ff, transparent)", backgroundSize: "340px 340px", backgroundRepeat: "repeat", opacity: 0.7 }} />
+      <div style={{ position: "absolute", inset: "-20%", pointerEvents: "none", background: "radial-gradient(40% 36% at 60% 40%, rgba(185,137,47,0.13), transparent 70%)", animation: "tendAurora 26s ease-in-out infinite alternate" }} />
+      {/* progress bars */}
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, display: "flex", gap: 6, padding: "16px 18px" }}>
+        {slides.map((_, i) => (
+          <div key={i} style={{ flex: 1, height: 3, borderRadius: 3, background: "rgba(255,255,255,0.22)", overflow: "hidden" }}>
+            <div style={{ height: "100%", borderRadius: 3, background: "#fff", width: i < idx ? "100%" : "0%", animation: i === idx && idx < slides.length - 1 ? "storyFill 3600ms linear forwards" : "none" }} />
+          </div>
+        ))}
+      </div>
+      <button onClick={e => { e.stopPropagation(); onClose(); }} style={{ position: "absolute", top: 30, right: 18, background: "rgba(255,255,255,0.12)", border: "none", color: "#fff", width: 34, height: 34, borderRadius: "50%", fontSize: 16, zIndex: 2 }}>✕</button>
+      {/* slide */}
+      <div key={idx} style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "0 28px" }}>
+        <div className="story-el" style={{ fontFamily: "var(--font-mono)", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.22em", color: "rgba(255,255,255,0.55)", marginBottom: 18 }}>{s.eyebrow}</div>
+        <div className="story-el" style={{ animationDelay: "0.12s", fontFamily: "var(--font-display)", fontSize: s.money != null ? 72 : 56, fontWeight: 700, lineHeight: 1.05, color: s.color, textShadow: `0 0 44px ${hex2rgba(s.color && s.color[0] === "#" ? s.color : "#9b8cff", 0.45)}` }}>
+          {s.money != null ? <CountMoney amount={s.money} /> : s.text}
+        </div>
+        <div className="story-el" style={{ animationDelay: "0.26s", fontSize: 16.5, color: "rgba(255,255,255,0.75)", marginTop: 16, maxWidth: 420, lineHeight: 1.5 }}>{s.sub}</div>
+        {s.last && <button onClick={e => { e.stopPropagation(); onClose(); }} className="story-el" style={{ animationDelay: "0.4s", marginTop: 30, padding: "11px 26px", borderRadius: 24, border: "1px solid rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: 14, fontWeight: 600 }}>Done</button>}
+      </div>
+      <div style={{ position: "absolute", bottom: 16, left: 0, right: 0, textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 10, color: "rgba(255,255,255,0.4)" }}>tap right to continue · tap left to go back</div>
+    </div>
+  );
+}
+
 // Saved monthly report snapshots (forecast vs actual, saved, debt, gifts).
 function MonthlyReports({ state }) {
   const [showAll, setShowAll] = useState(false);
+  const [storyMk, setStoryMk] = useState(null);
   const merged = { ...(state.monthlyReports || {}) };
   const recent = new Set((state.transactions || []).map(t => (t.date || "").slice(0, 7)).filter(Boolean));
   recent.add(curMonthKey());
@@ -2292,6 +2498,14 @@ function MonthlyReports({ state }) {
   const idxOf = mk => allKeys.indexOf(mk);
   return (
     <div>
+      {storyMk && <MonthStory state={state} mk={storyMk} onClose={() => setStoryMk(null)} />}
+
+      {/* Tend Wrapped — play the latest month as a story. */}
+      <button onClick={() => setStoryMk(allKeys[0])} style={{ width: "100%", marginBottom: 14, padding: "13px 18px", borderRadius: 16, border: "none", cursor: "pointer", background: "linear-gradient(95deg, var(--accent), var(--gilt))", color: "#fff", fontSize: 14, fontWeight: 700, letterSpacing: "0.01em", boxShadow: "0 10px 26px -10px var(--accent-soft), var(--shadow-md)", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+        <span style={{ fontSize: 16 }}>▶</span> Play {monthLabel(allKeys[0])} — Tend Wrapped
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.1em", background: "rgba(255,255,255,0.22)", padding: "3px 8px", borderRadius: 10 }}>new</span>
+      </button>
+
       {/* Surplus trend strip — at-a-glance shape of the months. */}
       {sparks.length >= 2 && (
         <div style={{ background: "var(--color-background-primary)", borderRadius: 18, padding: "16px 18px", border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, overflow: "hidden" }}>
@@ -4115,6 +4329,49 @@ function TasksInsights({ state, allTasks, overdueTasks, accentColor, onGoFinance
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6 }}>{pct}% complete · {done} of {total} tasks done</div>
       </div>
+
+      {/* Consistency heatmap — a "year in pixels" of completed tasks (last 26 weeks). */}
+      {(() => {
+        const counts = {};
+        allTasks.forEach(t => { if (t.done && t.completedDate) counts[t.completedDate] = (counts[t.completedDate] || 0) + 1; });
+        const weeks = 26, today = new Date();
+        // Align the grid so each column is a Mon–Sun week ending this week.
+        const dow = (today.getDay() + 6) % 7; // 0 = Monday
+        const start = new Date(today); start.setDate(today.getDate() - dow - (weeks - 1) * 7);
+        const cells = [];
+        let windowTotal = 0, best = ["", 0];
+        for (let w = 0; w < weeks; w++) {
+          const col = [];
+          for (let d = 0; d < 7; d++) {
+            const dt = new Date(start); dt.setDate(start.getDate() + w * 7 + d);
+            if (dt > today) { col.push(null); continue; }
+            const ds = ymdLocal(dt); const c = counts[ds] || 0;
+            windowTotal += c; if (c > best[1]) best = [ds, c];
+            col.push({ ds, c });
+          }
+          cells.push(col);
+        }
+        return (
+          <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>🟩 Consistency — your last 6 months</div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--color-text-secondary)" }}>{windowTotal} done{best[1] > 0 ? ` · best day ${fmtShort(best[0])} (${best[1]})` : ""}</div>
+            </div>
+            <div style={{ display: "flex", gap: 3, overflowX: "auto", paddingBottom: 4 }}>
+              {cells.map((col, w) => (
+                <div key={w} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  {col.map((cell, d) => cell === null
+                    ? <div key={d} style={{ width: 11, height: 11 }} />
+                    : <div key={d} title={`${fmtDate(cell.ds)}: ${cell.c} task${cell.c !== 1 ? "s" : ""} completed`} style={{ width: 11, height: 11, borderRadius: 3, background: cell.c === 0 ? "var(--color-background-secondary)" : hex2rgba(ac, Math.min(1, 0.3 + cell.c * 0.25)) }} />)}
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--color-text-secondary)" }}>
+              less {[0, 0.3, 0.55, 0.8, 1].map((o, i) => <span key={i} style={{ width: 10, height: 10, borderRadius: 3, background: o === 0 ? "var(--color-background-secondary)" : hex2rgba(ac, o), display: "inline-block" }} />)} more · every square is a day, tick tasks to grow your garden
+            </div>
+          </div>
+        );
+      })()}
       <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
         <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>By priority</div>
         {Object.keys(PRIORITY).map(p => {
@@ -4976,10 +5233,18 @@ function App({ user }) {
   const [weeklyReview, setWeeklyReview] = useState(false);
   const [narrow, setNarrow] = useState(typeof window !== "undefined" && window.innerWidth < 760);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [palette, setPalette] = useState(false);
   useEffect(() => {
     const onR = () => setNarrow(window.innerWidth < 760);
     window.addEventListener("resize", onR);
     return () => window.removeEventListener("resize", onR);
+  }, []);
+
+  // ⌘K / Ctrl+K opens the command palette from anywhere.
+  useEffect(() => {
+    const onK = e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette(p => !p); } };
+    window.addEventListener("keydown", onK);
+    return () => window.removeEventListener("keydown", onK);
   }, []);
 
   // Apply light/dark mode. "system" follows the OS (remove the override attr);
@@ -5107,6 +5372,10 @@ function App({ user }) {
 
   return (
     <div style={{ display: "flex", minHeight: "600px", fontFamily: "var(--font-sans)", background: "transparent" }}>
+      <Celebrate />
+      <CommandPalette open={palette} onClose={() => setPalette(false)} state={state} up={up} accentColor={ac}
+        setView={v => { setView(v); if (narrow) setDrawerOpen(false); }}
+        onNewTask={() => setModal("new")} onEditTask={t => setModal(t)} />
       {modal && <TaskModal task={modal === "new" ? null : (typeof modal === "object" && modal.prefill) ? { deadline: modal.prefill } : modal} groups={state.groups} tags={state.tags} financeCats={state.financeCategories} accentColor={ac} onSave={saveTask} onClose={() => setModal(null)} />}
       {groupModal !== null && <GroupModal group={groupModal === "new" ? null : groupModal} accentColor={ac} onSave={saveGroup} onClose={() => setGroupModal(null)} />}
       {dateModal !== null && <DateModal item={dateModal === "new" ? null : dateModal} tags={state.tags} groups={state.groups} financeCats={state.financeCategories} accentColor={ac} onSave={saveDate} onClose={() => setDateModal(null)} />}
@@ -5171,6 +5440,7 @@ function App({ user }) {
         <div style={{ padding: "15px 28px", background: "var(--glass)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "0.5px solid var(--glass-border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", position: "sticky", top: 0, zIndex: 20 }}>
           {narrow && <button onClick={() => setDrawerOpen(true)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, padding: "0 4px", color: "var(--color-text-secondary)" }}>☰</button>}
           <h1 style={{ margin: 0, fontSize: 17, fontWeight: 500, flex: 1 }}>{VIEW_META[view].icon} {VIEW_META[view].label}</h1>
+          <button onClick={() => setPalette(true)} title="Command palette (Ctrl+K)" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, padding: "5px 10px", borderRadius: 8, color: "var(--color-text-secondary)", letterSpacing: "0.04em" }}>⌘K</button>
           {(() => {
             const isDark = mode === "dark" || (mode === "system" && typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
             return <button onClick={() => up({ mode: isDark ? "light" : "dark" })} title={isDark ? "Switch to light mode" : "Switch to dark mode"} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 17, padding: "2px 6px", color: "var(--color-text-secondary)" }}>{isDark ? "☀️" : "🌙"}</button>;
