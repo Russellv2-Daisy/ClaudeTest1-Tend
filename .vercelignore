@@ -9,6 +9,12 @@
 # The app needs none of it to run: login/cloud-sync are client-side (Supabase),
 # and the AI endpoints fall back to an offline parser when unavailable.
 
+# Phase B backend (Lloyds + Chase + Trading 212) runs on Render, NOT Vercel.
+# Excluded so the static deploy never tries to build the Python. If Vercel ever
+# still trips on the .py files, move backend/ to a dedicated branch (render.yaml
+# can point Render at any branch) — see PHASE-B.md.
+backend/
+
 # Local dev / archive cruft
 _archive_nextjs/
 __pycache__/

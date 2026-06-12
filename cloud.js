@@ -132,8 +132,55 @@
       if (error) console.warn("save error", error);
     },
 
+    // Phase B: the signed-in user's Supabase access token, sent to the backend
+    // so it can act on this user's behalf (and the client is never trusted).
+    async getAccessToken() {
+      if (!sb) return null;
+      const { data } = await sb.auth.getSession();
+      return (data && data.session && data.session.access_token) || null;
+    },
+
     cacheGet,
   };
 
   window.TendCloud = TendCloud;
+
+  // ── Phase B: live bank + investment backend client ──────────────────────────
+  // Talks to a SEPARATE service (Render) whose URL is config.js → BACKEND_URL.
+  // Disabled until that URL is set, so the static site is unaffected today.
+  const BACKEND_URL = (cfg.BACKEND_URL || "").replace(/\/+$/, "");
+  async function backendFetch(path, opts) {
+    opts = opts || {};
+    if (!BACKEND_URL) throw new Error("Backend not configured");
+    const token = await TendCloud.getAccessToken();
+    if (!token) throw new Error("Not signed in");
+    const res = await fetch(BACKEND_URL + path, {
+      method: opts.method || "GET",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.json()).detail || ""; } catch (e) {}
+      throw new Error(detail || `Backend ${path} → ${res.status}`);
+    }
+    return res.status === 204 ? null : res.json();
+  }
+  window.TendBank = {
+    enabled: !!BACKEND_URL,
+    base: BACKEND_URL,
+    listConnections() { return backendFetch("/connections"); },
+    // Open Banking (Lloyds / Chase). Redirects the browser to the bank consent page.
+    async connectBank(bank) {
+      const r = await backendFetch("/bank/auth?bank=" + encodeURIComponent(bank), { method: "POST" });
+      if (r && r.url) window.location.href = r.url;
+      return r;
+    },
+    syncTransactions(days) { return backendFetch("/bank/transactions?days=" + (days || 90)); },
+    disconnectBank(bank) { return backendFetch("/bank/disconnect?bank=" + encodeURIComponent(bank), { method: "POST" }); },
+    // Trading 212
+    connectT212(apiKey) { return backendFetch("/t212/connect", { method: "POST", body: { api_key: apiKey } }); },
+    getPortfolio() { return backendFetch("/t212/portfolio"); },
+    disconnectT212() { return backendFetch("/t212/disconnect", { method: "POST" }); },
+  };
 })();
