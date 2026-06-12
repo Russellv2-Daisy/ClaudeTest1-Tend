@@ -14,9 +14,8 @@ window.TEND_CONFIG = {
   SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhcG93dGV0Y3BwZm5scWNwamltIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0MjUyMjYsImV4cCI6MjA5NjAwMTIyNn0.jXbl06KIcZbQlDUPROCIPE61dCVsq5cZDX_Bp0PeCys",
 
   // Phase B — live bank (Lloyds, Chase) + Trading 212 integrations.
-  // Public URL of the Tend backend service (see backend/README.md + render.yaml).
-  // LEAVE BLANK until the backend is deployed: while empty, every integration is
-  // disabled and the app behaves exactly as today (manual / CSV / sample data).
-  // e.g. "https://tend-backend.onrender.com"
+  // The API runs ON THIS SAME VERCEL SITE at /api (see api/index.py + PHASE-B.md).
+  // LEAVE BLANK to keep everything OFF (the app behaves exactly as today).
+  // When you've added the Environment Variables in Vercel, switch this to "/api".
   BACKEND_URL: "",
 };

@@ -1,19 +1,8 @@
-# Tend deploys as a pure static site (no build step, no serverless functions).
+# Tend deploys on Vercel as a static site PLUS one Python serverless function
+# (api/index.py — the Phase B bank / Trading 212 API). Do NOT ignore api/.
 #
-# The Python serverless API (AI parse/gifts + calendar feed) lives on the
-# `serverless-api` branch, NOT on main. It was removed from main because
-# Vercel's Python builder auto-detects any .py in the source tree and fails
-# the build looking for a single entrypoint — even when .vercelignore lists it.
-# Re-enable by merging serverless-api with a single consolidated entrypoint.
-#
-# The app needs none of it to run: login/cloud-sync are client-side (Supabase),
-# and the AI endpoints fall back to an offline parser when unavailable.
-
-# Phase B backend (Lloyds + Chase + Trading 212) runs on Render, NOT Vercel.
-# Excluded so the static deploy never tries to build the Python. If Vercel ever
-# still trips on the .py files, move backend/ to a dedicated branch (render.yaml
-# can point Render at any branch) — see PHASE-B.md.
-backend/
+# The function only does anything once its Environment Variables are set in the
+# Vercel project AND config.js → BACKEND_URL is "/api". Until then it's dormant.
 
 # Local dev / archive cruft
 _archive_nextjs/

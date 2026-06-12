@@ -146,8 +146,9 @@
   window.TendCloud = TendCloud;
 
   // ── Phase B: live bank + investment backend client ──────────────────────────
-  // Talks to a SEPARATE service (Render) whose URL is config.js → BACKEND_URL.
-  // Disabled until that URL is set, so the static site is unaffected today.
+  // Calls the Python API that runs on this same Vercel site at /api (set
+  // config.js → BACKEND_URL = "/api" to switch on). Blank ⇒ disabled, app
+  // behaves exactly as today.
   const BACKEND_URL = (cfg.BACKEND_URL || "").replace(/\/+$/, "");
   async function backendFetch(path, opts) {
     opts = opts || {};

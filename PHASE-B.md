@@ -1,147 +1,125 @@
 # Tend — Phase B: live integrations (Lloyds UK · Chase UK · Trading 212)
 
-This document is the plan + task list. The **groundwork is already in this repo**
-(see "What's already built"). Everything is **gated**: with `config.js →
-BACKEND_URL` blank, the app behaves exactly as today (manual / CSV / sample
-data). Flip it on by deploying the backend and setting that URL.
+**All on Vercel.** No Render, no extra hosting. The bank/Trading-212 API runs as
+a single Python serverless function on your existing Vercel site at `/api`.
+You use exactly two services: **Vercel** (site + API) and **Supabase** (login + data).
+
+Everything is **gated**: while `config.js → BACKEND_URL` is blank, the function is
+dormant and the app behaves exactly as today. You flip it on at the very end.
 
 ---
 
-## Architecture (how it fits together)
+## Architecture
 
 ```
- Browser (static site on Vercel)                    Backend (FastAPI on Render)
- ┌─────────────────────────────┐                    ┌──────────────────────────┐
- │ app.jsx / cloud.js          │  Bearer <supabase  │ /bank/auth  /bank/txns   │
- │  window.TendBank.* ─────────┼──  access token ──▶│ /t212/connect /portfolio │
- │  (gated by BACKEND_URL)     │                    │                          │
- └─────────────────────────────┘                    └───────────┬──────────────┘
-        ▲                                                        │ service-role key
-        │ JSON (normalised txns / portfolio)                     ▼
-        │                                              ┌──────────────────────┐
-        │                                              │ Supabase             │
-        └──────────────────────────────────────────────│  connections table   │
-                                                        │  (bank tokens, T212  │
-                                                        │   key — server-only) │
-                                                        └──────────────────────┘
-                       Enable Banking (Lloyds, Chase)  ◀── RS256 JWT
-                       Trading 212 API                 ◀── api key
+ One Vercel project
+ ┌──────────────────────────────────────────────────────────┐
+ │  Static site  (index.html, app.jsx, cloud.js)            │
+ │        │  fetch('/api/...') with the user's login token   │
+ │        ▼                                                  │
+ │  api/index.py  (Python serverless function)  ── secrets ──┼──► Enable Banking
+ │        │  service-role key                                │     (Lloyds, Chase)
+ │        ▼                                                  ├──► Trading 212 API
+ └────────┼──────────────────────────────────────────────────┘
+          ▼
+   Supabase `connections` table  (bank tokens + T212 key — server-only)
 ```
 
-**Why a separate backend?** Bank/broker secrets must never touch the browser,
-and Trading 212 is CORS-blocked from the browser. The static site stays on
-Vercel; the backend runs on Render and reads/writes secrets via Supabase's
-service-role key.
-
-**Two integration paths, three providers:**
-- **Open Banking (Enable Banking)** covers **Lloyds** and **Chase** — same code,
-  different ASPSP name. Adding a third UK bank later is one line.
-- **Trading 212** is its own read-only Invest API.
+Because the site and API share one domain, there's no CORS and no second URL to
+manage. Secrets live only in Vercel's Environment Variables + the locked Supabase
+table — never in the browser.
 
 ---
 
-## What's already built (in this repo)
+## What's already in the repo
 
 | File | Purpose |
 |------|---------|
-| `backend/main.py` | FastAPI app: `/bank/*` (Lloyds+Chase), `/t212/*`, `/connections` |
-| `backend/enable_banking.py` | Enable Banking client (JWT auth, consent, txns) |
-| `backend/trading212.py` | Trading 212 client (cash + positions → normalised) |
-| `backend/supabase_store.py` | per-user connection CRUD via service-role key |
-| `backend/render.yaml` | Render blueprint + env var list |
-| `backend/requirements.txt` / `README.md` | deps + run/deploy guide |
-| `supabase/bank_schema.sql` | `connections` table (RLS on, server-only) |
-| `config.js` → `BACKEND_URL` | the on/off switch (blank = off) |
-| `cloud.js` → `window.TendBank` | front-end client (gated) + `getAccessToken()` |
+| `api/index.py` | the whole API (Lloyds + Chase + Trading 212) as one Vercel function |
+| `requirements.txt` | Python deps Vercel installs for that function |
+| `vercel.json` | routes every `/api/*` request to `api/index.py` |
+| `supabase/bank_schema.sql` | the `connections` table (RLS on, server-only) |
+| `privacy.html` / `terms.html` | served at `/privacy` and `/terms` (needed by Enable Banking) |
+| `config.js → BACKEND_URL` | the on/off switch (blank = off; `/api` = on) |
+| `cloud.js → window.TendBank` | front-end client (dormant until switched on) |
 
-Still **TODO (my side, once the backend is live):** wire the UI — the Connect
-tab (Lloyds/Chase buttons + sync), the Investments tab (Trading 212), de-dupe
-imported transactions, and the `?bank=connected` redirect handler. Listed in
-**Part B** below.
+Still TODO (my side, once it's switched on): wire the UI — Connect buttons,
+the `?bank=connected` redirect handler with de-dupe, the Trading 212 panel, a
+connections list, and swapping manual figures for live ones.
 
 ---
 
-## Part A — YOUR tasks (accounts, keys, deploy)
+## Part A — YOUR setup steps
 
-Do these once; each is independent. Tick them off and tell me when done.
+### A1 · Supabase (2 min)
+1. Supabase → **SQL Editor** → New query → paste all of `supabase/bank_schema.sql` → **Run**.
+2. **Project Settings → API** → copy the **`service_role`** key (secret). You'll paste it into Vercel in A4.
 
-### A1 · Supabase (shared by all three)
-- [ ] Open Supabase → **SQL Editor** → paste & run `supabase/bank_schema.sql`.
-- [ ] Project Settings → API → copy the **service-role** key (secret) — you'll
-      paste it into Render, **never** into `config.js`.
+### A2 · Enable Banking — powers BOTH Lloyds and Chase (~20 min)
+1. Sign up at **enablebanking.com** → create an **Application** (free "Restricted Production").
+2. Fill the application form — see **"Enable Banking form answers"** at the bottom of this file.
+3. Whitelist your own **Lloyds** and **Chase UK** accounts (so you can test with them).
+4. Save the **Application ID** and the **private key** file (PEM) it gives you.
 
-### A2 · Enable Banking (powers Lloyds **and** Chase)
-- [ ] Sign up at **enablebanking.com** → create an **Application** (Restricted
-      Production is free; no contract).
-- [ ] Whitelist your own **Lloyds** and **Chase UK** accounts for testing.
-- [ ] Note the **Application ID** and download the **RSA private key** (PEM).
-- [ ] Set the application's **redirect URL** to `<BACKEND_URL>/bank/callback`
-      (you'll know `BACKEND_URL` after A4).
-- [ ] (Confirm Chase is listed: in EB's `GET /aspsps?country=GB` the names should
-      include "Lloyds" and "Chase". If Chase shows as e.g. "Chase UK", tell me and
-      I'll tweak one line in `backend/main.py`.)
+### A3 · Trading 212 (2 min)
+1. Trading 212 app → **Settings → API (Beta)** → create a **read-only** API key.
+2. Keep it for later — you'll paste it **into Tend's screen**, not into any file.
 
-### A3 · Trading 212
-- [ ] In the Trading 212 app → **Settings → API (Beta)** → generate a
-      **read-only** API key (for the account you want: Invest or ISA).
-- [ ] Keep it handy — you'll paste it **into Tend** once the UI is wired (it's
-      stored server-side, not in `config.js`). Use a **demo** key first if you'd
-      rather test against a practice account (`T212_MODE=demo`).
+### A4 · Add the secrets to Vercel (5 min)
+Vercel → your project → **Settings → Environment Variables**. Add each of these
+(Name on the left, value on the right), for the **Production** environment:
 
-### A4 · Deploy the backend (Render, free)
-- [ ] Render → **New → Blueprint** → point at this repo. It reads `render.yaml`.
-- [ ] Set the secret env vars: `ENABLE_APPLICATION_ID`, `ENABLE_PRIVATE_KEY`,
-      `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`.
-- [ ] After first deploy, copy the service URL (e.g.
-      `https://tend-backend.onrender.com`) → set it as `BACKEND_URL` in Render
-      **and** go back and finish the EB redirect URL in A2.
+| Name | Value |
+|------|-------|
+| `ENABLE_APPLICATION_ID` | from A2 |
+| `ENABLE_PRIVATE_KEY` | the whole PEM file contents from A2 (paste as-is) |
+| `SUPABASE_URL` | `https://sapowtetcppfnlqcpjim.supabase.co` |
+| `SUPABASE_ANON_KEY` | (same value already in `config.js`) |
+| `SUPABASE_SERVICE_KEY` | the secret service-role key from A1 |
+| `APP_URL` | `https://claude-test1-tend.vercel.app` (your site URL) |
+| `ACCESS_VALID_DAYS` | `90` |
+| `T212_MODE` | `live` (or `demo` to practise) |
 
-  > Deploy note: the backend lives in `backend/` and is `.vercelignore`d so it
-  > never affects the Vercel static deploy. `render.yaml` currently points Render
-  > at the `main` branch — change `branch:` there if you keep the backend on a
-  > separate branch instead.
+### A5 · Flip the switch (1 min)
+1. In `config.js`, change `BACKEND_URL: ""` to `BACKEND_URL: "/api"`.
+2. Push (or tell me and I'll do it). Vercel redeploys; the function goes live.
+3. Tell me it's on → I build the buttons (Part B) and we test together.
 
-### A5 · Turn it on (front-end)
-- [ ] Set `BACKEND_URL` in `config.js` to your Render URL.
-- [ ] Redeploy the static site (push to `main`).
-- [ ] Tell me it's live → I do **Part B** and we test end-to-end.
+> Checking it works: after A4+A5 deploy, visit
+> `https://claude-test1-tend.vercel.app/api` in your browser — you should see a
+> small JSON like `{"ok": true, ...}`. That means the function is alive.
 
 ---
 
-## Part B — MY tasks (implementation, after the backend is live)
-
-1. **Connect tab → live.** Replace the disabled "Connect Lloyds" card with
-   **Connect Lloyds / Connect Chase** buttons (`TendBank.connectBank`), a
-   per-bank connected state + last-sync time, **Sync now** (`syncTransactions`)
-   and **Disconnect**.
-2. **`?bank=connected` handler.** On redirect back from the bank, auto-sync and
-   show a success toast; de-dupe new bank txns into `state.transactions`
-   (match on date+amount+description, tag `source:"bank"`, never double-import).
-3. **Trading 212 → Investments tab.** Replace the disabled card with a key
-   field (`connectT212`) + a live holdings/cash view from `getPortfolio`, and
-   fold the value into Net Worth (alongside manual holdings).
-4. **Connections hub.** A small "Linked accounts" panel (Settings or Finance)
-   listing all three with connect/disconnect + status (`listConnections`).
-5. **Auto-sync cadence + resilience.** Sync on login and on a gentle interval,
-   with graceful "reconnect needed" when an Open Banking consent expires
-   (~90 days) and Trading-212 rate-limit backoff.
-6. **Replace manual figures with live.** Current-account balances, the cash-flow
-   "live bank balance", and the Investments tab switch from manual entry to the
-   synced values (manual stays as fallback when disconnected).
-7. **AI auto-categorisation (optional).** Tag incoming bank txns by category via
-   the existing offline guesser, upgradeable to a Claude call later.
+## Part B — MY steps (after it's switched on)
+Connect tab → live Lloyds/Chase buttons + sync + disconnect; the
+`?bank=connected` redirect handler that de-dupes new transactions; Trading 212
+panel in Investments; a "Linked accounts" list; auto-sync + consent-expiry
+handling; and swapping manual balances for live ones.
 
 ---
 
-## Security model (already enforced by the groundwork)
+## Security model
+- Bank tokens + the Trading 212 key live only in Supabase `connections`, written
+  only by the function's service-role key. RLS is on with no policies → the
+  browser can't read them.
+- The browser proves who it is with its Supabase login token; the function checks
+  it and scopes every action to that user.
+- `config.js` holds only public values. Secrets live only in Vercel env vars.
+- Read-only everywhere — nothing here can move money or trade.
 
-- Bank session ids + the Trading 212 key live **only** in Supabase
-  `connections`, written **only** by the backend's service-role key. RLS is on
-  with **no policies**, so the browser's anon key can't read them.
-- The browser authenticates to the backend with the user's **Supabase access
-  token**; the backend verifies it and scopes every action to that user.
-- `config.js` only ever holds **public** values (Supabase URL + anon key +
-  the backend URL). No secret is ever shipped to the browser.
-- Read-only everywhere: Open Banking AIS scope + a read-only Trading 212 key —
-  nothing here can move money.
-```
+---
+
+## Enable Banking form answers (A2)
+
+| Field | What to put |
+|-------|-------------|
+| **Application name** | `Tend` |
+| **Allowed redirect URLs** | `https://claude-test1-tend.vercel.app/api/bank/callback` (one per line; add your custom domain's version too if you have one) |
+| **Application description** | `Tend is a personal finance and task manager for my own use. It reads my bank transactions on a read-only basis via Open Banking to show my spending, budgets and net worth. It never moves money.` |
+| **Email for data protection matters** | `joshrussell099@gmail.com` |
+| **Privacy URL** | `https://claude-test1-tend.vercel.app/privacy` |
+| **Terms URL** | `https://claude-test1-tend.vercel.app/terms` |
+
+> Note: if Enable Banking lists Chase as "Chase UK" (not "Chase"), tell me and I
+> change one word in `api/index.py`.
