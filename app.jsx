@@ -4578,7 +4578,7 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
             <button onClick={() => setView("docs")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Packing list →</button>
           </div>
           {upcomingTrips.map(({ t, days }, i) => {
-            const items = t.items || [], packed = items.filter(x => x.packed).length;
+            const items = t.items || [], packed = items.filter(x => itemStatus(x) === "packed").length;
             return (
               <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderTop: i ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -4777,9 +4777,114 @@ function KeyDocModal({ doc, accentColor, onSave, onClose }) {
   );
 }
 
-// A few sensible starter items so a new packing list isn't a blank page.
-const PACKING_STARTERS = ["Passport", "Tickets / boarding passes", "Travel insurance", "Phone + charger", "Adapter", "Medication", "Toothbrush", "Sun cream", "Cards + cash"];
 function tripDays(t) { return t && t.startDate ? daysUntil(t.startDate) : null; }
+
+// Each packing item carries a status you can click through, and belongs to a
+// sub-list (category). Old items (just { packed: true }) still read correctly.
+const PACK_STATUS = {
+  pack:   { label: "To pack", icon: "⬜", color: "#7c7263" },
+  buy:    { label: "To buy",  icon: "🛒", color: "#C2542F" },
+  bought: { label: "Bought",  icon: "🛍️", color: "#356A87" },
+  packed: { label: "Packed",  icon: "✅", color: "#1D9E75" },
+};
+const itemStatus = it => it.status || (it.packed ? "packed" : "pack");
+const DEFAULT_PACK_LISTS = ["Documents", "Clothes", "Toiletries", "Tech", "Miscellaneous"];
+const PACK_LIST_ICON = { Documents: "📄", Clothes: "👕", Toiletries: "🧴", Tech: "🔌", Miscellaneous: "🎒", Essentials: "⭐", "Beach gear": "🏖", Kids: "🧸" };
+const PACK_STARTERS_BY_CAT = {
+  Documents: ["Passport", "Tickets / boarding passes", "Travel insurance", "Driving licence"],
+  Clothes: ["T-shirts", "Trousers / shorts", "Underwear", "Socks", "Jacket", "Pyjamas"],
+  Toiletries: ["Toothbrush + paste", "Deodorant", "Sun cream", "Medication", "Shower gel"],
+  Tech: ["Phone + charger", "Plug adapter", "Headphones", "Power bank"],
+  Miscellaneous: ["Sunglasses", "Water bottle", "Cards + cash", "Snacks"],
+};
+
+// The full packing experience for one trip: categorised sub-lists, per-item
+// status, a summary, starter list and a "send shopping to tasks" shortcut.
+function PackingList({ trip, accentColor, update, onAddBuyTask }) {
+  const ac = accentColor;
+  const [newList, setNewList] = useState("");
+  const items = trip.items || [];
+  const baseLists = (trip.lists && trip.lists.length) ? trip.lists : DEFAULT_PACK_LISTS;
+  const extra = [...new Set(items.map(i => i.cat || "Miscellaneous"))].filter(c => !baseLists.includes(c));
+  const lists = [...baseLists, ...extra];
+
+  const setItems = next => update({ items: next });
+  const addItem = (cat, label) => setItems([...items, { id: genId(), label, status: "pack", cat }]);
+  const setStatus = (id, st) => setItems(items.map(i => i.id === id ? { ...i, status: st, packed: st === "packed" } : i));
+  const removeItem = id => setItems(items.filter(i => i.id !== id));
+  const addList = () => { const n = newList.trim(); if (!n || lists.includes(n)) { setNewList(""); return; } update({ lists: [...baseLists, n] }); setNewList(""); };
+  const removeList = name => update({ lists: baseLists.filter(l => l !== name), items: items.map(i => (i.cat || "Miscellaneous") === name ? { ...i, cat: "Miscellaneous" } : i) });
+  const fillStarters = () => {
+    const have = new Set(items.map(i => i.label.toLowerCase()));
+    const add = [];
+    Object.entries(PACK_STARTERS_BY_CAT).forEach(([cat, labels]) => labels.forEach(l => { if (!have.has(l.toLowerCase())) add.push({ id: genId(), label: l, status: "pack", cat }); }));
+    update({ items: [...items, ...add], lists: DEFAULT_PACK_LISTS });
+  };
+
+  const total = items.length;
+  const cnt = st => items.filter(i => itemStatus(i) === st).length;
+  const packed = cnt("packed"), toBuy = cnt("buy"), bought = cnt("bought");
+  const pct = total ? Math.round(packed / total * 100) : 0;
+
+  const StatusPill = ({ it }) => {
+    const st = itemStatus(it), s = PACK_STATUS[st];
+    return (
+      <select value={st} onChange={e => setStatus(it.id, e.target.value)} title="Set status"
+        style={{ fontSize: 11, fontWeight: 600, padding: "3px 6px", width: 108, color: s.color, borderColor: hex2rgba(s.color, 0.4), background: hex2rgba(s.color, 0.08), cursor: "pointer" }}>
+        {Object.entries(PACK_STATUS).map(([k, v]) => <option key={k} value={k} style={{ color: "var(--color-text-primary)" }}>{v.icon} {v.label}</option>)}
+      </select>
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 14, paddingTop: 14, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+      {/* summary */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>Packed {packed}/{total}</span>
+        <div style={{ flex: 1, minWidth: 80, height: 7, background: "var(--color-background-secondary)", borderRadius: 4, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 && total ? "#1D9E75" : ac, borderRadius: 4, transition: "width 0.4s" }} />
+        </div>
+        {toBuy > 0 && <span style={{ fontSize: 11, fontWeight: 600, color: "#C2542F", background: hex2rgba("#C2542F", 0.13), padding: "3px 9px", borderRadius: 20 }}>🛒 {toBuy} to buy</span>}
+        {bought > 0 && <span style={{ fontSize: 11, fontWeight: 600, color: "#356A87", background: hex2rgba("#356A87", 0.13), padding: "3px 9px", borderRadius: 20 }}>🛍️ {bought} bought</span>}
+        {total === 0 && <button onClick={fillStarters} style={{ fontSize: 11.5, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac, whiteSpace: "nowrap" }}>✨ Starter list</button>}
+        {toBuy > 0 && onAddBuyTask && <button onClick={onAddBuyTask} title="Create a shopping task with the to-buy items" style={{ fontSize: 11.5, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac, whiteSpace: "nowrap" }}>🛒 Shopping → tasks</button>}
+      </div>
+
+      {/* sub-lists */}
+      {lists.map(listName => {
+        const its = items.filter(i => (i.cat || "Miscellaneous") === listName);
+        const lp = its.filter(i => itemStatus(i) === "packed").length;
+        return (
+          <div key={listName} style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{PACK_LIST_ICON[listName] || "📦"} {listName}</span>
+              {its.length > 0 && <span style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--color-text-secondary)" }}>{lp}/{its.length}</span>}
+              <div style={{ flex: 1 }} />
+              {listName !== "Miscellaneous" && <button onClick={() => removeList(listName)} title="Remove this list (items move to Miscellaneous)" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "var(--color-text-secondary)" }}>×</button>}
+            </div>
+            {its.map(i => {
+              const packedItem = itemStatus(i) === "packed";
+              return (
+                <div key={i.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
+                  <StatusPill it={i} />
+                  <span style={{ flex: 1, fontSize: 13.5, textDecoration: packedItem ? "line-through" : "none", color: packedItem ? "var(--color-text-secondary)" : "var(--color-text-primary)" }}>{i.label}</span>
+                  <button onClick={() => removeItem(i.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "var(--color-text-secondary)" }}>×</button>
+                </div>
+              );
+            })}
+            <AddItemRow accentColor={ac} placeholder={`+ Add to ${listName}…`} onAdd={label => addItem(listName, label)} />
+          </div>
+        );
+      })}
+
+      {/* add a new sub-list */}
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        <input value={newList} onChange={e => setNewList(e.target.value)} onKeyDown={e => e.key === "Enter" && addList()} placeholder="+ New list (e.g. Beach gear)…" style={{ flex: 1, fontSize: 13 }} />
+        <button onClick={addList} style={{ padding: "0 14px", fontSize: 13, color: ac }}>Add list</button>
+      </div>
+    </div>
+  );
+}
 
 function TripModal({ trip, accentColor, onSave, onClose }) {
   const blank = { destination: "", startDate: "", endDate: "", notes: "" };
@@ -4898,11 +5003,16 @@ function DocsView({ state, up, accentColor, goFinance }) {
   const trips = state.trips || [];
   function saveTrip(t) { up({ trips: trips.some(x => x.id === t.id) ? trips.map(x => x.id === t.id ? t : x) : [...trips, t] }); setTripModal(null); }
   function deleteTrip(id) { if (confirm("Delete this trip and its packing list?")) up({ trips: trips.filter(t => t.id !== id) }); }
-  function setTripItems(id, items) { up({ trips: trips.map(t => t.id === id ? { ...t, items } : t) }); }
-  function addPackItem(trip, label) { setTripItems(trip.id, [...(trip.items || []), { id: genId(), label, packed: false }]); }
-  function togglePackItem(trip, itemId) { setTripItems(trip.id, (trip.items || []).map(i => i.id === itemId ? { ...i, packed: !i.packed } : i)); }
-  function removePackItem(trip, itemId) { setTripItems(trip.id, (trip.items || []).filter(i => i.id !== itemId)); }
-  function fillStarterItems(trip) { const have = new Set((trip.items || []).map(i => i.label.toLowerCase())); const add = PACKING_STARTERS.filter(s => !have.has(s.toLowerCase())).map(s => ({ id: genId(), label: s, packed: false })); setTripItems(trip.id, [...(trip.items || []), ...add]); }
+  function updateTrip(id, patch) { up({ trips: trips.map(t => t.id === id ? { ...t, ...patch } : t) }); }
+  // Turn a trip's "to buy" items into a shopping task with one subtask each.
+  function addBuyTask(trip) {
+    const buy = (trip.items || []).filter(i => itemStatus(i) === "buy");
+    if (!buy.length) { alert("Nothing marked 'To buy' yet."); return; }
+    const due = trip.startDate ? addDaysStr(trip.startDate, -3) : "";
+    const task = { id: "trip_buy_" + trip.id, tripId: trip.id, title: `🛒 Shopping for ${trip.destination}`, priority: "medium", groupId: "", deadline: due, scheduledDate: due, notes: `Things to buy before your trip to ${trip.destination}.`, tags: [], subtasks: buy.map(i => ({ id: genId(), title: i.label, done: false })), someday: false, repeat: "none", duration: "", cost: "", costCategory: "", done: false };
+    up({ tasks: [task, ...(state.tasks || []).filter(t => t.id !== task.id)] });
+    alert(`Added "${task.title}" with ${buy.length} item${buy.length !== 1 ? "s" : ""} to your tasks.`);
+  }
 
   const card = { background: "var(--color-background-primary)", borderRadius: 20, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 18 };
 
@@ -5171,9 +5281,6 @@ function DocsView({ state, up, accentColor, goFinance }) {
             )}
             {sorted.map(t => {
               const d = tripDays(t);
-              const items = t.items || [];
-              const packed = items.filter(i => i.packed).length;
-              const pct = items.length ? Math.round(packed / items.length * 100) : 0;
               const past = d != null && d < 0 && (!t.endDate || daysUntil(t.endDate) < 0);
               const badge = d == null ? null : past ? { t: "Past", c: "var(--color-text-secondary)" } : d === 0 ? { t: "Today! 🎉", c: ac } : d <= 14 ? { t: `in ${d} day${d !== 1 ? "s" : ""}`, c: "#C2542F" } : { t: `in ${d} days`, c: "#1D9E75" };
               return (
@@ -5192,21 +5299,7 @@ function DocsView({ state, up, accentColor, goFinance }) {
                       <button onClick={() => deleteTrip(t.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
                     </div>
                   </div>
-
-                  {/* packing list */}
-                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-secondary)" }}>Packing · {packed}/{items.length}</span>
-                      <div style={{ flex: 1, height: 7, background: "var(--color-background-secondary)", borderRadius: 4, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 && items.length ? "#1D9E75" : ac, borderRadius: 4, transition: "width 0.4s" }} />
-                      </div>
-                      {items.length === 0 && <button onClick={() => fillStarterItems(t)} style={{ fontSize: 11.5, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac, whiteSpace: "nowrap" }}>✨ Starter list</button>}
-                    </div>
-                    {items.map(i => (
-                      <CheckRow key={i.id} checked={i.packed} label={i.label} accentColor={ac} onToggle={() => togglePackItem(t, i.id)} onDelete={() => removePackItem(t, i.id)} />
-                    ))}
-                    <AddItemRow accentColor={ac} placeholder="+ Add a packing item…" onAdd={label => addPackItem(t, label)} />
-                  </div>
+                  <PackingList trip={t} accentColor={ac} update={patch => updateTrip(t.id, patch)} onAddBuyTask={() => addBuyTask(t)} />
                 </div>
               );
             })}
