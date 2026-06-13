@@ -87,7 +87,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], job: {}, keyDocuments: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], job: {}, keyDocuments: [], trips: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1886,12 +1886,12 @@ function MoneyCell({ value, onChange }) {
 }
 
 // Inline "add a line item" row with its own draft state.
-function AddItemRow({ accentColor, onAdd }) {
+function AddItemRow({ accentColor, onAdd, placeholder }) {
   const [name, setName] = useState("");
   const add = () => { if (name.trim()) { onAdd(name.trim()); setName(""); } };
   return (
     <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-      <input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="+ Add line item…" style={{ flex: 1, fontSize: 13 }} />
+      <input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder={placeholder || "+ Add line item…"} style={{ flex: 1, fontSize: 13 }} />
       <button onClick={add} style={{ padding: "0 14px", fontSize: 13, color: accentColor }}>Add</button>
     </div>
   );
@@ -4470,6 +4470,11 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
     .sort((a, b) => (a.deadline || a.scheduledDate).localeCompare(b.deadline || b.scheduledDate)).slice(0, 5);
   const dates = (state.importantDates || []).map(d => ({ d, days: d.date ? daysUntil(`${new Date().getFullYear()}-${d.date.slice(5)}`) : null }))
     .filter(x => x.days != null && x.days >= 0 && x.days <= 30).sort((a, b) => a.days - b.days).slice(0, 4);
+  // Upcoming holidays (trips not yet finished), soonest first.
+  const upcomingTrips = (state.trips || [])
+    .map(t => ({ t, days: t.startDate ? daysUntil(t.startDate) : null }))
+    .filter(x => x.days != null && (x.days >= 0 || (x.t.endDate && daysUntil(x.t.endDate) >= 0)))
+    .sort((a, b) => a.days - b.days).slice(0, 3);
   const cur = (state.currentAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
   const sav = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
   const debt = (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0);
@@ -4564,6 +4569,31 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
           </div>
         )}
       </div>
+
+      {/* Next holiday */}
+      {upcomingTrips.length > 0 && (
+        <div style={{ ...card, background: `linear-gradient(135deg, ${hex2rgba(ac, 0.14)}, ${hex2rgba("#2C8FB0", 0.12)})`, border: `1px solid ${hex2rgba(ac, 0.3)}` }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>✈️ Next holiday</div>
+            <button onClick={() => setView("docs")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Packing list →</button>
+          </div>
+          {upcomingTrips.map(({ t, days }, i) => {
+            const items = t.items || [], packed = items.filter(x => x.packed).length;
+            return (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderTop: i ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>🧳 {t.destination}</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{fmtDate(t.startDate)}{t.endDate ? ` → ${fmtShort(t.endDate)}` : ""}{items.length ? ` · packed ${packed}/${items.length}` : ""}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontFamily: "var(--font-display)", fontSize: 26, fontWeight: 700, lineHeight: 1, color: ac }}>{days <= 0 ? "🎉" : days}</div>
+                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-secondary)", marginTop: 3 }}>{days <= 0 ? "today" : days === 1 ? "day to go" : "days to go"}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Today + upcoming */}
       <div style={card}>
@@ -4747,7 +4777,33 @@ function KeyDocModal({ doc, accentColor, onSave, onClose }) {
   );
 }
 
-const DOC_TABS = [["job", "💼 Job"], ["insurance", "🛡 Insurance"], ["keydocs", "🪪 Key documents"], ["warranties", "🧾 Warranties"], ["risk", "⚠️ Risk register"], ["audit", "🔐 Digital Life Audit"]];
+// A few sensible starter items so a new packing list isn't a blank page.
+const PACKING_STARTERS = ["Passport", "Tickets / boarding passes", "Travel insurance", "Phone + charger", "Adapter", "Medication", "Toothbrush", "Sun cream", "Cards + cash"];
+function tripDays(t) { return t && t.startDate ? daysUntil(t.startDate) : null; }
+
+function TripModal({ trip, accentColor, onSave, onClose }) {
+  const blank = { destination: "", startDate: "", endDate: "", notes: "" };
+  const [t, setT] = useState({ ...blank, ...(trip || {}) });
+  const up = (k, v) => setT(x => ({ ...x, [k]: v }));
+  const ac = accentColor; const inp = { width: "100%", boxSizing: "border-box" };
+  return (
+    <Modal onClose={onClose} width={460}>
+      <ModalHeader title={trip?.id ? "Edit trip" : "New trip"} onClose={onClose} />
+      <Field label="Destination"><input placeholder="e.g. Lisbon, Portugal" value={t.destination} onChange={e => up("destination", e.target.value)} style={inp} autoFocus /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Leaving"><input type="date" value={t.startDate} onChange={e => up("startDate", e.target.value)} style={inp} /></Field>
+        <Field label="Returning"><input type="date" value={t.endDate} onChange={e => up("endDate", e.target.value)} style={inp} /></Field>
+      </div>
+      <Field label="Notes"><textarea placeholder="Hotel, flight times, who's coming…" value={t.notes} onChange={e => up("notes", e.target.value)} rows={2} style={{ ...inp, resize: "vertical" }} /></Field>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => { if (t.destination.trim()) onSave({ id: trip?.id || genId(), destination: t.destination.trim(), startDate: t.startDate, endDate: t.endDate, notes: (t.notes || "").trim(), items: trip?.items || [] }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{trip?.id ? "Save" : "Add trip"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+const DOC_TABS = [["job", "💼 Job"], ["insurance", "🛡 Insurance"], ["keydocs", "🪪 Key documents"], ["travel", "✈️ Travel & packing"], ["warranties", "🧾 Warranties"], ["risk", "⚠️ Risk register"], ["audit", "🔐 Digital Life Audit"]];
 
 function DocsView({ state, up, accentColor, goFinance }) {
   const ac = accentColor;
@@ -4837,6 +4893,17 @@ function DocsView({ state, up, accentColor, goFinance }) {
   }
   function deleteKeyDoc(id) { if (confirm("Delete this document?")) up({ keyDocuments: keyDocuments.filter(d => d.id !== id), tasks: (state.tasks || []).filter(t => t.keyDocId !== id) }); }
 
+  // ── Travel & packing ──
+  const [tripModal, setTripModal] = useState(null);
+  const trips = state.trips || [];
+  function saveTrip(t) { up({ trips: trips.some(x => x.id === t.id) ? trips.map(x => x.id === t.id ? t : x) : [...trips, t] }); setTripModal(null); }
+  function deleteTrip(id) { if (confirm("Delete this trip and its packing list?")) up({ trips: trips.filter(t => t.id !== id) }); }
+  function setTripItems(id, items) { up({ trips: trips.map(t => t.id === id ? { ...t, items } : t) }); }
+  function addPackItem(trip, label) { setTripItems(trip.id, [...(trip.items || []), { id: genId(), label, packed: false }]); }
+  function togglePackItem(trip, itemId) { setTripItems(trip.id, (trip.items || []).map(i => i.id === itemId ? { ...i, packed: !i.packed } : i)); }
+  function removePackItem(trip, itemId) { setTripItems(trip.id, (trip.items || []).filter(i => i.id !== itemId)); }
+  function fillStarterItems(trip) { const have = new Set((trip.items || []).map(i => i.label.toLowerCase())); const add = PACKING_STARTERS.filter(s => !have.has(s.toLowerCase())).map(s => ({ id: genId(), label: s, packed: false })); setTripItems(trip.id, [...(trip.items || []), ...add]); }
+
   const card = { background: "var(--color-background-primary)", borderRadius: 20, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 18 };
 
   return (
@@ -4846,8 +4913,9 @@ function DocsView({ state, up, accentColor, goFinance }) {
       {riskModal !== null && <RiskModal risk={riskModal === "new" ? null : riskModal} accentColor={ac} onSave={saveRisk} onClose={() => setRiskModal(null)} />}
       {payDocModal && <PayDocModal kind={payDocModal.kind} doc={payDocModal.doc} accentColor={ac} onSave={payDocModal.kind === "p60" ? saveP60 : savePayslip} onClose={() => setPayDocModal(null)} />}
       {keyDocModal !== null && <KeyDocModal doc={keyDocModal === "new" ? null : keyDocModal} accentColor={ac} onSave={saveKeyDoc} onClose={() => setKeyDocModal(null)} />}
+      {tripModal !== null && <TripModal trip={tripModal === "new" ? null : tripModal} accentColor={ac} onSave={saveTrip} onClose={() => setTripModal(null)} />}
 
-      <PageHeader title="🗂 Documents & Policies" sub="A central place to store and manage the essentials — your job, policies, key documents, warranties, risks and your digital life audit." />
+      <PageHeader title="🗂 Documents & Policies" sub="A central place to store and manage the essentials — your job, travel, policies, key documents, warranties, risks and your digital life audit." />
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
         {DOC_TABS.map(([id, label]) => (
@@ -5074,6 +5142,74 @@ function DocsView({ state, up, accentColor, goFinance }) {
                 })}
               </>
             )}
+          </div>
+        );
+      })()}
+
+      {/* ── Travel & packing ── */}
+      {tab === "travel" && (() => {
+        // Upcoming trips first (soonest at top), then past trips.
+        const sorted = [...trips].sort((a, b) => {
+          const da = tripDays(a), db = tripDays(b);
+          const ua = da == null ? 1 : da < 0 ? 1 : 0, ub = db == null ? 1 : db < 0 ? 1 : 0;
+          if (ua !== ub) return ua - ub;
+          return (a.startDate || "9999").localeCompare(b.startDate || "9999");
+        });
+        return (
+          <div>
+            <SectionHead sub="Plan a holiday and tick off your packing list. The countdown also shows on your Home screen.">✈️ Travel &amp; packing</SectionHead>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+              <button onClick={() => setTripModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Trip</button>
+            </div>
+            {trips.length === 0 && (
+              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
+                <div style={{ fontSize: 38, marginBottom: 12 }}>🧳</div>
+                <div style={{ fontSize: 15, marginBottom: 6 }}>No trips yet</div>
+                <div style={{ fontSize: 13, marginBottom: 18 }}>Add a holiday — its dates, plus a packing checklist you can tick off.</div>
+                <button onClick={() => setTripModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a trip</button>
+              </div>
+            )}
+            {sorted.map(t => {
+              const d = tripDays(t);
+              const items = t.items || [];
+              const packed = items.filter(i => i.packed).length;
+              const pct = items.length ? Math.round(packed / items.length * 100) : 0;
+              const past = d != null && d < 0 && (!t.endDate || daysUntil(t.endDate) < 0);
+              const badge = d == null ? null : past ? { t: "Past", c: "var(--color-text-secondary)" } : d === 0 ? { t: "Today! 🎉", c: ac } : d <= 14 ? { t: `in ${d} day${d !== 1 ? "s" : ""}`, c: "#C2542F" } : { t: `in ${d} days`, c: "#1D9E75" };
+              return (
+                <div key={t.id} style={{ ...card, opacity: past ? 0.72 : 1 }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontFamily: "var(--font-display)", fontSize: 21, fontWeight: 600 }}>🧳 {t.destination}</div>
+                      <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 3 }}>
+                        {t.startDate ? fmtDate(t.startDate) : "no date set"}{t.endDate ? ` → ${fmtDate(t.endDate)}` : ""}
+                      </div>
+                      {t.notes && <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 6, fontStyle: "italic" }}>{t.notes}</div>}
+                    </div>
+                    {badge && <span style={{ fontSize: 12, fontWeight: 600, color: badge.c, background: hex2rgba(badge.c[0] === "#" ? badge.c : "#888888", 0.13), padding: "5px 12px", borderRadius: 20, whiteSpace: "nowrap" }}>{badge.t}</span>}
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => setTripModal(t)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+                      <button onClick={() => deleteTrip(t.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+                    </div>
+                  </div>
+
+                  {/* packing list */}
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-secondary)" }}>Packing · {packed}/{items.length}</span>
+                      <div style={{ flex: 1, height: 7, background: "var(--color-background-secondary)", borderRadius: 4, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 && items.length ? "#1D9E75" : ac, borderRadius: 4, transition: "width 0.4s" }} />
+                      </div>
+                      {items.length === 0 && <button onClick={() => fillStarterItems(t)} style={{ fontSize: 11.5, padding: "5px 10px", borderRadius: 8, cursor: "pointer", color: ac, whiteSpace: "nowrap" }}>✨ Starter list</button>}
+                    </div>
+                    {items.map(i => (
+                      <CheckRow key={i.id} checked={i.packed} label={i.label} accentColor={ac} onToggle={() => togglePackItem(t, i.id)} onDelete={() => removePackItem(t, i.id)} />
+                    ))}
+                    <AddItemRow accentColor={ac} placeholder="+ Add a packing item…" onAdd={label => addPackItem(t, label)} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         );
       })()}
