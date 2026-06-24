@@ -1269,6 +1269,52 @@ function useCountUp(target, ms = 850) {
 function CountMoney({ amount, round = true }) { return fmtMoney(useCountUp(amount), round); }
 function curMonthKey() { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); }
 function monthLabel(k) { const [y, m] = k.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" }); }
+
+// ── UK PAYE take-home (England/Wales/NI, 2024/25 & 2025/26 — thresholds frozen) ──
+// Income tax: Personal Allowance from the tax code (1257L ⇒ £12,570), tapered £1
+// for every £2 over £100,000 (gone by £125,140); 20% basic, 40% higher, 45%
+// additional, with band tops measured on total income (£50,270 / £125,140).
+// National Insurance: employee Class 1 — 8% between £12,570 and £50,270, 2% above.
+// Optional salary-sacrifice pension (cuts tax + NI) and a student-loan plan.
+const UK_TAX = {
+  paBase: 12570, paTaperStart: 100000,
+  basicTop: 50270, higherTop: 125140,
+  rBasic: 0.20, rHigher: 0.40, rAdd: 0.45,
+  niPT: 12570, niUEL: 50270, niMain: 0.08, niUpper: 0.02,
+};
+const STUDENT_PLANS = {
+  none: null,
+  plan1: { threshold: 24990, rate: 0.09, label: "Plan 1" },
+  plan2: { threshold: 27295, rate: 0.09, label: "Plan 2" },
+  plan4: { threshold: 31395, rate: 0.09, label: "Plan 4 (Scotland)" },
+  plan5: { threshold: 25000, rate: 0.09, label: "Plan 5 (post-2023)" },
+  pg: { threshold: 21000, rate: 0.06, label: "Postgraduate loan" },
+};
+// Standard cumulative codes (1257L etc.): allowance = number × 10.
+function paFromTaxCode(code) {
+  const m = String(code || "1257L").trim().match(/^(\d+)\s*[A-Za-z]?$/);
+  return m ? parseInt(m[1], 10) * 10 : UK_TAX.paBase;
+}
+function ukTakeHome(annualGross, opts) {
+  opts = opts || {};
+  const gross = Math.max(0, Number(annualGross) || 0);
+  const pensionPct = Math.max(0, Number(opts.pensionPct) || 0);
+  const pension = gross * (pensionPct / 100);
+  const adj = Math.max(0, gross - pension); // salary-sacrifice: pension is pre-tax & pre-NI
+  let pa = paFromTaxCode(opts.taxCode);
+  if (adj > UK_TAX.paTaperStart) pa = Math.max(0, pa - (adj - UK_TAX.paTaperStart) / 2);
+  let incomeTax = 0;
+  incomeTax += Math.max(0, Math.min(adj, UK_TAX.basicTop) - pa) * UK_TAX.rBasic;
+  incomeTax += Math.max(0, Math.min(adj, UK_TAX.higherTop) - UK_TAX.basicTop) * UK_TAX.rHigher;
+  incomeTax += Math.max(0, adj - UK_TAX.higherTop) * UK_TAX.rAdd;
+  let ni = 0;
+  ni += Math.max(0, Math.min(adj, UK_TAX.niUEL) - UK_TAX.niPT) * UK_TAX.niMain;
+  ni += Math.max(0, adj - UK_TAX.niUEL) * UK_TAX.niUpper;
+  const plan = STUDENT_PLANS[opts.studentLoan];
+  const studentLoan = plan ? Math.max(0, adj - plan.threshold) * plan.rate : 0;
+  const net = gross - incomeTax - ni - studentLoan - pension;
+  return { gross, allowance: pa, incomeTax, ni, studentLoan, pension, net, netMonthly: net / 12, grossMonthly: gross / 12 };
+}
 function monthShort(k) { const [y, m] = k.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "short" }); }
 // Pure year/month arithmetic — no Date object, so timezone can never shift the result.
 function shiftMonth(k, delta) { const [y, m] = k.split("-").map(Number); const t = y * 12 + (m - 1) + delta; return Math.floor(t / 12) + "-" + String((t % 12) + 1).padStart(2, "0"); }
@@ -5011,7 +5057,17 @@ function DocsView({ state, up, accentColor, goFinance }) {
   function deletePayslip(id) { setJob({ payslips: payslips.filter(x => x.id !== id) }); }
   function saveP60(s) { setJob({ p60s: p60s.some(x => x.id === s.id) ? p60s.map(x => x.id === s.id ? s : x) : [...p60s, s] }); setPayDocModal(null); }
   function deleteP60(id) { setJob({ p60s: p60s.filter(x => x.id !== id) }); }
-  function useSalaryAsIncome() { const monthly = Math.round(((Number(job.salary) || 0) / 12) * 100) / 100; if (!monthly) return alert("Add your annual salary first."); const mk = curMonthKey(); const plans = { ...(state.financePlans || {}) }; const cur = plans[mk] || {}; plans[mk] = { ...cur, income: { ...(cur.income || {}), projected: monthly } }; up({ financePlans: plans }); alert(`Set ${fmtMoney(monthly)} as this month's projected income.`); }
+  function useSalaryAsIncome() {
+    if (!(Number(job.salary) > 0)) return alert("Add your annual salary first.");
+    const th = ukTakeHome(job.salary, { taxCode: job.taxCode, pensionPct: job.pensionPct, studentLoan: job.studentLoan });
+    const monthly = Math.round(th.netMonthly * 100) / 100;
+    const mk = curMonthKey();
+    const plans = { ...(state.financePlans || {}) };
+    const cur = plans[mk] || {};
+    plans[mk] = { ...cur, income: { ...(cur.income || {}), projected: monthly } };
+    up({ financePlans: plans });
+    alert(`Set ${fmtMoney(monthly)} as this month's projected income (net take-home after tax, NI${(Number(job.pensionPct) > 0) ? ", pension" : ""}${job.studentLoan && job.studentLoan !== "none" ? ", student loan" : ""}).`);
+  }
   function addPensionReview() { addReminder({ id: "pension_review", title: "🏖 Review pension annual statement", priority: "medium", groupId: "", deadline: fyEndDate(), scheduledDate: fyEndDate(), notes: "Check this year's pension statement — contributions, growth, charges.", tags: [], subtasks: [], someday: false, repeat: "yearly", duration: "", cost: "", costCategory: "", done: false }); }
   function addKeyTermsReview() { addReminder({ id: "job_keyterms_review", title: "💼 Review employment contract key terms", priority: "low", groupId: "", deadline: fyEndDate(), scheduledDate: fyEndDate(), notes: "Notice period, benefits, restrictive covenants, salary review.", tags: [], subtasks: [], someday: false, repeat: "yearly", duration: "", cost: "", costCategory: "", done: false }); }
 
@@ -5067,7 +5123,8 @@ function DocsView({ state, up, accentColor, goFinance }) {
 
       {/* ── Job ── */}
       {tab === "job" && (() => {
-        const monthlySalary = (Number(job.salary) || 0) / 12;
+        const th = ukTakeHome(job.salary, { taxCode: job.taxCode, pensionPct: job.pensionPct, studentLoan: job.studentLoan });
+        const hasSalary = Number(job.salary) > 0;
         const inp = { width: "100%", boxSizing: "border-box" };
         const lbl = { fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 4, display: "block" };
         const ta = { ...inp, resize: "vertical", minHeight: 54 };
@@ -5083,17 +5140,42 @@ function DocsView({ state, up, accentColor, goFinance }) {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                 <div><label style={lbl}>Employer</label><input value={job.employer || ""} onChange={e => setJob({ employer: e.target.value })} placeholder="e.g. ACME Ltd" style={inp} /></div>
                 <div><label style={lbl}>Job title</label><input value={job.jobTitle || ""} onChange={e => setJob({ jobTitle: e.target.value })} placeholder="e.g. Engineer" style={inp} /></div>
-                <div><label style={lbl}>Annual salary (£)</label><input type="number" step="0.01" value={job.salary || ""} onChange={e => setJob({ salary: e.target.value })} placeholder="0.00" style={inp} /></div>
+                <div><label style={lbl}>Annual salary, gross (£)</label><input type="number" step="0.01" value={job.salary || ""} onChange={e => setJob({ salary: e.target.value })} placeholder="0.00" style={inp} /></div>
                 <div><label style={lbl}>Start date</label><input type="date" value={job.startDate || ""} onChange={e => setJob({ startDate: e.target.value })} style={inp} /></div>
+                <div><label style={lbl}>Tax code</label><input value={job.taxCode || ""} onChange={e => setJob({ taxCode: e.target.value })} placeholder="1257L" style={inp} /></div>
+                <div><label style={lbl}>Pension (salary sacrifice) %</label><input type="number" step="0.1" value={job.pensionPct || ""} onChange={e => setJob({ pensionPct: e.target.value })} placeholder="0" style={inp} /></div>
+                <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Student loan</label>
+                  <select value={job.studentLoan || "none"} onChange={e => setJob({ studentLoan: e.target.value })} style={inp}>
+                    <option value="none">None</option>
+                    {Object.entries(STUDENT_PLANS).filter(([k]) => k !== "none").map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                </div>
               </div>
-              {monthlySalary > 0 && (
-                <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, flexWrap: "wrap", background: hex2rgba(ac, 0.06), borderRadius: 10, padding: "10px 12px" }}>
-                  <div style={{ fontSize: 13 }}>≈ <b>{fmtMoney(monthlySalary)}</b>/month gross</div>
-                  <div style={{ flex: 1 }} />
-                  <button onClick={useSalaryAsIncome} style={{ fontSize: 12.5, padding: "6px 12px", borderRadius: 8, cursor: "pointer", background: ac, color: "#fff", border: "none", fontWeight: 500 }}>Use as this month's income →</button>
+
+              {hasSalary && (
+                <div style={{ marginTop: 14, background: "var(--color-background-secondary)", borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-secondary)", marginBottom: 10 }}>Estimated take-home · {job.taxCode || "1257L"} · England/Wales/NI</div>
+                  {[["Gross salary", th.gross, "var(--color-text-primary)", false],
+                    ["Income tax", th.incomeTax, "#E24B4A", true],
+                    ["National Insurance", th.ni, "#E24B4A", true],
+                    (th.studentLoan > 0 ? ["Student loan", th.studentLoan, "#E24B4A", true] : null),
+                    (th.pension > 0 ? ["Pension", th.pension, "#BA7517", true] : null)].filter(Boolean).map(([l, v, c, minus]) => (
+                    <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
+                      <span style={{ color: "var(--color-text-secondary)" }}>{l}</span>
+                      <span style={{ fontWeight: 500, color: c }}>{minus ? "−" : ""}{fmtMoney(v)}</span>
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 8, paddingTop: 8, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>Take-home</span>
+                    <span style={{ fontWeight: 700, color: "#1D9E75" }}>{fmtMoney(th.net)}/yr · <b style={{ fontSize: 15 }}>{fmtMoney(th.netMonthly)}/mo</b></span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", flex: 1, minWidth: 160 }}>Personal allowance used: {fmtMoney(th.allowance, true)}{th.allowance < UK_TAX.paBase ? " (tapered over £100k)" : ""}.</div>
+                    <button onClick={useSalaryAsIncome} style={{ fontSize: 12.5, padding: "7px 14px", borderRadius: 9, cursor: "pointer", background: ac, color: "#fff", border: "none", fontWeight: 500 }}>Use take-home as this month's income →</button>
+                  </div>
                 </div>
               )}
-              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>Your monthly budget's projected income pulls from here. Reimbursed work expenses are tracked separately and won't inflate your salary.</div>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>Your budget's projected income pulls from the <b>net</b> figure here. Estimate uses 2024/25 rUK rates; Scotland has different bands. Pension treated as salary sacrifice (cuts tax &amp; NI).</div>
             </div>
 
             {/* Contract key terms */}
