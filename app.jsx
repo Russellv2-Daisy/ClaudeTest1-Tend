@@ -699,6 +699,15 @@ function SettingsView({ state, up, accentColor, user, calendarToken }) {
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState(TAG_COLORS[0]);
   const [copied, setCopied] = useState(false);
+  const [resetArm, setResetArm] = useState(false);
+
+  // Wipe everything back to first-run defaults. The debounced cloud save then
+  // overwrites the stored blob, so the account is genuinely cleared.
+  function resetEverything() {
+    up(JSON.parse(JSON.stringify(INIT)));
+    setResetArm(false);
+    try { window.scrollTo(0, 0); } catch (e) {}
+  }
 
   // The live subscription feed URL for Apple Calendar. webcal:// makes iOS/macOS
   // offer to subscribe directly. It auto-refreshes (Apple controls the interval).
@@ -879,6 +888,29 @@ function SettingsView({ state, up, accentColor, user, calendarToken }) {
         <button onClick={() => window.TendCloud.signOut()} style={{ padding: "9px 18px", fontSize: 13, borderRadius: 9, cursor: "pointer", color: "#E24B4A" }}>
           Sign out
         </button>
+      </div>
+
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "1px solid rgba(226,75,74,0.4)", padding: 20, marginTop: 14 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500, color: "#E24B4A" }}>⚠️ Danger zone — reset Tend</h3>
+        <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+          Wipe <strong>everything</strong> back to a clean slate — tasks, finances, documents, trips, people and settings. This permanently clears your account and can't be undone.
+        </p>
+        {!resetArm ? (
+          <button onClick={() => setResetArm(true)} style={{ padding: "9px 18px", fontSize: 13, borderRadius: 9, cursor: "pointer", color: "#E24B4A", border: "1px solid rgba(226,75,74,0.5)", background: "transparent" }}>
+            🧹 Reset to a clean slate…
+          </button>
+        ) : (
+          <div style={{ background: "rgba(226,75,74,0.08)", border: "1px solid rgba(226,75,74,0.3)", borderRadius: 12, padding: "14px 16px" }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: "#E24B4A", marginBottom: 4 }}>Are you absolutely sure?</div>
+            <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5 }}>
+              Every task, transaction, budget, document, trip and saved figure will be permanently deleted. There is no undo.
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button onClick={() => setResetArm(false)} style={{ padding: "9px 18px", fontSize: 13, borderRadius: 9, cursor: "pointer" }}>Cancel — keep my data</button>
+              <button onClick={resetEverything} style={{ padding: "9px 18px", fontSize: 13, borderRadius: 9, cursor: "pointer", background: "#E24B4A", color: "#fff", border: "none", fontWeight: 600 }}>Yes, wipe everything</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
