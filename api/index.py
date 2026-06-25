@@ -35,7 +35,9 @@ APP_URL = os.environ.get("APP_URL", "http://localhost:4178").rstrip("/")
 T212_MODE = os.environ.get("T212_MODE", "live")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+# Accept either name — people commonly call this SUPABASE_SERVICE_ROLE_KEY.
+SUPABASE_SERVICE_KEY = (os.environ.get("SUPABASE_SERVICE_KEY")
+                        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""))
 # ── Lunch Flow (UK/EU Open Banking aggregator — holds the AISP licence) ────────
 # The user connects their banks inside Lunch Flow's own widget, then pastes a
 # single read-only API key into Tend. We pull accounts + transactions with it.
