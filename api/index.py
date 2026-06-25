@@ -21,6 +21,7 @@ Vercel serves the ASGI `app` below; the vercel.json rewrite sends every
 /api/* request here. Routes are therefore defined WITH the /api prefix.
 """
 import os
+import traceback
 import datetime as dt
 from typing import Optional
 
@@ -52,8 +53,11 @@ app.add_middleware(CORSMiddleware, allow_origins=[APP_URL, "http://localhost:417
 @app.exception_handler(Exception)
 async def _unhandled(request: Request, exc: Exception):
     # Never leak a bare "Internal Server Error" — return the real reason so the
-    # in-app message is actionable (the front-end reads `detail`).
-    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
+    # in-app message is actionable (the front-end reads `detail`). Include the
+    # throwing location to make diagnosis quick.
+    tb = traceback.extract_tb(exc.__traceback__)
+    where = " <- ".join(f"{f.name}:{f.lineno}" for f in tb[-3:]) if tb else "?"
+    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc} [{where}]"})
 
 
 # ── Supabase helpers (verify the caller; store secrets server-side) ───────────
@@ -74,7 +78,10 @@ async def verify_user(token: str) -> str:
         raise HTTPException(status_code=502, detail=f"Could not reach Supabase: {e}")
     if r.status_code != 200:
         raise AuthError("Invalid or expired session")
-    return r.json()["id"]
+    try:
+        return r.json()["id"]
+    except Exception:
+        raise AuthError("Unexpected response from Supabase auth")
 
 
 async def current_user(authorization: Optional[str]) -> str:
@@ -105,7 +112,7 @@ async def db_get(filters: dict):
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.get(f"{SUPABASE_URL}/rest/v1/connections", headers=_svc(), params=params)
     _db_ok(r, "read")
-    return r.json()
+    return r.json() if r.content else []
 
 
 async def db_upsert(user_id: str, provider: str, fields: dict):
@@ -116,7 +123,7 @@ async def db_upsert(user_id: str, provider: str, fields: dict):
         r = await c.post(f"{SUPABASE_URL}/rest/v1/connections?on_conflict=user_id,provider",
                          headers=headers, json=body)
     _db_ok(r, "write")
-    return r.json()
+    return r.json() if r.content else []
 
 
 async def db_delete(user_id: str, provider: str):
