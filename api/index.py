@@ -3,50 +3,44 @@ Tend Phase-B API — runs ON VERCEL as a Python serverless function.
 
 Everything lives in this ONE file (Vercel serves it at  https://<your-site>/api/... ).
 It connects:
-  • Lloyds UK + Chase UK  — Open Banking via Enable Banking
-  • Trading 212           — official read-only Invest API
+  • UK/EU banks (Lloyds, …) — Open Banking via Lunch Flow (read-only API key)
+  • Trading 212             — official read-only Invest API
 
-The browser calls this with the signed-in user's Supabase access token; bank
-session ids and the Trading 212 key are kept in the Supabase `connections`
+The browser calls this with the signed-in user's Supabase access token; the
+Lunch Flow and Trading 212 API keys are kept in the Supabase `connections`
 table (written only with the service-role key) and NEVER sent to the browser.
 
 Set these as Environment Variables in your Vercel project (Settings → Environment
 Variables) — never in config.js:
-  ENABLE_APPLICATION_ID, ENABLE_PRIVATE_KEY,
   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY,
   APP_URL (e.g. https://claude-test1-tend.vercel.app),
-  ACCESS_VALID_DAYS (optional, default 90), T212_MODE (optional, "live"/"demo")
+  T212_MODE (optional, "live"/"demo")
+The Lunch Flow + Trading 212 keys are pasted in-app by the user, not set here.
 
 Vercel serves the ASGI `app` below; the vercel.json rewrite sends every
 /api/* request here. Routes are therefore defined WITH the /api prefix.
 """
 import os
-import re
-import time
-import uuid
 import datetime as dt
 from typing import Optional
 
-import jwt          # PyJWT
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
 
 APP_URL = os.environ.get("APP_URL", "http://localhost:4178").rstrip("/")
-VALID_DAYS = int(os.environ.get("ACCESS_VALID_DAYS", "90"))
 T212_MODE = os.environ.get("T212_MODE", "live")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
-EB_API = os.environ.get("ENABLE_API_BASE", "https://api.enablebanking.com").rstrip("/")
+# ── Lunch Flow (UK/EU Open Banking aggregator — holds the AISP licence) ────────
+# The user connects their banks inside Lunch Flow's own widget, then pastes a
+# single read-only API key into Tend. We pull accounts + transactions with it.
+LUNCHFLOW_BASE = os.environ.get("LUNCHFLOW_API_BASE", "https://lunchflow.app/api/v1").rstrip("/")
+
 T212_BASE = (os.environ.get("T212_API_BASE")
              or ("https://demo.trading212.com/api/v0" if T212_MODE == "demo"
                  else "https://live.trading212.com/api/v0"))
-
-# Short provider key -> the name Enable Banking lists the bank under (GB).
-# If Chase shows as "Chase UK" in GET /aspsps?country=GB, change "Chase" here.
-OPEN_BANKING = {"lloyds": "Lloyds", "chase": "Chase"}
 
 app = FastAPI(title="Tend Phase-B API")
 app.add_middleware(CORSMiddleware, allow_origins=[APP_URL, "http://localhost:4178"],
@@ -108,36 +102,35 @@ async def db_delete(user_id: str, provider: str):
                        params={"user_id": f"eq.{user_id}", "provider": f"eq.{provider}"})
 
 
-# ── Enable Banking (Lloyds + Chase) ───────────────────────────────────────────
-def eb_jwt() -> str:
-    app_id = os.environ.get("ENABLE_APPLICATION_ID", "")
-    key = os.environ.get("ENABLE_PRIVATE_KEY", "").replace("\\n", "\n")
-    if not app_id or not key:
-        raise HTTPException(status_code=500, detail="Enable Banking not configured")
-    now = int(time.time())
-    payload = {"iss": "enablebanking.com", "aud": "api.enablebanking.com", "iat": now, "exp": now + 3600}
-    return jwt.encode(payload, key, algorithm="RS256", headers={"typ": "JWT", "alg": "RS256", "kid": app_id})
-
-
-async def eb(method: str, path: str, **kw):
-    headers = {"Authorization": f"Bearer {eb_jwt()}", "Content-Type": "application/json"}
+# ── Lunch Flow (Lloyds + any UK/EU bank the user links inside Lunch Flow) ──────
+async def lunchflow_get(api_key: str, path: str):
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.request(method, f"{EB_API}{path}", headers=headers, **kw)
+        r = await c.get(f"{LUNCHFLOW_BASE}{path}", headers={"x-api-key": api_key})
+    if r.status_code in (401, 403):
+        raise HTTPException(status_code=400, detail="Invalid Lunch Flow API key")
+    if r.status_code == 429:
+        raise HTTPException(status_code=429, detail="Lunch Flow rate limit — try again shortly")
     if r.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"Enable Banking {path} → {r.status_code}: {r.text[:200]}")
+        raise HTTPException(status_code=502, detail=f"Lunch Flow {path} → {r.status_code}")
     return r.json() if r.content else {}
 
 
-async def eb_find_aspsp(name: str):
-    data = await eb("GET", "/aspsps?country=GB")
-    for a in data.get("aspsps", data if isinstance(data, list) else []):
-        if name.lower() in (a.get("name", "").lower()):
-            return a
-    raise HTTPException(status_code=502, detail=f"Bank '{name}' not found at Enable Banking")
+def _lf_list(data, *keys):
+    # Lunch Flow may return a bare array or wrap it ({data|accounts|transactions: [...]}).
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in keys:
+            if isinstance(data.get(k), list):
+                return data[k]
+    return []
 
 
-def _acct_uid(a):
-    return a if isinstance(a, str) else (a.get("uid") or a.get("account_uid") or a.get("id"))
+def _lf_first(d, *keys, default=None):
+    for k in keys:
+        if isinstance(d, dict) and d.get(k) not in (None, ""):
+            return d[k]
+    return default
 
 
 # ── Trading 212 ───────────────────────────────────────────────────────────────
@@ -157,7 +150,7 @@ async def t212_get(api_key: str, path: str):
 @app.get("/api")
 @app.get("/api/")
 def health():
-    return {"ok": True, "service": "tend-phase-b", "providers": list(OPEN_BANKING) + ["t212"]}
+    return {"ok": True, "service": "tend-phase-b", "providers": ["lunchflow", "t212"]}
 
 
 @app.get("/api/connections")
@@ -167,86 +160,70 @@ async def connections(authorization: Optional[str] = Header(default=None)):
     for c in await db_get({"user_id": f"eq.{uid}"}):
         out.append({"provider": c.get("provider"),
                     "display_name": c.get("display_name") or c.get("provider"),
+                    "kind": "t212" if c.get("provider") == "t212" else "bank",
                     "connected": bool(c.get("session_id") or c.get("api_key")),
                     "accounts": len(c.get("accounts") or []) if c.get("accounts") else None})
     return {"connections": out}
 
 
-@app.post("/api/bank/auth")
-async def bank_auth(bank: str = "lloyds", authorization: Optional[str] = Header(default=None)):
+@app.post("/api/bank/connect")
+async def bank_connect(body: dict, authorization: Optional[str] = Header(default=None)):
+    # The user connects their banks inside Lunch Flow, then pastes its read-only
+    # API key here. We validate it by listing accounts and store it server-side.
     uid = await current_user(authorization)
-    name = OPEN_BANKING.get(bank)
-    if not name:
-        raise HTTPException(status_code=400, detail=f"Unknown bank '{bank}'")
-    state = uuid.uuid4().hex
-    valid_until = (dt.datetime.utcnow() + dt.timedelta(days=VALID_DAYS)).replace(microsecond=0).isoformat() + "Z"
-    aspsp = await eb_find_aspsp(name)
-    res = await eb("POST", "/auth", json={
-        "access": {"valid_until": valid_until},
-        "aspsp": {"name": aspsp["name"], "country": aspsp.get("country", "GB")},
-        "state": state, "redirect_url": f"{APP_URL}/api/bank/callback", "psu_type": "personal"})
-    await db_upsert(uid, bank, {"display_name": name, "state": state,
-                                "authorization_id": res.get("authorization_id"),
-                                "aspsp": aspsp, "session_id": None, "accounts": None})
-    return {"url": res.get("url")}
-
-
-@app.get("/api/bank/callback")
-async def bank_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
-    # `state` is generated server-side as uuid4().hex; reject anything that
-    # isn't exactly 32 hex chars so the (unauthenticated) callback can't be used
-    # to inject PostgREST operators and target another user's row.
-    if error or not code or not state or not re.fullmatch(r"[0-9a-f]{32}", state):
-        return RedirectResponse(f"{APP_URL}/?bank=error")
-    rows = await db_get({"state": f"eq.{state}"})
-    if not rows:
-        return RedirectResponse(f"{APP_URL}/?bank=error")
-    conn = rows[0]
-    try:
-        session = await eb("POST", "/sessions", json={"code": code})
-    except HTTPException:
-        return RedirectResponse(f"{APP_URL}/?bank=error")
-    await db_upsert(conn["user_id"], conn["provider"], {
-        "session_id": session.get("session_id"), "accounts": session.get("accounts"),
-        "aspsp": session.get("aspsp", conn.get("aspsp")), "state": None})
-    return RedirectResponse(f"{APP_URL}/?bank=connected&provider={conn['provider']}")
+    api_key = (body or {}).get("api_key", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Missing api_key")
+    accts = _lf_list(await lunchflow_get(api_key, "/accounts"), "accounts", "data")  # validates the key
+    await db_upsert(uid, "lunchflow", {
+        "display_name": "Lunch Flow", "api_key": api_key, "accounts": accts,
+        "session_id": None, "state": None, "aspsp": None, "authorization_id": None})
+    return {"ok": True, "accounts": len(accts)}
 
 
 @app.get("/api/bank/transactions")
 async def bank_transactions(days: int = 90, authorization: Optional[str] = Header(default=None)):
     uid = await current_user(authorization)
-    date_from = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    start = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    rows = await db_get({"user_id": f"eq.{uid}", "provider": "eq.lunchflow"})
+    if not rows or not rows[0].get("api_key"):
+        return {"transactions": []}
+    key = rows[0]["api_key"]
     out = []
-    for conn in await db_get({"user_id": f"eq.{uid}"}):
-        if conn.get("provider") not in OPEN_BANKING or not conn.get("session_id"):
+    for a in _lf_list(await lunchflow_get(key, "/accounts"), "accounts", "data"):
+        aid = _lf_first(a, "id", "account_id", "accountId", "uid")
+        if not aid:
             continue
-        bank_name = conn.get("display_name") or conn.get("provider")
-        for a in (conn.get("accounts") or []):
-            acct = _acct_uid(a)
-            if not acct:
+        bank_name = _lf_first(a, "institution", "institution_name", "bank", "name", default="Bank")
+        try:
+            data = await lunchflow_get(key, f"/accounts/{aid}/transactions")
+        except HTTPException:
+            continue
+        for t in _lf_list(data, "transactions", "data"):
+            date_s = str(_lf_first(t, "date", "booking_date", "bookingDate", "timestamp", "made_on", default=start))[:10]
+            if date_s < start:
                 continue
-            try:
-                data = await eb("GET", f"/accounts/{acct}/transactions?date_from={date_from}")
-            except HTTPException:
-                continue
-            for t in data.get("transactions", []):
-                amt = t.get("transaction_amount", {}) or t.get("amount", {})
-                value = float(amt.get("amount", 0) or 0)
-                credit = (t.get("credit_debit_indicator") or "").upper() == "CRDT"
-                out.append({
-                    "date": (t.get("booking_date") or t.get("value_date") or date_from)[:10],
-                    "amount": abs(value), "type": "income" if credit else "spend",
-                    "description": (t.get("creditor", {}) or {}).get("name")
-                    or (t.get("debtor", {}) or {}).get("name")
-                    or " ".join(t.get("remittance_information", []) or []) or "Transaction",
-                    "source": "bank", "bank": bank_name})
+            value = float(_lf_first(t, "amount", "value", default=0) or 0)
+            desc = _lf_first(t, "description", "merchant", "merchant_name", "name", "payee", "counterparty", default="Transaction")
+            # Direction if given, else sign. Aggregators usually use negative = money out.
+            direction = str(_lf_first(t, "direction", "type", "kind", default="")).lower()
+            if direction in ("debit", "outflow", "out", "spend"):
+                typ = "spend"
+            elif direction in ("credit", "inflow", "in", "income"):
+                typ = "income"
+            else:
+                typ = "income" if value > 0 else "spend"
+            out.append({"date": date_s, "amount": abs(value), "type": typ,
+                        "description": desc, "source": "bank", "bank": bank_name})
     return {"transactions": out}
 
 
 @app.post("/api/bank/disconnect")
-async def bank_disconnect(bank: str, authorization: Optional[str] = Header(default=None)):
+async def bank_disconnect(bank: str = "lunchflow", authorization: Optional[str] = Header(default=None)):
+    # Drops the stored Lunch Flow key. The bank links themselves live in Lunch
+    # Flow and are managed there.
     uid = await current_user(authorization)
-    await db_delete(uid, bank)
+    await db_delete(uid, "lunchflow")
     return {"ok": True}
 
 

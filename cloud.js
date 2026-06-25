@@ -167,21 +167,22 @@
     }
     return res.status === 204 ? null : res.json();
   }
-  window.TendBank = {
+  const TendBank = {
     enabled: !!BACKEND_URL,
     base: BACKEND_URL,
     listConnections() { return backendFetch("/connections"); },
-    // Open Banking (Lloyds / Chase). Redirects the browser to the bank consent page.
-    async connectBank(bank) {
-      const r = await backendFetch("/bank/auth?bank=" + encodeURIComponent(bank), { method: "POST" });
-      if (r && r.url) window.location.href = r.url;
-      return r;
-    },
+
+    // ── Open Banking via Lunch Flow ──
+    // The user links their banks inside Lunch Flow, then pastes its read-only API
+    // key here (same pattern as Trading 212). No redirect, no widget in Tend.
+    connectBank(apiKey) { return backendFetch("/bank/connect", { method: "POST", body: { api_key: apiKey } }); },
     syncTransactions(days) { return backendFetch("/bank/transactions?days=" + (days || 90)); },
-    disconnectBank(bank) { return backendFetch("/bank/disconnect?bank=" + encodeURIComponent(bank), { method: "POST" }); },
-    // Trading 212
+    disconnectBank() { return backendFetch("/bank/disconnect", { method: "POST" }); },
+
+    // ── Trading 212 ──
     connectT212(apiKey) { return backendFetch("/t212/connect", { method: "POST", body: { api_key: apiKey } }); },
     getPortfolio() { return backendFetch("/t212/portfolio"); },
     disconnectT212() { return backendFetch("/t212/disconnect", { method: "POST" }); },
   };
+  window.TendBank = TendBank;
 })();

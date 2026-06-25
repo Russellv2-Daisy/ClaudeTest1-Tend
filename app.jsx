@@ -2031,6 +2031,40 @@ function detectSubscriptions(state) {
   })).sort((a, b) => b.amount - a.amount);
 }
 // Parse a Lloyds (or generic) bank CSV into transactions.
+// Keyword → budget-group guesses, shared by CSV import and live bank sync.
+const TXN_CAT_KEYWORDS = [
+  ["g_food", ["tesco", "sainsbury", "asda", "aldi", "lidl", "co-op", "coop", "morrisons", "waitrose", "deliveroo", "uber eats", "just eat", "greggs", "pret", "mcdonald", "costa", "starbucks", "restaurant", "cafe"]],
+  ["g_transport", ["shell", "bp", "esso", "texaco", "fuel", "petrol", "tfl", "trainline", "uber", "rail", "parking", "national rail"]],
+  ["g_ent", ["spotify", "netflix", "disney", "cinema", "starlink", "steam", "playstation", "xbox", "prime video"]],
+  ["g_housing", ["mortgage", "rent", "british gas", "octopus", "water", "council tax", "thames"]],
+  ["g_loans", ["club lloyds", "loan", "finance", "credit"]],
+  ["g_personal", ["boots", "superdrug", "gym", "pharmacy", "apple.com", "phone"]],
+];
+function guessTxnCat(desc, cats) {
+  const d = (desc || "").toLowerCase();
+  for (const [cid, kws] of TXN_CAT_KEYWORDS) {
+    if ((cats || []).some(c => c.id === cid) && kws.some(k => d.includes(k))) return cid;
+  }
+  return "";
+}
+
+// Merge transactions pulled from a live bank into the existing list, de-duping
+// against bank rows already imported (same date+amount+description+bank) and
+// auto-categorising spends. Returns the new list and how many were added.
+function mergeBankTxns(existing, incoming, cats) {
+  const list = (existing || []).slice();
+  const key = t => [t.date, t.amount, (t.description || "").toLowerCase(), t.bank || ""].join("|");
+  const seen = new Set(list.filter(t => t.source === "bank").map(key));
+  let added = 0;
+  for (const t of (incoming || [])) {
+    if (seen.has(key(t))) continue;
+    seen.add(key(t));
+    list.unshift({ ...t, id: genId(), categoryId: t.type === "spend" ? guessTxnCat(t.description, cats) : "" });
+    added++;
+  }
+  return { list, added };
+}
+
 function parseBankCSV(text, cats) {
   const lines = text.split(/\r?\n/).filter(l => l.trim());
   if (!lines.length) return [];
@@ -2039,7 +2073,7 @@ function parseBankCSV(text, cats) {
   const idx = (...names) => { for (const n of names) { const i = header.findIndex(h => h.includes(n)); if (i >= 0) return i; } return -1; };
   const di = idx("transaction date", "date"), de = idx("description", "details", "reference"), dr = idx("debit"), cr = idx("credit"), am = idx("amount"), ty = idx("type");
   const toISO = s => { const m = (s || "").match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/); if (m) { let y = m[3]; if (y.length === 2) y = "20" + y; return y + "-" + m[2].padStart(2, "0") + "-" + m[1].padStart(2, "0"); } const m2 = (s || "").match(/(\d{4})-(\d{2})-(\d{2})/); return m2 ? m2[0] : ""; };
-  const guessCat = desc => { const d = (desc || "").toLowerCase(); const map = [["g_food", ["tesco", "sainsbury", "asda", "aldi", "lidl", "co-op", "coop", "morrisons", "waitrose", "deliveroo", "uber eats", "just eat", "greggs", "pret", "mcdonald", "costa", "starbucks", "restaurant", "cafe"]], ["g_transport", ["shell", "bp", "esso", "texaco", "fuel", "petrol", "tfl", "trainline", "uber", "rail", "parking", "national rail"]], ["g_ent", ["spotify", "netflix", "disney", "cinema", "starlink", "steam", "playstation", "xbox", "prime video"]], ["g_housing", ["mortgage", "rent", "british gas", "octopus", "water", "council tax", "thames"]], ["g_loans", ["club lloyds", "loan", "finance", "credit"]], ["g_personal", ["boots", "superdrug", "gym", "pharmacy", "apple.com", "phone"]]]; for (const [cid, kws] of map) { if ((cats || []).some(c => c.id === cid) && kws.some(k => d.includes(k))) return cid; } return ""; };
+  const guessCat = desc => guessTxnCat(desc, cats);
   const out = [];
   for (let i = 1; i < lines.length; i++) {
     const r = splitRow(lines[i]); if (!r.length || r.every(c => !c)) continue;
@@ -2741,6 +2775,75 @@ function FinanceView({ state, up, accentColor }) {
   const [txnTo, setTxnTo] = useState("");
   const [paydayEdit, setPaydayEdit] = useState(false);
   const csvRef = useRef(null);
+
+  // ── Phase B: live bank + Trading 212 (gated behind window.TendBank.enabled) ──
+  const bank = (typeof window !== "undefined" && window.TendBank) || { enabled: false };
+  const [bankConns, setBankConns] = useState([]);
+  const [bankBusy, setBankBusy] = useState("");   // which action is in flight
+  const [bankErr, setBankErr] = useState("");
+  const [bankKey, setBankKey] = useState("");     // Lunch Flow API key input
+  const [t212Key, setT212Key] = useState("");
+  const [t212Info, setT212Info] = useState(null); // last portfolio summary
+  const loadConns = () => { if (!bank.enabled) return; bank.listConnections().then(r => setBankConns((r && r.connections) || [])).catch(() => {}); };
+  useEffect(() => { loadConns(); }, []);
+  const connOf = prov => bankConns.find(c => c.provider === prov && c.connected);
+
+  async function doConnectBank() {
+    const key = bankKey.trim(); if (!key) return;
+    setBankErr(""); setBankBusy("connect");
+    try {
+      // Lunch Flow API key (the banks are linked inside Lunch Flow). Validate +
+      // store it, then pull transactions straight away.
+      await bank.connectBank(key);
+      setBankKey(""); loadConns(); await doSyncBank();
+    } catch (e) { setBankErr(e.message || String(e)); }
+    setBankBusy("");
+  }
+  async function doSyncBank() {
+    setBankErr(""); setBankBusy("sync");
+    try {
+      const r = await bank.syncTransactions(90);
+      const { list, added } = mergeBankTxns(state.transactions || [], (r && r.transactions) || [], state.financeCategories || []);
+      if (added) up({ transactions: list });
+      setBankErr(added ? "" : "Up to date — no new transactions.");
+    } catch (e) { setBankErr(e.message || String(e)); }
+    setBankBusy("");
+  }
+  async function doDisconnectBank() {
+    if (!confirm("Disconnect Lunch Flow? Imported transactions stay; future syncs stop. (Your banks remain linked inside Lunch Flow.)")) return;
+    setBankBusy("disc");
+    try { await bank.disconnectBank(); } catch (e) { setBankErr(e.message || String(e)); }
+    loadConns(); setBankBusy("");
+  }
+  async function doConnectT212() {
+    const key = t212Key.trim(); if (!key) return;
+    setBankErr(""); setBankBusy("t212");
+    try { await bank.connectT212(key); setT212Key(""); loadConns(); await doSyncT212(); }
+    catch (e) { setBankErr(e.message || String(e)); setBankBusy(""); }
+  }
+  async function doSyncT212() {
+    setBankErr(""); setBankBusy("t212");
+    try {
+      const p = await bank.getPortfolio();
+      setT212Info(p);
+      // Replace the previously-synced T212 holdings with the live ones.
+      const kept = (state.investments || []).filter(h => h.source !== "t212");
+      const live = (p.holdings || []).map(h => ({
+        id: genId(), name: (h.ticker || "").split("_")[0] || h.ticker, ticker: h.ticker,
+        account: "Trading 212", units: h.units, avgCost: h.avgCost, price: h.price,
+        contribution: 0, source: "t212",
+      }));
+      up({ investments: [...kept, ...live] });
+    } catch (e) { setBankErr(e.message || String(e)); }
+    setBankBusy("");
+  }
+  async function doDisconnectT212() {
+    if (!confirm("Disconnect Trading 212? Synced holdings will be removed.")) return;
+    setBankBusy("t212");
+    try { await bank.disconnectT212(); up({ investments: (state.investments || []).filter(h => h.source !== "t212") }); setT212Info(null); }
+    catch (e) { setBankErr(e.message || String(e)); }
+    loadConns(); setBankBusy("");
+  }
 
   const ac = accentColor;
   const cats = state.financeCategories || [];
@@ -3478,8 +3581,30 @@ function FinanceView({ state, up, accentColor }) {
             <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 20, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14, textAlign: "center" }}>
               <div style={{ fontSize: 30, marginBottom: 8 }}>🔗</div>
               <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>Auto-sync from Trading 212</div>
-              <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 14, maxWidth: 460, marginInline: "auto" }}>Pull live balances, holdings and prices straight from Trading 212 via its API (read-only). Needs your personal API key and a small server endpoint — arriving in Phase B alongside bank linking.</div>
-              <button disabled style={{ fontSize: 13, padding: "9px 20px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect Trading 212 — coming in Phase B</button>
+              {bankErr && <div style={{ background: hex2rgba("#d9534f", 0.1), color: "#d9534f", fontSize: 12, padding: "8px 11px", borderRadius: 9, margin: "0 auto 12px", maxWidth: 420 }}>{bankErr}</div>}
+              {!bank.enabled ? (
+                <>
+                  <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 14, maxWidth: 460, marginInline: "auto" }}>Pull live balances, holdings and prices straight from Trading 212 via its API (read-only). Needs your personal API key — switch the integrations on in the Connect-bank tab’s setup steps.</div>
+                  <button disabled style={{ fontSize: 13, padding: "9px 20px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect Trading 212 — switch on in setup</button>
+                </>
+              ) : connOf("t212") ? (
+                <>
+                  <div style={{ fontSize: 12.5, color: "#2e8b57", marginBottom: 12 }}>✓ Connected{t212Info ? ` · portfolio ${fmtMoney(t212Info.total)} (${t212Info.holdings ? t212Info.holdings.length : 0} holdings)` : ""}</div>
+                  <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+                    <button onClick={doSyncT212} disabled={!!bankBusy} style={{ fontSize: 13, padding: "9px 18px", background: ac, color: "#fff", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>{bankBusy === "t212" ? "Syncing…" : "🔄 Sync holdings"}</button>
+                    <button onClick={doDisconnectT212} disabled={!!bankBusy} style={{ fontSize: 13, padding: "9px 18px", color: "#d9534f" }}>Disconnect</button>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 10 }}>Live units, prices and average cost replace the manual figures for your Trading 212 holdings.</div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 14, maxWidth: 460, marginInline: "auto" }}>Paste a <b>read-only</b> API key from Trading 212 (Settings → API). It’s stored server-side only and can never trade or move money.</div>
+                  <div style={{ display: "flex", gap: 8, maxWidth: 420, margin: "0 auto" }}>
+                    <input type="password" value={t212Key} onChange={e => setT212Key(e.target.value)} placeholder="Trading 212 API key" style={{ flex: 1, fontSize: 13, padding: "8px 11px", boxSizing: "border-box" }} />
+                    <button onClick={doConnectT212} disabled={!t212Key.trim() || !!bankBusy} style={{ fontSize: 13, padding: "8px 16px", background: ac, color: "#fff", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>{bankBusy === "t212" ? "…" : "Connect"}</button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         );
@@ -3973,28 +4098,74 @@ function FinanceView({ state, up, accentColor }) {
       {/* ── Connect bank ── */}
       {tab === "connect" && (
         <div style={{ maxWidth: 560 }}>
-          <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 24, border: "0.5px solid var(--color-border-tertiary)", textAlign: "center" }}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>🏦</div>
-            <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 8 }}>Link your Lloyds account</div>
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 18 }}>
-              Pull your real transactions in automatically via Open Banking (Enable Banking). Read-only and secure — it can never move your money. Your bank login happens on Lloyds’ own site.
-            </div>
-            <button disabled style={{ fontSize: 14, padding: "10px 22px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect Lloyds — coming in Phase B</button>
-          </div>
-          <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14 }}>
-            <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>To switch this on, you’ll need:</div>
-            {[
-              ["1", "A free Enable Banking account", "Sign up at enablebanking.com → create an application → whitelist your own Lloyds account for Restricted Production (free, no contract). You get an Application ID + a private key."],
-              ["2", "Supabase finished", "Fill config.js with your project URL + anon key, and add the service-role key in Vercel."],
-              ["3", "Keys added to Vercel", "Set ENABLE_APPLICATION_ID and ENABLE_PRIVATE_KEY (and ANTHROPIC_API_KEY for smart auto-categorising)."]
-            ].map(([n, t, d]) => (
-              <div key={n} style={{ display: "flex", gap: 12, marginBottom: 12 }}>
-                <span style={{ width: 24, height: 24, borderRadius: "50%", background: hex2rgba(ac, 0.12), color: ac, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{n}</span>
-                <div><div style={{ fontSize: 13, fontWeight: 500 }}>{t}</div><div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{d}</div></div>
-              </div>
-            ))}
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6, lineHeight: 1.5 }}>Until then, everything here works on manual entries or sample data — your plan, trends and stats are fully usable.</div>
-          </div>
+          {bankErr && <div style={{ background: hex2rgba("#d9534f", 0.1), color: "#d9534f", fontSize: 12.5, padding: "9px 12px", borderRadius: 10, marginBottom: 12 }}>{bankErr}</div>}
+
+          {(() => {
+            const lf = connOf("lunchflow");
+            return bank.enabled ? (
+              lf ? (
+                // ── Connected via Lunch Flow ──
+                <>
+                  <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 20, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12, display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ fontSize: 28 }}>🏦</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 15, fontWeight: 600 }}>Connected via Lunch Flow</div>
+                      <div style={{ fontSize: 12, color: "#2e8b57", marginTop: 2 }}>✓ Linked{lf.accounts ? ` · ${lf.accounts} account${lf.accounts === 1 ? "" : "s"}` : ""}</div>
+                    </div>
+                    <button onClick={doDisconnectBank} disabled={!!bankBusy} style={{ fontSize: 12.5, padding: "7px 14px", color: "#d9534f" }}>{bankBusy === "disc" ? "…" : "Disconnect"}</button>
+                  </div>
+                  <div style={{ textAlign: "center", marginTop: 6 }}>
+                    <button onClick={doSyncBank} disabled={!!bankBusy} style={{ fontSize: 13, padding: "9px 20px", background: "var(--color-background-secondary)", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>{bankBusy === "sync" ? "Syncing…" : "🔄 Sync transactions now"}</button>
+                    <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>New transactions are auto-categorised and de-duplicated. Last 90 days. To add another bank, link it inside Lunch Flow — it'll appear here automatically.</div>
+                  </div>
+                </>
+              ) : (
+                // ── Switched on, not yet connected: paste the Lunch Flow key ──
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 24, border: "0.5px solid var(--color-border-tertiary)" }}>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 40, marginBottom: 10 }}>🏦</div>
+                    <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 8 }}>Connect your bank</div>
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.7, marginBottom: 16 }}>
+                    Tend reads your transactions through <b>Lunch Flow</b> (read-only — it can never move money). Two quick steps:
+                    <div style={{ marginTop: 8 }}>1. At <b>lunchflow.app</b>, link your banks (e.g. Lloyds) and create a <b>REST API</b> destination.</div>
+                    <div>2. Paste that API key below.</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input type="password" value={bankKey} onChange={e => setBankKey(e.target.value)} placeholder="Lunch Flow API key" style={{ flex: 1, fontSize: 13, padding: "9px 11px", boxSizing: "border-box" }} />
+                    <button onClick={doConnectBank} disabled={!bankKey.trim() || !!bankBusy} style={{ fontSize: 13, padding: "9px 18px", background: ac, color: "#fff", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>{bankBusy === "connect" ? "…" : "Connect"}</button>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 10 }}>🔒 Your key is stored server-side only, never in the browser.</div>
+                </div>
+              )
+            ) : (
+              // ── Dormant (switch still off) ──
+              <>
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 24, border: "0.5px solid var(--color-border-tertiary)", textAlign: "center" }}>
+                  <div style={{ fontSize: 40, marginBottom: 10 }}>🏦</div>
+                  <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 8 }}>Link Lloyds &amp; more</div>
+                  <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 18 }}>
+                    Pull your real transactions in automatically via Open Banking (through Lunch Flow). Read-only and secure — it can never move your money.
+                  </div>
+                  <button disabled style={{ fontSize: 14, padding: "10px 22px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect — switch on in setup</button>
+                </div>
+                <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14 }}>
+                  <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12 }}>To switch this on, you’ll need:</div>
+                  {[
+                    ["1", "A Lunch Flow account", "Sign up at lunchflow.app (free trial), link your banks (e.g. Lloyds), and create a REST API destination to get an API key. Lunch Flow is the regulated provider — your banks connect under its licence."],
+                    ["2", "Supabase service key in Vercel", "Run supabase/bank_schema.sql, then add the service-role key as SUPABASE_SERVICE_KEY in Vercel."],
+                    ["3", "Flip the switch", "Change config.js → BACKEND_URL to \"/api\". Then paste your Lunch Flow key on this screen. See PHASE-B.md for the full checklist."]
+                  ].map(([n, t, d]) => (
+                    <div key={n} style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+                      <span style={{ width: 24, height: 24, borderRadius: "50%", background: hex2rgba(ac, 0.12), color: ac, fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{n}</span>
+                      <div><div style={{ fontSize: 13, fontWeight: 500 }}>{t}</div><div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{d}</div></div>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6, lineHeight: 1.5 }}>Until then, everything here works on manual entries or sample data — your plan, trends and stats are fully usable.</div>
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
     </div>
