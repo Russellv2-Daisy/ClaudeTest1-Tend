@@ -27,6 +27,8 @@ from typing import Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.requests import Request
 
 APP_URL = os.environ.get("APP_URL", "http://localhost:4178").rstrip("/")
 T212_MODE = os.environ.get("T212_MODE", "live")
@@ -47,17 +49,29 @@ app.add_middleware(CORSMiddleware, allow_origins=[APP_URL, "http://localhost:417
                    allow_methods=["*"], allow_headers=["*"], allow_credentials=False)
 
 
+@app.exception_handler(Exception)
+async def _unhandled(request: Request, exc: Exception):
+    # Never leak a bare "Internal Server Error" — return the real reason so the
+    # in-app message is actionable (the front-end reads `detail`).
+    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
+
+
 # ── Supabase helpers (verify the caller; store secrets server-side) ───────────
 class AuthError(Exception):
     pass
 
 
 async def verify_user(token: str) -> str:
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise HTTPException(status_code=500, detail="Server misconfigured: SUPABASE_URL / SUPABASE_ANON_KEY not set in Vercel")
     if not token:
         raise AuthError("Missing token")
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.get(f"{SUPABASE_URL}/auth/v1/user",
-                        headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY})
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"{SUPABASE_URL}/auth/v1/user",
+                            headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY})
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Supabase: {e}")
     if r.status_code != 200:
         raise AuthError("Invalid or expired session")
     return r.json()["id"]
@@ -72,7 +86,16 @@ async def current_user(authorization: Optional[str]) -> str:
 
 
 def _svc():
+    if not SUPABASE_SERVICE_KEY:
+        raise HTTPException(status_code=500, detail="Server misconfigured: SUPABASE_SERVICE_KEY not set in Vercel")
     return {"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"}
+
+
+def _db_ok(r, action):
+    # 404 / "PGRST205" = the `connections` table doesn't exist (SQL not run);
+    # 401 / 403 = bad service key. Surface a real reason instead of a bare 500.
+    if r.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Supabase {action} failed ({r.status_code}): {r.text[:200]}")
 
 
 async def db_get(filters: dict):
@@ -81,7 +104,7 @@ async def db_get(filters: dict):
     params = {**filters, "select": "*"}
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.get(f"{SUPABASE_URL}/rest/v1/connections", headers=_svc(), params=params)
-    r.raise_for_status()
+    _db_ok(r, "read")
     return r.json()
 
 
@@ -92,7 +115,7 @@ async def db_upsert(user_id: str, provider: str, fields: dict):
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.post(f"{SUPABASE_URL}/rest/v1/connections?on_conflict=user_id,provider",
                          headers=headers, json=body)
-    r.raise_for_status()
+    _db_ok(r, "write")
     return r.json()
 
 
