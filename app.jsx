@@ -1682,6 +1682,19 @@ function monthStats(state, mk) {
     const monthly = p.frequency === "annual" ? prem / 12 : prem;
     pushAuto(p.budgetCategory, { label: `${p.type || "Insurance"}${p.provider ? " · " + p.provider : ""}`, amount: monthly, source: "insurance" });
   });
+  // Subscriptions & direct debits tagged with a budget category fold into that category
+  // (shown as auto line items, like insurance); the untagged remainder adds as a flat total.
+  let subsUncategorised = 0;
+  (state.subscriptions || []).forEach(s => {
+    const amt = Number(s.amount) || 0;
+    if (amt <= 0) return;
+    const isDD = s.kind === "directDebit";
+    if (s.categoryId && cats.some(c => c.id === s.categoryId)) {
+      pushAuto(s.categoryId, { label: s.name || (isDD ? "Direct debit" : "Subscription"), amount: amt, source: isDD ? "directDebit" : "subscription" });
+    } else {
+      subsUncategorised += amt;
+    }
+  });
 
   const byCat = {};
   let plannedTotal = 0, manualActualTotal = 0, variablePlanned = 0;
@@ -1700,9 +1713,9 @@ function monthStats(state, mk) {
     plannedTotal += planned; manualActualTotal += manualActual; variablePlanned += itemsPlanned;
   });
 
-  // Subscriptions & direct debits (managed on their own tab) are recurring outgoings —
-  // fold them into the projected plan so the totals and forecast actually include them.
-  const subsTotal = (state.subscriptions || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  // Untagged subscriptions/direct debits add as a flat total; tagged ones are already
+  // folded into their budget category above, so they're counted there.
+  const subsTotal = subsUncategorised;
   plannedTotal += subsTotal;
 
   // Auto commitments pulled from the Savings & Debts / Pension tabs (made there first).
@@ -2686,6 +2699,7 @@ function FinanceView({ state, up, accentColor }) {
   const [invModal, setInvModal] = useState(null);
   const [potModal, setPotModal] = useState(null);
   const [subModal, setSubModal] = useState(null);
+  const [subSort, setSubSort] = useState("next");
   const [debtModal, setDebtModal] = useState(null);
   const [debtStrategy, setDebtStrategy] = useState("avalanche");
   const [savDate, setSavDate] = useState("");
@@ -3090,7 +3104,7 @@ function FinanceView({ state, up, accentColor }) {
                 {auto.map((a, i) => (
                   <div key={"auto" + i} style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
                     <div style={{ flex: 1, fontSize: 13, display: "flex", alignItems: "center", gap: 6, color: "var(--color-text-secondary)" }}>
-                      <span>{a.source === "date" ? "🎂" : a.source === "insurance" ? "🛡" : "📋"}</span>
+                      <span>{a.source === "date" ? "🎂" : a.source === "insurance" ? "🛡" : a.source === "directDebit" ? "🏦" : a.source === "subscription" ? "🔁" : "📋"}</span>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.label}</span>
                       <span style={{ fontSize: 10, background: hex2rgba(ac, 0.12), color: ac, padding: "1px 7px", borderRadius: 10, flexShrink: 0 }}>auto</span>
                     </div>
@@ -3112,21 +3126,40 @@ function FinanceView({ state, up, accentColor }) {
             );
           })}
 
-          {/* Totals + balance */}
-          <div style={{ background: hex2rgba(ac, 0.06), borderRadius: 12, padding: 18, border: `1px solid ${hex2rgba(ac, 0.25)}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><span>Total projected expenses <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>money spent</span></span><b>{fmtMoney(stats.expensesTotal)}</b></div>
-            {stats.savingsCommitments > 0 && (
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8, color: "var(--color-text-secondary)" }}><span>🐖 Savings commitments <span style={{ fontSize: 11 }}>set aside, not spent</span></span><b style={{ color: "#1D9E75" }}>{fmtMoney(stats.savingsCommitments)}</b></div>
-            )}
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8, paddingTop: 8, borderTop: "0.5px solid var(--color-border-tertiary)" }}><span>Total projected outgoings</span><b>{fmtMoney(stats.plannedTotal)}</b></div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><span>Total actual cost</span><b>{fmtMoney(stats.manualActualTotal)}</b></div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, marginBottom: 8 }}>
-              <span title="Set at the top of this page">🛟 Safety buffer</span>
-              <b>{fmtMoney(Number(state.safetyBuffer) || 0)}</b>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingTop: 10, borderTop: `0.5px solid ${hex2rgba(ac, 0.25)}` }}><span style={{ fontWeight: 600 }}>Projected balance <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)" }}>after buffer</span></span><b style={{ color: (stats.incomeProjected - stats.plannedTotal - (Number(state.safetyBuffer) || 0)) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeProjected - stats.plannedTotal - (Number(state.safetyBuffer) || 0))}</b></div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginTop: 8 }}><span style={{ fontWeight: 600 }}>Actual balance</span><b style={{ color: (stats.incomeActual - stats.manualActualTotal) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeActual - stats.manualActualTotal)}</b></div>
-          </div>
+          {/* Totals + balance — read top-to-bottom as income minus what leaves it */}
+          {(() => {
+            const buffer = Number(state.safetyBuffer) || 0;
+            const projBal = stats.incomeProjected - stats.plannedTotal - buffer;
+            const actBal = stats.incomeActual - stats.manualActualTotal;
+            const groupLabel = { fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-secondary)", marginBottom: 10 };
+            const line = (label, value, opts = {}) => (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 7, color: opts.muted ? "var(--color-text-secondary)" : "var(--color-text-primary)" }}>
+                <span>{label}{opts.hint && <span style={{ fontSize: 11, color: "var(--color-text-secondary)", marginLeft: 6 }}>{opts.hint}</span>}</span>
+                <b style={{ color: opts.color || "inherit", fontWeight: 500 }}>{value}</b>
+              </div>
+            );
+            const balRow = (label, value) => (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 14, marginTop: 8, paddingTop: 10, borderTop: `0.5px solid ${hex2rgba(ac, 0.25)}` }}>
+                <span style={{ fontWeight: 600 }}>{label}</span>
+                <b style={{ color: value >= 0 ? "#639922" : "#E24B4A", fontSize: 16 }}>{fmtMoney(value)}</b>
+              </div>
+            );
+            return (
+              <div style={{ background: hex2rgba(ac, 0.06), borderRadius: 12, padding: 18, border: `1px solid ${hex2rgba(ac, 0.25)}` }}>
+                <div style={groupLabel}>Projected this month</div>
+                {line("Income", fmtMoney(stats.incomeProjected), { color: "#1D9E75" })}
+                {line("− Expenses", fmtMoney(stats.expensesTotal), { hint: "money spent" })}
+                {stats.savingsCommitments > 0 && line("− Savings & pension", fmtMoney(stats.savingsCommitments), { hint: "set aside, not spent", muted: true })}
+                {buffer > 0 && line("− Safety buffer", fmtMoney(buffer), { hint: "held back", muted: true })}
+                {balRow("Projected balance left", projBal)}
+
+                <div style={{ ...groupLabel, marginTop: 20, paddingTop: 16, borderTop: `0.5px solid ${hex2rgba(ac, 0.25)}` }}>Actual so far</div>
+                {line("Income received", fmtMoney(stats.incomeActual), { color: "#1D9E75" })}
+                {line("− Spent so far", fmtMoney(stats.manualActualTotal))}
+                {balRow("Actual balance", actBal)}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -3557,7 +3590,10 @@ function FinanceView({ state, up, accentColor }) {
         const manual = subs.map(s => ({ id: s.id, name: s.name, amount: Number(s.amount) || 0, next: nextFromDay(Number(s.day) || 1), categoryId: s.categoryId, kind: s.kind === "directDebit" ? "directDebit" : "subscription", auto: false }));
         const dismissed = state.dismissedSubs || [];
         const auto = detectSubscriptions(state).filter(a => !manual.some(m => m.name.toLowerCase() === a.name.toLowerCase()) && !dismissed.includes(a.name.toLowerCase())).map(a => ({ id: "auto_" + a.name, name: a.name, amount: a.amount, next: a.lastDate ? (() => { const d = new Date(a.lastDate + "T00:00:00"); d.setMonth(d.getMonth() + 1); return ymd(d); })() : "", categoryId: a.categoryId, kind: "subscription", auto: true }));
-        const items = [...manual, ...auto].sort((x, y) => (x.next || "z").localeCompare(y.next || "z"));
+        const items = [...manual, ...auto].sort((x, y) =>
+          subSort === "name" ? x.name.localeCompare(y.name, undefined, { sensitivity: "base" })
+          : subSort === "amount" ? y.amount - x.amount
+          : (x.next || "z").localeCompare(y.next || "z"));
         const totalM = items.reduce((s, i) => s + i.amount, 0);
         const subsM = items.filter(i => i.kind !== "directDebit").reduce((s, i) => s + i.amount, 0);
         const ddM = items.filter(i => i.kind === "directDebit").reduce((s, i) => s + i.amount, 0);
@@ -3565,7 +3601,14 @@ function FinanceView({ state, up, accentColor }) {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
               <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Subscriptions &amp; direct debits — auto-detected from transactions plus any you add. All feed into your Breakdown Plan and cash-flow forecast.</div>
-              <button onClick={() => setSubModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Add</button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <select value={subSort} onChange={e => setSubSort(e.target.value)} title="Sort payments" style={{ fontSize: 12.5, padding: "7px 10px", borderRadius: 9, border: "0.5px solid var(--color-border-tertiary)", background: "var(--color-background-primary)", color: "var(--color-text-secondary)", cursor: "pointer" }}>
+                  <option value="next">Sort: Next due</option>
+                  <option value="name">Sort: Name (A–Z)</option>
+                  <option value="amount">Sort: Amount (high–low)</option>
+                </select>
+                <button onClick={() => setSubModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Add</button>
+              </div>
             </div>
             {items.length === 0 ? (
               <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
@@ -4867,8 +4910,9 @@ function PayDocModal({ kind, doc, accentColor, onSave, onClose }) {
 
 const KEYDOC_TYPES = [
   { v: "Passport", icon: "🛂" }, { v: "Driving licence", icon: "🪪" }, { v: "GHIC / EHIC", icon: "🏥" },
-  { v: "Visa / BRP", icon: "🛃" }, { v: "Blue light card", icon: "🔵" }, { v: "Railcard", icon: "🚆" },
-  { v: "Travel pass", icon: "🎫" }, { v: "Membership", icon: "🎟" }, { v: "Other", icon: "📄" }
+  { v: "Visa / BRP", icon: "🛃" }, { v: "Bank card", icon: "💳" }, { v: "Blue light card", icon: "💳" },
+  { v: "Defence discount card", icon: "💳" }, { v: "Railcard", icon: "🚆" }, { v: "Travel pass", icon: "🎫" },
+  { v: "Membership", icon: "🎟" }, { v: "Other", icon: "📄" }
 ];
 const keyDocIcon = type => (KEYDOC_TYPES.find(t => t.v === type) || { icon: "📄" }).icon;
 const KEYDOC_STATUS = [["active", "Active"], ["waiting", "Waiting to arrive"], ["expired", "Expired"]];
