@@ -60,7 +60,7 @@ const DATE_TYPES = [
   { v: "event", l: "Event", icon: "🎉" },
   { v: "reminder", l: "Reminder", icon: "🔔" }
 ];
-const VIEWS = ["home","today","important-dates","people","docs","finance","settings"];
+const VIEWS = ["home","today","people","docs","finance","settings"];
 const VIEW_META = {
   home: { icon: "🏠", label: "Home" },
   today: { icon: "☀️", label: "Tasks" },
@@ -1323,7 +1323,7 @@ function ukTakeHome(annualGross, opts) {
 function jobNetMonthly(state) {
   const job = (state || {}).job || {};
   if (!(Number(job.salary) > 0)) return 0;
-  const th = ukTakeHome(job.salary, { taxCode: job.taxCode, pensionPct: job.pensionPct, studentLoan: job.studentLoan });
+  const th = ukTakeHome(job.salary, { taxCode: job.taxCode, studentLoan: job.studentLoan });
   return Math.round(th.netMonthly * 100) / 100;
 }
 
@@ -3045,6 +3045,7 @@ function FinanceView({ state, up, accentColor }) {
               ...debts.map(d => { const pl = debtPlan(d); return { icon: "💳", label: d.name, projected: pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0), kw: d.name }; }).filter(x => x.projected > 0),
               ...insurance.map(p => ({ icon: insIcon(p.type), label: `${p.type}${p.provider ? " · " + p.provider : ""}`, projected: insMonthly(p), kw: p.provider || p.type })).filter(x => x.projected > 0),
               ...subs.map(s => ({ icon: s.kind === "directDebit" ? "🏦" : "🔁", label: s.name, projected: Number(s.amount) || 0, kw: s.name })).filter(x => x.projected > 0),
+              ...pensionList(state).filter(p => p.type !== "state" && p.contributing !== false).map(p => ({ icon: "🏖", label: `Pension${p.name ? " · " + p.name : ""}`, projected: (Number(p.salary) || 0) * (Number(p.employeePct) || 0) / 100 / 12, kw: p.name || "pension" })).filter(x => x.projected > 0),
             ];
             if (!items.length) return null;
             return (
@@ -3054,7 +3055,7 @@ function FinanceView({ state, up, accentColor }) {
                   <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Projected</div>
                   <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Actual</div>
                 </div>
-                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>From your Savings &amp; Debts, Insurance and Subscriptions &amp; direct debits. Actual fills in when a matching transaction appears — “pending” until then.</div>
+                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>From your Savings &amp; Debts, Pension, Insurance and Subscriptions &amp; direct debits. Actual fills in when a matching transaction appears — “pending” until then.</div>
                 {items.map((it, i) => { const actual = matchActual(it.kw); return (
                   <div key={i} style={{ display: "flex", alignItems: "center", fontSize: 13, padding: "4px 0" }}>
                     <span style={{ flex: 1, color: "var(--color-text-secondary)" }}>{it.icon} {it.label}</span>
@@ -3149,7 +3150,7 @@ function FinanceView({ state, up, accentColor }) {
                 <div style={groupLabel}>Projected this month</div>
                 {line("Income", fmtMoney(stats.incomeProjected), { color: "#1D9E75" })}
                 {line("− Expenses", fmtMoney(stats.expensesTotal), { hint: "money spent" })}
-                {stats.savingsCommitments > 0 && line("− Savings & pension", fmtMoney(stats.savingsCommitments), { hint: "set aside, not spent", muted: true })}
+                {stats.savingsCommitments > 0 && line("− Savings & pension", fmtMoney(stats.savingsCommitments), { hint: "set aside, not spent" })}
                 {buffer > 0 && line("− Safety buffer", fmtMoney(buffer), { hint: "held back", muted: true })}
                 {balRow("Projected balance left", projBal)}
 
@@ -4615,7 +4616,7 @@ function runAssistant(state, prompt) {
   return { reply: "I can plan your day, summarise your finances, or add tasks. Try “what should I focus on today?”, “how are my finances?”, or “add buy milk tomorrow”. Full conversational Claude arrives with the API key (Phase B)." };
 }
 
-function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTasks, userName }) {
+function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTasks, userName, onOpenDates }) {
   const ac = accentColor;
   const today = todayStr();
   const [q, setQ] = useState("");
@@ -4781,7 +4782,7 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
         <div style={card}>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
             <div style={{ fontSize: 14, fontWeight: 600 }}>🎂 Important dates</div>
-            <button onClick={() => setView("important-dates")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Open →</button>
+            <button onClick={onOpenDates} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Open →</button>
           </div>
           {dates.map(({ d, days }) => <div key={d.id} style={{ display: "flex", gap: 8, fontSize: 13.5, padding: "5px 0" }}><span style={{ flex: 1 }}>{(DATE_TYPES.find(t => t.v === d.type) || {}).icon || "📅"} {d.title}</span><span style={{ fontSize: 11.5, color: days <= 7 ? ac : "var(--color-text-secondary)", fontWeight: days <= 7 ? 500 : 400 }}>{days === 0 ? "today" : `in ${days} day${days !== 1 ? "s" : ""}`}</span></div>)}
         </div>
@@ -5205,7 +5206,7 @@ function DocsView({ state, up, accentColor, goFinance }) {
 
       {/* ── Job ── */}
       {tab === "job" && (() => {
-        const th = ukTakeHome(job.salary, { taxCode: job.taxCode, pensionPct: job.pensionPct, studentLoan: job.studentLoan });
+        const th = ukTakeHome(job.salary, { taxCode: job.taxCode, studentLoan: job.studentLoan });
         const hasSalary = Number(job.salary) > 0;
         const inp = { width: "100%", boxSizing: "border-box" };
         const lbl = { fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 4, display: "block" };
@@ -5225,8 +5226,7 @@ function DocsView({ state, up, accentColor, goFinance }) {
                 <div><label style={lbl}>Annual salary, gross (£)</label><input type="number" step="0.01" value={job.salary || ""} onChange={e => setJob({ salary: e.target.value })} placeholder="0.00" style={inp} /></div>
                 <div><label style={lbl}>Start date</label><input type="date" value={job.startDate || ""} onChange={e => setJob({ startDate: e.target.value })} style={inp} /></div>
                 <div><label style={lbl}>Tax code</label><input value={job.taxCode || ""} onChange={e => setJob({ taxCode: e.target.value })} placeholder="1257L" style={inp} /></div>
-                <div><label style={lbl}>Pension (salary sacrifice) %</label><input type="number" step="0.1" value={job.pensionPct || ""} onChange={e => setJob({ pensionPct: e.target.value })} placeholder="0" style={inp} /></div>
-                <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Student loan</label>
+                <div><label style={lbl}>Student loan</label>
                   <select value={job.studentLoan || "none"} onChange={e => setJob({ studentLoan: e.target.value })} style={inp}>
                     <option value="none">None</option>
                     {Object.entries(STUDENT_PLANS).filter(([k]) => k !== "none").map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
@@ -5240,8 +5240,7 @@ function DocsView({ state, up, accentColor, goFinance }) {
                   {[["Gross salary", th.gross, "var(--color-text-primary)", false],
                     ["Income tax", th.incomeTax, "#E24B4A", true],
                     ["National Insurance", th.ni, "#E24B4A", true],
-                    (th.studentLoan > 0 ? ["Student loan", th.studentLoan, "#E24B4A", true] : null),
-                    (th.pension > 0 ? ["Pension", th.pension, "#BA7517", true] : null)].filter(Boolean).map(([l, v, c, minus]) => (
+                    (th.studentLoan > 0 ? ["Student loan", th.studentLoan, "#E24B4A", true] : null)].filter(Boolean).map(([l, v, c, minus]) => (
                     <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>{l}</span>
                       <span style={{ fontWeight: 500, color: c }}>{minus ? "−" : ""}{fmtMoney(v)}</span>
@@ -5257,7 +5256,7 @@ function DocsView({ state, up, accentColor, goFinance }) {
                   </div>
                 </div>
               )}
-              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>This <b>net</b> figure is your base income in every month's Breakdown Plan, automatically. When your salary lands in transactions, anything over this amount is counted as additional income. Estimate uses 2024/25 rUK rates; Scotland has different bands. Pension treated as salary sacrifice (cuts tax &amp; NI).</div>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>This <b>net</b> figure is your base income in every month's Breakdown Plan, automatically. When your salary lands in transactions, anything over this amount is counted as additional income. Estimate uses 2024/25 rUK rates; Scotland has different bands. Your pension contributions are tracked on the <b>Pension</b> page and show as a commitment in the Breakdown Plan.</div>
             </div>
 
             {/* Contract key terms */}
@@ -5898,14 +5897,14 @@ function App({ user }) {
          <div key={view} className="view-enter">
 
           {/* Central home dashboard */}
-          {view === "home" && <HomeView state={state} accentColor={ac} setView={setView} onAddTask={saveTask} allTasks={allTasks} overdueTasks={overdueTasks} userName={displayName} />}
+          {view === "home" && <HomeView state={state} accentColor={ac} setView={setView} onAddTask={saveTask} allTasks={allTasks} overdueTasks={overdueTasks} userName={displayName} onOpenDates={() => { setView("today"); setTodayMode("dates"); }} />}
 
           {/* Today hub — List (Today + Unsorted + Upcoming) or Calendar */}
           {view === "today" && (
             <div>
               <PageHeader title="☀️ Your tasks" sub="Everything on your plate — schedule it, group it, or tick it off." />
               <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-                {[["list", "📋 List"], ["calendar", "🗓 Calendar"], ["groups", "📁 Groups"], ["done", "✓ Done"], ["insights", "📊 Insights"]].map(([m, l]) => (
+                {[["list", "📋 List"], ["calendar", "🗓 Calendar"], ["groups", "📁 Groups"], ["dates", "🎂 Dates"], ["done", "✓ Done"], ["insights", "📊 Insights"]].map(([m, l]) => (
                   <button key={m} onClick={() => setTodayMode(m)} style={{ fontSize: 13, padding: "7px 14px", borderRadius: 9, cursor: "pointer", border: "none", background: todayMode === m ? ac : "var(--color-background-secondary)", color: todayMode === m ? "#fff" : "var(--color-text-secondary)", fontWeight: todayMode === m ? 500 : 400 }}>{l}</button>
                 ))}
               </div>
@@ -6024,11 +6023,11 @@ function App({ user }) {
             </div>
           )}
 
-          {/* Important dates */}
-          {view === "important-dates" && (
+          {/* Important dates — now a sub-tab of Tasks */}
+          {view === "today" && todayMode === "dates" && (
             <div>
-              <PageHeader title="🎂 Important dates" sub="Birthdays, anniversaries and events — with their own to-do lists and budgets." />
-              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Birthdays, anniversaries and events — with their own to-do lists and budgets.</div>
                 <button onClick={() => setDateModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add date</button>
               </div>
               {state.importantDates.length === 0 && (
