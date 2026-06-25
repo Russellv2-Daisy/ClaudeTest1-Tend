@@ -2946,6 +2946,16 @@ function FinanceView({ state, up, accentColor }) {
   const subs = state.subscriptions || [];
   function saveSub(s) { up({ subscriptions: subs.some(x => x.id === s.id) ? subs.map(x => x.id === s.id ? s : x) : [...subs, s] }); setSubModal(null); }
   function deleteSub(id) { up({ subscriptions: subs.filter(s => s.id !== id) }); }
+  // A transaction "is" a tracked subscription/DD if its description matches a saved one by name.
+  const recurOf = t => {
+    const d = (t.description || "").trim().toLowerCase();
+    if (!d) return null;
+    return subs.find(s => { const n = (s.name || "").trim().toLowerCase(); return n && (d === n || (n.length >= 3 && (d.includes(n) || n.includes(d)))); }) || null;
+  };
+  // Open the Subscriptions/DDs editor pre-filled from a transaction (or its existing entry).
+  function flagRecurring(t) {
+    setSubModal(recurOf(t) || { name: t.description || "", amount: t.amount, day: Math.min(28, Math.max(1, parseInt((t.date || "").slice(8, 10), 10) || 1)), categoryId: t.categoryId || "", kind: "subscription" });
+  }
   const debts = state.debts || [];
   function saveDebt(dt) { up({ debts: debts.some(x => x.id === dt.id) ? debts.map(x => x.id === dt.id ? dt : x) : [...debts, dt] }); setDebtModal(null); }
   function deleteDebt(id) { if (confirm("Delete this debt?")) up({ debts: debts.filter(d => d.id !== id) }); }
@@ -3979,11 +3989,13 @@ function FinanceView({ state, up, accentColor }) {
             {list.map(t => {
               const c = catById(t.categoryId);
               const income = t.type === "income";
+              const recur = income ? null : recurOf(t);
+              const isDD = recur && recur.kind === "directDebit";
               return (
-                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: "var(--color-background-primary)", borderRadius: 10, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 7 }}>
-                  <span style={{ fontSize: 20, width: 26, textAlign: "center" }}>{income ? "💰" : (c?.emoji || "❓")}</span>
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: recur ? hex2rgba(ac, 0.06) : "var(--color-background-primary)", borderRadius: 10, border: `0.5px solid ${recur ? hex2rgba(ac, 0.4) : "var(--color-border-tertiary)"}`, marginBottom: 7 }}>
+                  <span style={{ fontSize: 20, width: 26, textAlign: "center" }}>{income ? "💰" : recur ? (isDD ? "🏦" : "🔁") : (c?.emoji || "❓")}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (income ? "Income" : "Transaction")}{t.workExpense && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#378ADD", 0.14), color: "#378ADD", padding: "1px 7px", borderRadius: 10 }}>💼 {t.reimbursed ? "reimbursed" : "expense"}</span>}{t.reimbursement && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#1D9E75", 0.14), color: "#1D9E75", padding: "1px 7px", borderRadius: 10 }}>↩️ reimbursement</span>}</div>
+                    <div style={{ fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (income ? "Income" : "Transaction")}{recur && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba(ac, 0.14), color: ac, padding: "1px 7px", borderRadius: 10 }}>{isDD ? "🏦 Direct debit" : "🔁 Subscription"}</span>}{t.workExpense && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#378ADD", 0.14), color: "#378ADD", padding: "1px 7px", borderRadius: 10 }}>💼 {t.reimbursed ? "reimbursed" : "expense"}</span>}{t.reimbursement && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#1D9E75", 0.14), color: "#1D9E75", padding: "1px 7px", borderRadius: 10 }}>↩️ reimbursement</span>}</div>
                     <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{fmtDate(t.date)}{t.source === "manual" ? "" : " · 🏦"}</div>
                   </div>
                   {!income && (
@@ -3993,6 +4005,7 @@ function FinanceView({ state, up, accentColor }) {
                     </select>
                   )}
                   <div style={{ fontSize: 14, fontWeight: 600, color: income ? "#1D9E75" : "var(--color-text-primary)", width: 84, textAlign: "right" }}>{income ? "+" : "−"}{fmtMoney(t.amount)}</div>
+                  {!income && <button onClick={() => flagRecurring(t)} title={recur ? "Edit this tracked payment" : "Mark as a subscription or direct debit"} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "2px 4px", opacity: recur ? 1 : 0.55 }}>🔁</button>}
                   <button onClick={() => setTxnModal(t)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "2px 4px" }}>✏️</button>
                   <button onClick={() => deleteTxn(t.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "2px 4px" }}>🗑</button>
                 </div>
