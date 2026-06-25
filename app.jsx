@@ -81,6 +81,8 @@ function ord(n) { const v = n % 100; const s = ["th", "st", "nd", "rd"]; return 
 function fmtLongDate(d) { const x = d instanceof Date ? d : (d ? new Date(d + "T00:00:00") : new Date()); return x.toLocaleDateString("en-GB", { weekday: "long" }) + " " + ord(x.getDate()) + " " + x.toLocaleDateString("en-GB", { month: "long", year: "numeric" }); }
 // "29th May" — day with ordinal + full month, for pay-period ranges.
 function fmtDM(d) { if (!d) return ""; const x = new Date(d + "T00:00:00"); return ord(x.getDate()) + " " + x.toLocaleDateString("en-GB", { month: "long" }); }
+// "29th May 2026" — same, with the year, so older periods read unambiguously.
+function fmtDMY(d) { if (!d) return ""; const x = new Date(d + "T00:00:00"); return ord(x.getDate()) + " " + x.toLocaleDateString("en-GB", { month: "long", year: "numeric" }); }
 // 24-hour clock, e.g. "14:05".
 function fmtTime24(d) { return (d instanceof Date ? d : new Date()).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }); }
 function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T00:00:00") - new Date(new Date().toDateString())) / 86400000); }
@@ -1315,6 +1317,29 @@ function ukTakeHome(annualGross, opts) {
   const net = gross - incomeTax - ni - studentLoan - pension;
   return { gross, allowance: pa, incomeTax, ni, studentLoan, pension, net, netMonthly: net / 12, grossMonthly: gross / 12 };
 }
+
+// Your base monthly take-home from the Job page — the static salary that flows into
+// every month's budget automatically. 0 when no salary is set there.
+function jobNetMonthly(state) {
+  const job = (state || {}).job || {};
+  if (!(Number(job.salary) > 0)) return 0;
+  const th = ukTakeHome(job.salary, { taxCode: job.taxCode, pensionPct: job.pensionPct, studentLoan: job.studentLoan });
+  return Math.round(th.netMonthly * 100) / 100;
+}
+
+// Spot the salary credit among a month's income transactions: prefer ones whose
+// description names the employer or reads like pay, else the single largest credit.
+// Returns the biggest matching credit (your pay packet), 0 if none.
+function detectSalaryReceived(txns, state) {
+  const job = (state || {}).job || {};
+  const emp = (job.employer || "").toLowerCase().trim();
+  const inc = (txns || []).filter(t => t.type === "income" && !t.reimbursement);
+  if (!inc.length) return 0;
+  const kws = ["salary", "wage", "payroll", "paye", emp].filter(Boolean);
+  const matched = inc.filter(t => { const d = (t.description || "").toLowerCase(); return kws.some(k => k && d.includes(k)); });
+  const pool = matched.length ? matched : inc;
+  return pool.reduce((m, t) => Math.max(m, Number(t.amount) || 0), 0);
+}
 function monthShort(k) { const [y, m] = k.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "short" }); }
 // Pure year/month arithmetic — no Date object, so timezone can never shift the result.
 function shiftMonth(k, delta) { const [y, m] = k.split("-").map(Number); const t = y * 12 + (m - 1) + delta; return Math.floor(t / 12) + "-" + String((t % 12) + 1).padStart(2, "0"); }
@@ -1407,7 +1432,7 @@ function payPeriodBounds(payday, anchor, offset) {
     const back = (d.getDay() - w + 7) % 7; d.setDate(d.getDate() - back + offset * 7);
     const from = ymdLocal(d), to = addDaysStr(from, 6);
     // Payday-to-next-payday so the boundaries read clearly, e.g. "29th May to 5th June".
-    return { from, to, label: `${fmtDM(from)} to ${fmtDM(addDaysStr(from, 7))}` };
+    return { from, to, label: `${fmtDMY(from)} to ${fmtDMY(addDaysStr(from, 7))}` };
   }
   if (payday.type === "lastWeekday") {
     const w = Number(payday.day); // 0=Sun..6=Sat
@@ -1418,7 +1443,7 @@ function payPeriodBounds(payday, anchor, offset) {
     start = lastOf(start.getFullYear(), start.getMonth() + offset);
     const next = lastOf(start.getFullYear(), start.getMonth() + 1);
     // Show the actual paydays at each end, e.g. "29th May to 29th June".
-    return { from: ymdLocal(start), to: addDaysStr(ymdLocal(next), -1), label: `${fmtDM(ymdLocal(start))} to ${fmtDM(ymdLocal(next))}` };
+    return { from: ymdLocal(start), to: addDaysStr(ymdLocal(next), -1), label: `${fmtDMY(ymdLocal(start))} to ${fmtDMY(ymdLocal(next))}` };
   }
   const day = Math.min(28, Math.max(1, Number(payday.day) || 1));
   const d = new Date(anchor + "T00:00:00");
@@ -1428,7 +1453,7 @@ function payPeriodBounds(payday, anchor, offset) {
   const next = new Date(start.getFullYear(), start.getMonth() + 1, day);
   const endD = new Date(next); endD.setDate(endD.getDate() - 1);
   const from = ymdLocal(start), to = ymdLocal(endD);
-  return { from, to, label: `${fmtDM(from)} to ${fmtDM(ymdLocal(next))}` };
+  return { from, to, label: `${fmtDMY(from)} to ${fmtDMY(ymdLocal(next))}` };
 }
 // One month's report snapshot (persisted so it survives the 6-month txn prune).
 // Current net worth (assets − debts) from today's balances. Used for the home
@@ -1659,7 +1684,7 @@ function monthStats(state, mk) {
   });
 
   const byCat = {};
-  let plannedTotal = 0, manualActualTotal = 0;
+  let plannedTotal = 0, manualActualTotal = 0, variablePlanned = 0;
   cats.forEach(c => {
     let itemsPlanned = 0, manualActual = 0;
     (c.items || []).forEach(it => {
@@ -1672,8 +1697,13 @@ function monthStats(state, mk) {
     const planned = itemsPlanned + autoSum; // task/date costs add to projected
     const spent = txnByCat[c.id] != null ? txnByCat[c.id] : manualActual; // txns override manual
     byCat[c.id] = { planned, itemsPlanned, autoSum, auto, manualActual, spent };
-    plannedTotal += planned; manualActualTotal += manualActual;
+    plannedTotal += planned; manualActualTotal += manualActual; variablePlanned += itemsPlanned;
   });
+
+  // Subscriptions & direct debits (managed on their own tab) are recurring outgoings —
+  // fold them into the projected plan so the totals and forecast actually include them.
+  const subsTotal = (state.subscriptions || []).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  plannedTotal += subsTotal;
 
   // Auto commitments pulled from the Savings & Debts / Pension tabs (made there first).
   const savingsContrib = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.contribution) || 0), 0);
@@ -1681,14 +1711,56 @@ function monthStats(state, mk) {
   const pensionContrib = pensionMonthlyContribution(state);
   const commitments = savingsContrib + debtPayments + pensionContrib;
   plannedTotal += commitments;
+  // Money set aside rather than spent (savings transfers + pension) — kept separate so
+  // the plan can show projected *expenses* distinctly from savings commitments.
+  const savingsCommitments = savingsContrib + pensionContrib;
+  const expensesTotal = plannedTotal - savingsCommitments;
 
-  const incomeKeys = ["income", "income2", "extra"];
-  const incomeProjected = incomeKeys.reduce((s, k) => s + (Number((plan[k] || {}).projected) || 0), 0);
-  const incomeManualActual = incomeKeys.reduce((s, k) => s + (Number((plan[k] || {}).actual) || 0), 0);
-  const incomeActual = txnIncome > 0 ? txnIncome : incomeManualActual;
+  // Base salary is set once on the Job page and flows into every month automatically.
+  // Only fall back to a manually-typed main-income figure if no Job salary exists.
+  const jobNet = jobNetMonthly(state);
+  const baseIncome = jobNet > 0 ? jobNet : (Number((plan.income || {}).projected) || 0);
+  const incomeProjected = baseIncome + (Number((plan.income2 || {}).projected) || 0) + (Number((plan.extra || {}).projected) || 0);
+  const incomeManualActual = ["income", "income2", "extra"].reduce((s, k) => s + (Number((plan[k] || {}).actual) || 0), 0);
+  const hasTxnIncome = txnIncome > 0;
+  const incomeActual = hasTxnIncome ? txnIncome : incomeManualActual;
+  // Transactions notice the salary landing: anything over the expected base take-home
+  // is treated as additional (bonus / overtime / back-pay) income for the month.
+  const salaryReceived = detectSalaryReceived(txns, state);
+  const bonusIncome = (salaryReceived > 0 && baseIncome > 0) ? Math.max(0, salaryReceived - baseIncome) : 0;
   const spend = cats.reduce((s, c) => s + byCat[c.id].spent, 0);
 
-  return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, spend, plannedTotal, manualActualTotal, savingsContrib, debtPayments, pensionContrib, commitments, reimbursementIncome, workExpenseSpend, salaryIncome: Math.max(0, incomeActual - reimbursementIncome) };
+  return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, jobNet, baseIncome, hasTxnIncome, salaryReceived, expectedSalary: baseIncome, bonusIncome, spend, plannedTotal, manualActualTotal, variablePlanned, subsTotal, savingsCommitments, expensesTotal, savingsContrib, debtPayments, pensionContrib, commitments, reimbursementIncome, workExpenseSpend, salaryIncome: Math.max(0, incomeActual - reimbursementIncome) };
+}
+
+// Days in a given month key ("2026-06" → 30).
+function daysInMonthOf(mk) { const [y, m] = mk.split("-").map(Number); return new Date(y, m, 0).getDate(); }
+
+// The fixed, recurring outgoings that leave your current account every month —
+// subscriptions & direct debits, savings transfers, debt repayments and insurance.
+// Pension is excluded (it comes out of pay before it reaches the account). Each item
+// carries a keyword so the forecast can spot when it has already been paid this month.
+function recurringFixed(state) {
+  const out = [];
+  (state.subscriptions || []).forEach(s => { const a = Number(s.amount) || 0; if (a > 0) out.push({ label: s.name, amount: a, kw: s.name, kind: s.kind === "directDebit" ? "directDebit" : "subscription" }); });
+  (state.savingsAccounts || []).forEach(a => { const c = Number(a.contribution) || 0; if (c > 0) out.push({ label: a.name, amount: c, kw: a.name, kind: "savings" }); });
+  (state.debts || []).forEach(d => { const pl = debtPlan(d); const a = pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0); if (a > 0) out.push({ label: d.name, amount: a, kw: d.name, kind: "debt" }); });
+  (state.insurance || []).forEach(p => { const a = insMonthly(p); if (a > 0) out.push({ label: p.type, amount: a, kw: p.provider || p.type, kind: "insurance" }); });
+  return out;
+}
+
+// Split a month's spending into the recurring fixed part (matched against real
+// transactions by name) and the variable, day-to-day rest. Drives the predictive
+// cash-flow forecast: fixed bills still to come are added on top of your spending pace.
+function cashflowParts(state, mk, fixed) {
+  fixed = fixed || recurringFixed(state);
+  const monthTxns = (state.transactions || []).filter(t => t.type !== "income" && (t.date || "").slice(0, 7) === mk);
+  // All money out this month (categorised or not) — what actually left the account.
+  const spend = monthTxns.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+  const matchPaid = kw => { kw = (kw || "").toLowerCase().trim(); if (!kw) return 0; return monthTxns.filter(t => (t.description || "").toLowerCase().includes(kw)).reduce((s, t) => s + (Number(t.amount) || 0), 0); };
+  const fixedTotal = fixed.reduce((s, f) => s + f.amount, 0);
+  const fixedPaid = fixed.reduce((s, f) => s + Math.min(f.amount, matchPaid(f.kw)), 0);
+  return { fixedTotal, fixedPaid, unpaidFixed: Math.max(0, fixedTotal - fixedPaid), variableSpent: Math.max(0, spend - fixedPaid), spend };
 }
 
 // Best-effort, offline plan parser ("groceries 100, fuel 80, spotify 13, income 2289").
@@ -1891,7 +1963,7 @@ const FINANCE_TABS = [
   { id: "savings", icon: "🐖", label: "Savings & Debts" },
   { id: "investments", icon: "💹", label: "Investments" },
   { id: "pension", icon: "🏖", label: "Pension" },
-  { id: "subs", icon: "🔁", label: "Subscriptions" },
+  { id: "subs", icon: "🔁", label: "Subscriptions & DDs" },
   { id: "trends", icon: "📈", label: "Reports & Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
   { id: "credit", icon: "📊", label: "Credit score" },
@@ -2147,16 +2219,24 @@ function InsuranceModal({ policy, cats, accentColor, onSave, onClose }) {
 }
 
 function SubModal({ sub, cats, accentColor, onSave, onClose }) {
-  const [s, setS] = useState({ name: "", amount: "", day: 1, categoryId: "", ...(sub || {}) });
+  const [s, setS] = useState({ name: "", amount: "", day: 1, categoryId: "", kind: "subscription", ...(sub || {}) });
   const up = (k, v) => setS(x => ({ ...x, [k]: v }));
   const ac = accentColor;
+  const isDD = s.kind === "directDebit";
   return (
     <Modal onClose={onClose} width={380}>
-      <ModalHeader title={sub?.id ? "Edit subscription" : "New subscription"} onClose={onClose} />
-      <Field label="Name"><input placeholder="e.g. Spotify" value={s.name} onChange={e => up("name", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} autoFocus /></Field>
+      <ModalHeader title={sub?.id ? "Edit recurring payment" : "New recurring payment"} onClose={onClose} />
+      <Field label="Type">
+        <div style={{ display: "flex", gap: 8 }}>
+          {[["subscription", "🔁 Subscription"], ["directDebit", "🏦 Direct debit"]].map(([k, l]) => (
+            <button key={k} type="button" onClick={() => up("kind", k)} style={{ flex: 1, fontSize: 12.5, padding: "8px 10px", borderRadius: 9, cursor: "pointer", border: "none", background: s.kind === k ? ac : "var(--color-background-secondary)", color: s.kind === k ? "#fff" : "var(--color-text-secondary)", fontWeight: s.kind === k ? 500 : 400 }}>{l}</button>
+          ))}
+        </div>
+      </Field>
+      <Field label="Name"><input placeholder={isDD ? "e.g. Money to Mum, Council tax" : "e.g. Spotify"} value={s.name} onChange={e => up("name", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} autoFocus /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Amount / month (£)"><input type="number" step="0.01" placeholder="0.00" value={s.amount} onChange={e => up("amount", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
-        <Field label="Billing day"><input type="number" min="1" max="28" placeholder="1" value={s.day} onChange={e => up("day", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label={isDD ? "Payment day" : "Billing day"}><input type="number" min="1" max="28" placeholder="1" value={s.day} onChange={e => up("day", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} /></Field>
       </div>
       <Field label="Category">
         <select value={s.categoryId || ""} onChange={e => up("categoryId", e.target.value)} style={{ width: "100%" }}>
@@ -2166,7 +2246,7 @@ function SubModal({ sub, cats, accentColor, onSave, onClose }) {
       </Field>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (s.name.trim()) onSave({ id: sub?.id || genId(), name: s.name.trim(), amount: parseFloat(s.amount) || 0, day: Math.min(28, Math.max(1, parseInt(s.day, 10) || 1)), categoryId: s.categoryId }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{sub?.id ? "Save" : "Add"}</button>
+        <button onClick={() => { if (s.name.trim()) onSave({ id: sub?.id || genId(), name: s.name.trim(), amount: parseFloat(s.amount) || 0, day: Math.min(28, Math.max(1, parseInt(s.day, 10) || 1)), categoryId: s.categoryId, kind: s.kind === "directDebit" ? "directDebit" : "subscription" }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{sub?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -2340,9 +2420,12 @@ function NetWorth({ state, up, accentColor }) {
   );
 }
 
-// "Will my money last the month?" — fully automatic. Uses this month's income
-// (plan or actual) as the pot, your spend so far, and a spend rate that starts
-// from your PLAN and switches to your ACTUAL pace as the month progresses.
+// "Will my money last the month?" — fully automatic and predictive. Splits the month
+// into VARIABLE day-to-day spending (projected from your actual pace, falling back to
+// last month, then your plan) and FIXED bills still to come (subscriptions, direct
+// debits, savings, debt, insurance that haven't been paid yet). Adding the unpaid
+// fixed commitments on top of your spending pace means the whole breakdown plan is
+// factored in — a big direct debit late in the month no longer gets missed.
 // Recomputed from today's date on every open, so it moves day to day.
 function CashFlowForecast({ state, accentColor }) {
   const ac = accentColor;
@@ -2353,28 +2436,40 @@ function CashFlowForecast({ state, accentColor }) {
   const dayOfMonth = now.getDate();
   const daysLeft = Math.max(0, daysInMonth - dayOfMonth);
   const income = st.incomeActual > 0 ? st.incomeActual : st.incomeProjected;
-  const spentSoFar = st.spend;
-  const plannedDaily = st.plannedTotal > 0 ? st.plannedTotal / daysInMonth : 0;
-  const actualDaily = dayOfMonth > 0 ? spentSoFar / dayOfMonth : 0;
-  // Lean on the plan early on; switch to your real pace once a few days of
-  // spending have landed this month.
-  const haveActual = spentSoFar > 0 && dayOfMonth >= 3;
-  const dailyRate = haveActual ? actualDaily : plannedDaily;
-  const projRemaining = dailyRate * daysLeft;
+
+  // Fixed vs variable split for this month, plus last month as a pace baseline.
+  const fixed = recurringFixed(state);
+  const cur = cashflowParts(state, mk, fixed);
+  const spentSoFar = cur.spend;
+  const prevKey = shiftMonth(mk, -1);
+  const prevParts = cashflowParts(state, prevKey, fixed);
+  const prevVariableDaily = prevParts.variableSpent > 0 ? prevParts.variableSpent / daysInMonthOf(prevKey) : 0;
+
+  // Variable pace: your real pace once a few days have landed, else last month's pace,
+  // else the plan's discretionary budget spread across the month.
+  const haveActual = cur.variableSpent > 0 && dayOfMonth >= 3;
+  const planDaily = st.variablePlanned > 0 ? st.variablePlanned / daysInMonth : 0;
+  const source = haveActual ? "live" : prevVariableDaily > 0 ? "lastmonth" : "plan";
+  const variableDaily = source === "live" ? cur.variableSpent / dayOfMonth : source === "lastmonth" ? prevVariableDaily : planDaily;
+  const variableRemaining = variableDaily * daysLeft;
+  const unpaidFixed = cur.unpaidFixed;
+
+  const projRemaining = variableRemaining + unpaidFixed;
   const projTotalSpend = spentSoFar + projRemaining;
   const projEnd = income - projTotalSpend;
-  const weekly = dailyRate * 7;
+  const weekly = variableDaily * 7;
   const weeksLeft = Math.max(1, Math.round(daysLeft / 7));
   const col = projEnd >= 0 ? "#1D9E75" : "#E24B4A";
   const lastDay = fmtShort(`${mk}-${String(daysInMonth).padStart(2, "0")}`);
   const noIncome = income <= 0;
+  const sourceLabel = source === "live" ? "live · from your spending" : source === "lastmonth" ? "from last month's pace" : "from your plan";
   return (
     <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
         <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>🔮 Cash flow forecast</div>
-        <span style={{ fontSize: 10.5, background: hex2rgba(ac, 0.12), color: ac, padding: "2px 8px", borderRadius: 10 }}>{haveActual ? "live · from your spending" : "from your plan"}</span>
+        <span style={{ fontSize: 10.5, background: hex2rgba(ac, 0.12), color: ac, padding: "2px 8px", borderRadius: 10 }}>{sourceLabel}</span>
       </div>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Updates automatically each day — starts from your plan, then tracks your actual spending as the month goes on.</div>
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Predicts your month-end balance from your spending pace plus every bill, subscription &amp; direct debit still to come.</div>
 
       {noIncome ? (
         <div style={{ fontSize: 13, color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", borderRadius: 10, padding: "12px 14px" }}>
@@ -2388,14 +2483,15 @@ function CashFlowForecast({ state, accentColor }) {
               <div style={{ fontSize: 28, fontWeight: 700, color: col }}>{fmtMoney(projEnd)}</div>
               <div style={{ fontSize: 11.5, color: col, marginTop: 2 }}>{projEnd >= 0 ? `on track — about ${fmtMoney(projEnd, true)} spare 🎉` : `heading for a ${fmtMoney(Math.abs(projEnd), true)} shortfall — trim ~${fmtMoney(Math.abs(projEnd) / weeksLeft, true)}/week`}</div>
             </div>
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.7 }}>
               <div>Income this month <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(income, true)}</b></div>
               <div>− Spent so far ({dayOfMonth}d) <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(spentSoFar, true)}</b></div>
-              <div>− Projected rest ({daysLeft}d) <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(projRemaining, true)}</b></div>
+              <div>− Day-to-day rest ({daysLeft}d) <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(variableRemaining, true)}</b></div>
+              <div>− Bills &amp; DDs to come <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(unpaidFixed, true)}</b></div>
             </div>
           </div>
           <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>
-            Spending about <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(weekly, true)}/week</b> ({fmtMoney(dailyRate, true)}/day) with {daysLeft} day{daysLeft !== 1 ? "s" : ""} left. On this pace you'll spend {fmtMoney(projTotalSpend, true)} vs your {fmtMoney(st.plannedTotal, true)} plan.
+            Day-to-day pace about <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(weekly, true)}/week</b> ({fmtMoney(variableDaily, true)}/day){unpaidFixed > 0 ? <> with <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(unpaidFixed, true)}</b> of fixed bills still due</> : ""}. On this path you'll spend {fmtMoney(projTotalSpend, true)} vs your {fmtMoney(st.plannedTotal, true)} plan.
           </div>
           <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 6 }}>🔒 Based on your plan &amp; transactions now; will use your live bank balance once it's linked.</div>
         </>
@@ -2490,76 +2586,9 @@ function PageHeader({ title, sub }) {
   );
 }
 
-// ── Tend Wrapped: a full-screen, story-style recap of one month ──────────────
-function MonthStory({ state, mk, onClose }) {
-  const r = computeMonthReport(state, mk);
-  const st = monthStats(state, mk);
-  const cats = state.financeCategories || [];
-  let topCat = null, topSpent = 0;
-  cats.forEach(c => { const sp = (st.byCat[c.id] || {}).spent || 0; if (sp > topSpent) { topSpent = sp; topCat = c; } });
-  const tasksDone = (state.tasks || []).filter(t => t.done && (t.completedDate || "").slice(0, 7) === mk).length;
-  const slides = [
-    { eyebrow: monthLabel(mk), text: "Your month,", sub: "the story ✨", color: "#cfc8e8" },
-    { eyebrow: "Came in", money: r.income, sub: "of income", color: "#4ad2a0" },
-    { eyebrow: "Went out", money: r.actual, sub: topCat ? `most of it on ${topCat.emoji} ${topCat.name}` : "in spending", color: "#e2954b" },
-    r.saved > 0
-      ? { eyebrow: "The verdict", money: r.saved, sub: "saved this month 🎉", color: "#4ad2a0", confetti: true }
-      : { eyebrow: "The verdict", text: "No surplus", sub: "next month is a fresh page", color: "#e2724b" },
-    { eyebrow: "Net worth", money: r.netWorth || 0, sub: "where you stand", color: "#d8b25a" },
-    tasksDone > 0 ? { eyebrow: "Tasks tended", text: String(tasksDone), sub: `task${tasksDone !== 1 ? "s" : ""} completed`, color: "#9b8cff" } : null,
-    { eyebrow: "Keep tending", text: "🌱", sub: "See you next month.", color: "#cfc8e8", last: true },
-  ].filter(Boolean);
-  const [idx, setIdx] = useState(0);
-  const s = slides[idx];
-  // Auto-advance like a story; stop on the last slide.
-  useEffect(() => {
-    if (idx >= slides.length - 1) return;
-    const t = setTimeout(() => setIdx(i => i + 1), 3600);
-    return () => clearTimeout(t);
-  }, [idx, slides.length]);
-  useEffect(() => { if (s && s.confetti) window.dispatchEvent(new CustomEvent("tend:celebrate")); }, [idx]);
-  useEffect(() => {
-    const h = e => { if (e.key === "Escape") onClose(); if (e.key === "ArrowRight") setIdx(i => Math.min(slides.length - 1, i + 1)); if (e.key === "ArrowLeft") setIdx(i => Math.max(0, i - 1)); };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [slides.length, onClose]);
-  const zoneClick = e => {
-    const x = e.clientX / window.innerWidth;
-    if (x < 0.34) setIdx(i => Math.max(0, i - 1));
-    else idx < slides.length - 1 ? setIdx(idx + 1) : onClose();
-  };
-  return (
-    <div onClick={zoneClick} style={{ position: "fixed", inset: 0, zIndex: 2600, cursor: "pointer", color: "#f2eefb", background: "radial-gradient(60% 50% at 72% 14%, rgba(120,96,220,0.30), transparent 70%), radial-gradient(52% 46% at 22% 86%, rgba(64,170,200,0.24), transparent 72%), #0b0a16", overflow: "hidden" }}>
-      {/* stars */}
-      <div style={{ position: "absolute", inset: 0, pointerEvents: "none", backgroundImage: "radial-gradient(1.5px 1.5px at 20% 26%, #fff, transparent), radial-gradient(1.1px 1.1px at 64% 64%, #d9d2ff, transparent), radial-gradient(1.6px 1.6px at 84% 20%, #fff, transparent), radial-gradient(1.1px 1.1px at 38% 82%, #cfe0ff, transparent)", backgroundSize: "340px 340px", backgroundRepeat: "repeat", opacity: 0.7 }} />
-      <div style={{ position: "absolute", inset: "-20%", pointerEvents: "none", background: "radial-gradient(40% 36% at 60% 40%, rgba(185,137,47,0.13), transparent 70%)", animation: "tendAurora 26s ease-in-out infinite alternate" }} />
-      {/* progress bars */}
-      <div style={{ position: "absolute", top: 0, left: 0, right: 0, display: "flex", gap: 6, padding: "16px 18px" }}>
-        {slides.map((_, i) => (
-          <div key={i} style={{ flex: 1, height: 3, borderRadius: 3, background: "rgba(255,255,255,0.22)", overflow: "hidden" }}>
-            <div style={{ height: "100%", borderRadius: 3, background: "#fff", width: i < idx ? "100%" : "0%", animation: i === idx && idx < slides.length - 1 ? "storyFill 3600ms linear forwards" : "none" }} />
-          </div>
-        ))}
-      </div>
-      <button onClick={e => { e.stopPropagation(); onClose(); }} style={{ position: "absolute", top: 30, right: 18, background: "rgba(255,255,255,0.12)", border: "none", color: "#fff", width: 34, height: 34, borderRadius: "50%", fontSize: 16, zIndex: 2 }}>✕</button>
-      {/* slide */}
-      <div key={idx} style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "0 28px" }}>
-        <div className="story-el" style={{ fontFamily: "var(--font-mono)", fontSize: 12, textTransform: "uppercase", letterSpacing: "0.22em", color: "rgba(255,255,255,0.55)", marginBottom: 18 }}>{s.eyebrow}</div>
-        <div className="story-el" style={{ animationDelay: "0.12s", fontFamily: "var(--font-display)", fontSize: s.money != null ? 72 : 56, fontWeight: 700, lineHeight: 1.05, color: s.color, textShadow: `0 0 44px ${hex2rgba(s.color && s.color[0] === "#" ? s.color : "#9b8cff", 0.45)}` }}>
-          {s.money != null ? <CountMoney amount={s.money} /> : s.text}
-        </div>
-        <div className="story-el" style={{ animationDelay: "0.26s", fontSize: 16.5, color: "rgba(255,255,255,0.75)", marginTop: 16, maxWidth: 420, lineHeight: 1.5 }}>{s.sub}</div>
-        {s.last && <button onClick={e => { e.stopPropagation(); onClose(); }} className="story-el" style={{ animationDelay: "0.4s", marginTop: 30, padding: "11px 26px", borderRadius: 24, border: "1px solid rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: 14, fontWeight: 600 }}>Done</button>}
-      </div>
-      <div style={{ position: "absolute", bottom: 16, left: 0, right: 0, textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 10, color: "rgba(255,255,255,0.4)" }}>tap right to continue · tap left to go back</div>
-    </div>
-  );
-}
-
 // Saved monthly report snapshots (forecast vs actual, saved, debt, gifts).
 function MonthlyReports({ state }) {
   const [showAll, setShowAll] = useState(false);
-  const [storyMk, setStoryMk] = useState(null);
   const merged = { ...(state.monthlyReports || {}) };
   const recent = new Set((state.transactions || []).map(t => (t.date || "").slice(0, 7)).filter(Boolean));
   recent.add(curMonthKey());
@@ -2576,14 +2605,6 @@ function MonthlyReports({ state }) {
   const idxOf = mk => allKeys.indexOf(mk);
   return (
     <div>
-      {storyMk && <MonthStory state={state} mk={storyMk} onClose={() => setStoryMk(null)} />}
-
-      {/* Tend Wrapped — play the latest month as a story. */}
-      <button onClick={() => setStoryMk(allKeys[0])} style={{ width: "100%", marginBottom: 14, padding: "13px 18px", borderRadius: 16, border: "none", cursor: "pointer", background: "linear-gradient(95deg, var(--accent), var(--gilt))", color: "#fff", fontSize: 14, fontWeight: 700, letterSpacing: "0.01em", boxShadow: "0 10px 26px -10px var(--accent-soft), var(--shadow-md)", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
-        <span style={{ fontSize: 16 }}>▶</span> Play {monthLabel(allKeys[0])} — Tend Wrapped
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.1em", background: "rgba(255,255,255,0.22)", padding: "3px 8px", borderRadius: 10 }}>new</span>
-      </button>
-
       {/* Surplus trend strip — at-a-glance shape of the months. */}
       {sparks.length >= 2 && (
         <div style={{ background: "var(--color-background-primary)", borderRadius: 18, padding: "16px 18px", border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, overflow: "hidden" }}>
@@ -2965,7 +2986,26 @@ function FinanceView({ state, up, accentColor }) {
               <div style={{ width: 96, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Actual</div>
               <div style={{ width: 94 }} />
             </div>
-            {[["income", "Main income / salary"], ["income2", "Second income"], ["extra", "Other (benefits, etc.)"]].map(([f, label]) => (
+            {/* Main income / salary — base figure comes from the Job page, static across months. */}
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ flex: 1, fontSize: 13 }}>Main income / salary {stats.jobNet > 0 && <span style={{ fontSize: 10, background: hex2rgba(ac, 0.12), color: ac, padding: "1px 7px", borderRadius: 10 }}>from Job page</span>}</div>
+              {stats.jobNet > 0
+                ? <div style={{ width: 96, textAlign: "right", fontSize: 13, fontWeight: 500 }}>{fmtMoney(stats.jobNet)}</div>
+                : <MoneyCell value={(stats.plan.income || {}).projected} onChange={v => setIncomeField("income", "projected", v)} />}
+              {stats.hasTxnIncome
+                ? <div style={{ width: 96, textAlign: "right", fontSize: 13, color: "#1D9E75" }} title="Detected from your transactions">{fmtMoney(stats.salaryReceived)}</div>
+                : <MoneyCell value={(stats.plan.income || {}).actual} onChange={v => setIncomeField("income", "actual", v)} />}
+              <div style={{ width: 94 }} />
+            </div>
+            {stats.bonusIncome > 0 && (
+              <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ flex: 1, fontSize: 13, color: "var(--color-text-secondary)" }}>➕ Additional income <span style={{ fontSize: 10, background: hex2rgba("#1D9E75", 0.14), color: "#1D9E75", padding: "1px 7px", borderRadius: 10 }}>over salary · auto</span></div>
+                <div style={{ width: 96, textAlign: "right", fontSize: 13, color: "var(--color-text-secondary)" }}>—</div>
+                <div style={{ width: 96, textAlign: "right", fontSize: 13, color: "#1D9E75", fontWeight: 500 }}>{fmtMoney(stats.bonusIncome)}</div>
+                <div style={{ width: 94 }} />
+              </div>
+            )}
+            {[["income2", "Second income"], ["extra", "Other (benefits, etc.)"]].map(([f, label]) => (
               <div key={f} style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
                 <div style={{ flex: 1, fontSize: 13 }}>{label}</div>
                 <MoneyCell value={(stats.plan[f] || {}).projected} onChange={v => setIncomeField(f, "projected", v)} />
@@ -2974,11 +3014,12 @@ function FinanceView({ state, up, accentColor }) {
               </div>
             ))}
             <div style={{ display: "flex", alignItems: "center", marginTop: 10, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", fontWeight: 600, fontSize: 13 }}>
-              <div style={{ flex: 1 }}>Total monthly income</div>
+              <div style={{ flex: 1 }}>Total monthly income {stats.hasTxnIncome && <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)" }}>actual from transactions</span>}</div>
               <div style={{ width: 96, textAlign: "right", color: "#1D9E75" }}>{fmtMoney(stats.incomeProjected)}</div>
-              <div style={{ width: 96, textAlign: "right", color: "#1D9E75" }}>{fmtMoney(stats.incomeManualActual)}</div>
+              <div style={{ width: 96, textAlign: "right", color: "#1D9E75" }}>{fmtMoney(stats.incomeActual)}</div>
               <div style={{ width: 94 }} />
             </div>
+            {stats.jobNet <= 0 && <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 8 }}>💡 Set your salary on the <b>Job</b> page (Documents) and it'll fill in here automatically, every month.</div>}
           </div>
 
           {/* Commitments pulled automatically from the other tabs — projected vs actual */}
@@ -2989,7 +3030,7 @@ function FinanceView({ state, up, accentColor }) {
               ...savings.filter(a => Number(a.contribution) > 0).map(a => ({ icon: "🐖", label: a.name, projected: Number(a.contribution) || 0, kw: a.name })),
               ...debts.map(d => { const pl = debtPlan(d); return { icon: "💳", label: d.name, projected: pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0), kw: d.name }; }).filter(x => x.projected > 0),
               ...insurance.map(p => ({ icon: insIcon(p.type), label: `${p.type}${p.provider ? " · " + p.provider : ""}`, projected: insMonthly(p), kw: p.provider || p.type })).filter(x => x.projected > 0),
-              ...subs.map(s => ({ icon: "🔁", label: s.name, projected: Number(s.amount) || 0, kw: s.name })).filter(x => x.projected > 0),
+              ...subs.map(s => ({ icon: s.kind === "directDebit" ? "🏦" : "🔁", label: s.name, projected: Number(s.amount) || 0, kw: s.name })).filter(x => x.projected > 0),
             ];
             if (!items.length) return null;
             return (
@@ -2999,7 +3040,7 @@ function FinanceView({ state, up, accentColor }) {
                   <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Projected</div>
                   <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Actual</div>
                 </div>
-                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>From your Savings &amp; Debts, Insurance and Subscriptions. Actual fills in when a matching transaction appears — “pending” until then.</div>
+                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>From your Savings &amp; Debts, Insurance and Subscriptions &amp; direct debits. Actual fills in when a matching transaction appears — “pending” until then.</div>
                 {items.map((it, i) => { const actual = matchActual(it.kw); return (
                   <div key={i} style={{ display: "flex", alignItems: "center", fontSize: 13, padding: "4px 0" }}>
                     <span style={{ flex: 1, color: "var(--color-text-secondary)" }}>{it.icon} {it.label}</span>
@@ -3073,14 +3114,18 @@ function FinanceView({ state, up, accentColor }) {
 
           {/* Totals + balance */}
           <div style={{ background: hex2rgba(ac, 0.06), borderRadius: 12, padding: 18, border: `1px solid ${hex2rgba(ac, 0.25)}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><span>Total projected cost</span><b>{fmtMoney(stats.plannedTotal)}</b></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><span>Total projected expenses <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>money spent</span></span><b>{fmtMoney(stats.expensesTotal)}</b></div>
+            {stats.savingsCommitments > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8, color: "var(--color-text-secondary)" }}><span>🐖 Savings commitments <span style={{ fontSize: 11 }}>set aside, not spent</span></span><b style={{ color: "#1D9E75" }}>{fmtMoney(stats.savingsCommitments)}</b></div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8, paddingTop: 8, borderTop: "0.5px solid var(--color-border-tertiary)" }}><span>Total projected outgoings</span><b>{fmtMoney(stats.plannedTotal)}</b></div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}><span>Total actual cost</span><b>{fmtMoney(stats.manualActualTotal)}</b></div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, marginBottom: 8 }}>
               <span title="Set at the top of this page">🛟 Safety buffer</span>
               <b>{fmtMoney(Number(state.safetyBuffer) || 0)}</b>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, paddingTop: 10, borderTop: `0.5px solid ${hex2rgba(ac, 0.25)}` }}><span style={{ fontWeight: 600 }}>Projected balance <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)" }}>after buffer</span></span><b style={{ color: (stats.incomeProjected - stats.plannedTotal - (Number(state.safetyBuffer) || 0)) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeProjected - stats.plannedTotal - (Number(state.safetyBuffer) || 0))}</b></div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginTop: 8 }}><span style={{ fontWeight: 600 }}>Actual balance</span><b style={{ color: (stats.incomeManualActual - stats.manualActualTotal) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeManualActual - stats.manualActualTotal)}</b></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginTop: 8 }}><span style={{ fontWeight: 600 }}>Actual balance</span><b style={{ color: (stats.incomeActual - stats.manualActualTotal) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(stats.incomeActual - stats.manualActualTotal)}</b></div>
           </div>
         </div>
       )}
@@ -3509,44 +3554,48 @@ function FinanceView({ state, up, accentColor }) {
       {tab === "subs" && (() => {
         const ymd = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
         const nextFromDay = day => { const t = new Date(); t.setHours(0, 0, 0, 0); const mk2 = (yy, mm) => { const dim = new Date(yy, mm + 1, 0).getDate(); return new Date(yy, mm, Math.min(day || 1, dim)); }; let d = mk2(t.getFullYear(), t.getMonth()); if (d < t) d = mk2(t.getFullYear(), t.getMonth() + 1); return ymd(d); };
-        const manual = subs.map(s => ({ id: s.id, name: s.name, amount: Number(s.amount) || 0, next: nextFromDay(Number(s.day) || 1), categoryId: s.categoryId, auto: false }));
+        const manual = subs.map(s => ({ id: s.id, name: s.name, amount: Number(s.amount) || 0, next: nextFromDay(Number(s.day) || 1), categoryId: s.categoryId, kind: s.kind === "directDebit" ? "directDebit" : "subscription", auto: false }));
         const dismissed = state.dismissedSubs || [];
-        const auto = detectSubscriptions(state).filter(a => !manual.some(m => m.name.toLowerCase() === a.name.toLowerCase()) && !dismissed.includes(a.name.toLowerCase())).map(a => ({ id: "auto_" + a.name, name: a.name, amount: a.amount, next: a.lastDate ? (() => { const d = new Date(a.lastDate + "T00:00:00"); d.setMonth(d.getMonth() + 1); return ymd(d); })() : "", categoryId: a.categoryId, auto: true }));
+        const auto = detectSubscriptions(state).filter(a => !manual.some(m => m.name.toLowerCase() === a.name.toLowerCase()) && !dismissed.includes(a.name.toLowerCase())).map(a => ({ id: "auto_" + a.name, name: a.name, amount: a.amount, next: a.lastDate ? (() => { const d = new Date(a.lastDate + "T00:00:00"); d.setMonth(d.getMonth() + 1); return ymd(d); })() : "", categoryId: a.categoryId, kind: "subscription", auto: true }));
         const items = [...manual, ...auto].sort((x, y) => (x.next || "z").localeCompare(y.next || "z"));
         const totalM = items.reduce((s, i) => s + i.amount, 0);
+        const subsM = items.filter(i => i.kind !== "directDebit").reduce((s, i) => s + i.amount, 0);
+        const ddM = items.filter(i => i.kind === "directDebit").reduce((s, i) => s + i.amount, 0);
         return (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Recurring payments — auto-detected from transactions plus any you add.</div>
-              <button onClick={() => setSubModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Subscription</button>
+              <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Subscriptions &amp; direct debits — auto-detected from transactions plus any you add. All feed into your Breakdown Plan and cash-flow forecast.</div>
+              <button onClick={() => setSubModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Add</button>
             </div>
             {items.length === 0 ? (
               <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
                 <div style={{ fontSize: 38, marginBottom: 12 }}>🔁</div>
-                <div style={{ fontSize: 14, marginBottom: 6 }}>No subscriptions found yet</div>
-                <div style={{ fontSize: 12, marginBottom: 16 }}>Add one, or import transactions so we can spot recurring payments.</div>
-                <button onClick={() => setSubModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a subscription</button>
+                <div style={{ fontSize: 14, marginBottom: 6 }}>No subscriptions or direct debits yet</div>
+                <div style={{ fontSize: 12, marginBottom: 16 }}>Add one — a subscription like Spotify, or a direct debit like money to family — or import transactions so we can spot recurring payments.</div>
+                <button onClick={() => setSubModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a payment</button>
               </div>
             ) : (
               <>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
-                  <StatCard label="Per month" value={fmtMoney(totalM)} color={ac} />
-                  <StatCard label="Per year" value={fmtMoney(totalM * 12)} color="#E24B4A" sub="potential saving if cancelled" />
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 14 }}>
+                  <StatCard label="Per month" value={fmtMoney(totalM)} color={ac} sub={`${fmtMoney(totalM * 12, true)}/yr`} />
+                  <StatCard label="Subscriptions" value={fmtMoney(subsM)} color="#E24B4A" sub="potential saving if cancelled" />
+                  <StatCard label="Direct debits" value={fmtMoney(ddM)} color="var(--color-text-primary)" sub="committed outgoings" />
                   <StatCard label="Active" value={String(items.length)} color="var(--color-text-primary)" sub="recurring payments" />
                 </div>
                 {items.map(it => {
                   const c = cats.find(x => x.id === it.categoryId);
+                  const isDD = it.kind === "directDebit";
                   return (
                     <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: "var(--color-background-primary)", borderRadius: 10, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 7 }}>
-                      <span style={{ fontSize: 20, width: 26, textAlign: "center" }}>{c?.emoji || "🔁"}</span>
+                      <span style={{ fontSize: 20, width: 26, textAlign: "center" }}>{c?.emoji || (isDD ? "🏦" : "🔁")}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 14, fontWeight: 500 }}>{it.name} {it.auto && <span style={{ fontSize: 10, background: hex2rgba(ac, 0.12), color: ac, padding: "1px 7px", borderRadius: 10 }}>auto</span>}</div>
+                        <div style={{ fontSize: 14, fontWeight: 500 }}>{it.name} <span style={{ fontSize: 10, background: isDD ? hex2rgba("#888", 0.18) : hex2rgba(ac, 0.12), color: isDD ? "var(--color-text-secondary)" : ac, padding: "1px 7px", borderRadius: 10 }}>{isDD ? "direct debit" : "subscription"}</span> {it.auto && <span style={{ fontSize: 10, background: hex2rgba(ac, 0.12), color: ac, padding: "1px 7px", borderRadius: 10 }}>auto</span>}</div>
                         <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{it.next ? `next ~${fmtShort(it.next)}` : "—"} · {fmtMoney(it.amount * 12, true)}/yr</div>
                       </div>
                       <div style={{ fontSize: 14, fontWeight: 600, width: 90, textAlign: "right" }}>{fmtMoney(it.amount)}<span style={{ fontSize: 11, color: "var(--color-text-secondary)", fontWeight: 400 }}>/mo</span></div>
                       {!it.auto && <button onClick={() => setSubModal(subs.find(s => s.id === it.id))} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>✏️</button>}
                       {!it.auto && <button onClick={() => deleteSub(it.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>🗑</button>}
-                      {it.auto && <button onClick={() => setSubModal({ name: it.name, amount: it.amount, day: 1, categoryId: it.categoryId })} title="Save as tracked subscription" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>＋</button>}
+                      {it.auto && <button onClick={() => setSubModal({ name: it.name, amount: it.amount, day: 1, categoryId: it.categoryId, kind: "subscription" })} title="Save as tracked payment" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>＋</button>}
                       {it.auto && <button onClick={() => { if (confirm(`Dismiss "${it.name}"? It won't show as a detected subscription anymore.`)) up({ dismissedSubs: [...(state.dismissedSubs || []), it.name.toLowerCase()] }); }} title="Dismiss this detected subscription" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13 }}>🗑</button>}
                     </div>
                   );
@@ -5057,17 +5106,6 @@ function DocsView({ state, up, accentColor, goFinance }) {
   function deletePayslip(id) { setJob({ payslips: payslips.filter(x => x.id !== id) }); }
   function saveP60(s) { setJob({ p60s: p60s.some(x => x.id === s.id) ? p60s.map(x => x.id === s.id ? s : x) : [...p60s, s] }); setPayDocModal(null); }
   function deleteP60(id) { setJob({ p60s: p60s.filter(x => x.id !== id) }); }
-  function useSalaryAsIncome() {
-    if (!(Number(job.salary) > 0)) return alert("Add your annual salary first.");
-    const th = ukTakeHome(job.salary, { taxCode: job.taxCode, pensionPct: job.pensionPct, studentLoan: job.studentLoan });
-    const monthly = Math.round(th.netMonthly * 100) / 100;
-    const mk = curMonthKey();
-    const plans = { ...(state.financePlans || {}) };
-    const cur = plans[mk] || {};
-    plans[mk] = { ...cur, income: { ...(cur.income || {}), projected: monthly } };
-    up({ financePlans: plans });
-    alert(`Set ${fmtMoney(monthly)} as this month's projected income (net take-home after tax, NI${(Number(job.pensionPct) > 0) ? ", pension" : ""}${job.studentLoan && job.studentLoan !== "none" ? ", student loan" : ""}).`);
-  }
   function addPensionReview() { addReminder({ id: "pension_review", title: "🏖 Review pension annual statement", priority: "medium", groupId: "", deadline: fyEndDate(), scheduledDate: fyEndDate(), notes: "Check this year's pension statement — contributions, growth, charges.", tags: [], subtasks: [], someday: false, repeat: "yearly", duration: "", cost: "", costCategory: "", done: false }); }
   function addKeyTermsReview() { addReminder({ id: "job_keyterms_review", title: "💼 Review employment contract key terms", priority: "low", groupId: "", deadline: fyEndDate(), scheduledDate: fyEndDate(), notes: "Notice period, benefits, restrictive covenants, salary review.", tags: [], subtasks: [], someday: false, repeat: "yearly", duration: "", cost: "", costCategory: "", done: false }); }
 
@@ -5171,11 +5209,11 @@ function DocsView({ state, up, accentColor, goFinance }) {
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, flexWrap: "wrap" }}>
                     <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", flex: 1, minWidth: 160 }}>Personal allowance used: {fmtMoney(th.allowance, true)}{th.allowance < UK_TAX.paBase ? " (tapered over £100k)" : ""}.</div>
-                    <button onClick={useSalaryAsIncome} style={{ fontSize: 12.5, padding: "7px 14px", borderRadius: 9, cursor: "pointer", background: ac, color: "#fff", border: "none", fontWeight: 500 }}>Use take-home as this month's income →</button>
+                    <span style={{ fontSize: 11.5, padding: "6px 12px", borderRadius: 9, background: hex2rgba("#1D9E75", 0.12), color: "#1D9E75", fontWeight: 500 }}>✓ Auto-used as your monthly income</span>
                   </div>
                 </div>
               )}
-              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>Your budget's projected income pulls from the <b>net</b> figure here. Estimate uses 2024/25 rUK rates; Scotland has different bands. Pension treated as salary sacrifice (cuts tax &amp; NI).</div>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>This <b>net</b> figure is your base income in every month's Breakdown Plan, automatically. When your salary lands in transactions, anything over this amount is counted as additional income. Estimate uses 2024/25 rUK rates; Scotland has different bands. Pension treated as salary sacrifice (cuts tax &amp; NI).</div>
             </div>
 
             {/* Contract key terms */}
