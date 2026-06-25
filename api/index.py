@@ -56,7 +56,9 @@ async def _unhandled(request: Request, exc: Exception):
     # in-app message is actionable (the front-end reads `detail`). Include the
     # throwing location to make diagnosis quick.
     tb = traceback.extract_tb(exc.__traceback__)
-    where = " <- ".join(f"{f.name}:{f.lineno}" for f in tb[-3:]) if tb else "?"
+    ours = [f for f in tb if f.filename.endswith("index.py")]
+    frames = ours[-2:] or tb[-2:]
+    where = " <- ".join(f"{f.name}:{f.lineno}" for f in frames) if frames else "?"
     return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc} [{where}]"})
 
 
@@ -134,15 +136,25 @@ async def db_delete(user_id: str, provider: str):
 
 # ── Lunch Flow (Lloyds + any UK/EU bank the user links inside Lunch Flow) ──────
 async def lunchflow_get(api_key: str, path: str):
-    async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get(f"{LUNCHFLOW_BASE}{path}", headers={"x-api-key": api_key})
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+        r = await c.get(f"{LUNCHFLOW_BASE}{path}",
+                        headers={"x-api-key": api_key, "Accept": "application/json"})
     if r.status_code in (401, 403):
         raise HTTPException(status_code=400, detail="Invalid Lunch Flow API key")
     if r.status_code == 429:
         raise HTTPException(status_code=429, detail="Lunch Flow rate limit — try again shortly")
     if r.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"Lunch Flow {path} → {r.status_code}")
-    return r.json() if r.content else {}
+        raise HTTPException(status_code=502, detail=f"Lunch Flow {path} → {r.status_code}: {r.text[:160]}")
+    if not r.content:
+        return {}
+    try:
+        return r.json()
+    except Exception:
+        # Non-JSON (e.g. an HTML page) means the URL/route is wrong — show what
+        # came back so we can fix the base URL or path.
+        ct = r.headers.get("content-type", "?")
+        raise HTTPException(status_code=502,
+                            detail=f"Lunch Flow {path} returned non-JSON [{ct}] at {LUNCHFLOW_BASE}: {r.text[:160]}")
 
 
 def _lf_list(data, *keys):
