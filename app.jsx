@@ -1277,7 +1277,7 @@ function monthLabel(k) { const [y, m] = k.split("-").map(Number); return new Dat
 // for every £2 over £100,000 (gone by £125,140); 20% basic, 40% higher, 45%
 // additional, with band tops measured on total income (£50,270 / £125,140).
 // National Insurance: employee Class 1 — 8% between £12,570 and £50,270, 2% above.
-// Optional salary-sacrifice pension (cuts tax + NI) and a student-loan plan.
+// Optional pension (relief-at-source / net-pay / salary-sacrifice) and a student-loan plan.
 const UK_TAX = {
   paBase: 12570, paTaperStart: 100000,
   basicTop: 50270, higherTop: 125140,
@@ -1300,20 +1300,29 @@ function paFromTaxCode(code) {
 function ukTakeHome(annualGross, opts) {
   opts = opts || {};
   const gross = Math.max(0, Number(annualGross) || 0);
-  const pensionPct = Math.max(0, Number(opts.pensionPct) || 0);
-  const pension = gross * (pensionPct / 100);
-  const adj = Math.max(0, gross - pension); // salary-sacrifice: pension is pre-tax & pre-NI
+  // Pension can be given as an absolute annual amount or a % of gross.
+  const pension = opts.pensionAnnual != null
+    ? Math.min(gross, Math.max(0, Number(opts.pensionAnnual) || 0))
+    : gross * (Math.max(0, Number(opts.pensionPct) || 0) / 100);
+  // How the contribution affects tax & NI:
+  //  • "source" (relief at source, the auto-enrolment default): taken from net pay —
+  //    tax & NI are unchanged, your bank pay just drops by the full contribution.
+  //  • "netpay": taken from pay before tax (but not NI) — lowers taxable pay only.
+  //  • "sacrifice": taken before tax AND NI — lowers both.
+  const method = opts.pensionMethod || "source";
+  const taxBase = (method === "sacrifice" || method === "netpay") ? Math.max(0, gross - pension) : gross;
+  const niBase = method === "sacrifice" ? Math.max(0, gross - pension) : gross;
   let pa = paFromTaxCode(opts.taxCode);
-  if (adj > UK_TAX.paTaperStart) pa = Math.max(0, pa - (adj - UK_TAX.paTaperStart) / 2);
+  if (taxBase > UK_TAX.paTaperStart) pa = Math.max(0, pa - (taxBase - UK_TAX.paTaperStart) / 2);
   let incomeTax = 0;
-  incomeTax += Math.max(0, Math.min(adj, UK_TAX.basicTop) - pa) * UK_TAX.rBasic;
-  incomeTax += Math.max(0, Math.min(adj, UK_TAX.higherTop) - UK_TAX.basicTop) * UK_TAX.rHigher;
-  incomeTax += Math.max(0, adj - UK_TAX.higherTop) * UK_TAX.rAdd;
+  incomeTax += Math.max(0, Math.min(taxBase, UK_TAX.basicTop) - pa) * UK_TAX.rBasic;
+  incomeTax += Math.max(0, Math.min(taxBase, UK_TAX.higherTop) - UK_TAX.basicTop) * UK_TAX.rHigher;
+  incomeTax += Math.max(0, taxBase - UK_TAX.higherTop) * UK_TAX.rAdd;
   let ni = 0;
-  ni += Math.max(0, Math.min(adj, UK_TAX.niUEL) - UK_TAX.niPT) * UK_TAX.niMain;
-  ni += Math.max(0, adj - UK_TAX.niUEL) * UK_TAX.niUpper;
+  ni += Math.max(0, Math.min(niBase, UK_TAX.niUEL) - UK_TAX.niPT) * UK_TAX.niMain;
+  ni += Math.max(0, niBase - UK_TAX.niUEL) * UK_TAX.niUpper;
   const plan = STUDENT_PLANS[opts.studentLoan];
-  const studentLoan = plan ? Math.max(0, adj - plan.threshold) * plan.rate : 0;
+  const studentLoan = plan ? Math.max(0, niBase - plan.threshold) * plan.rate : 0;
   const net = gross - incomeTax - ni - studentLoan - pension;
   return { gross, allowance: pa, incomeTax, ni, studentLoan, pension, net, netMonthly: net / 12, grossMonthly: gross / 12 };
 }
@@ -1323,7 +1332,7 @@ function ukTakeHome(annualGross, opts) {
 function jobNetMonthly(state) {
   const job = (state || {}).job || {};
   if (!(Number(job.salary) > 0)) return 0;
-  const th = ukTakeHome(job.salary, { taxCode: job.taxCode, studentLoan: job.studentLoan });
+  const th = ukTakeHome(job.salary, jobTakeHomeOpts(state));
   return Math.round(th.netMonthly * 100) / 100;
 }
 
@@ -1531,6 +1540,23 @@ function pensionMonthlyContribution(state) {
   return pensionList(state).filter(p => p.type !== "state" && p.contributing !== false)
     .reduce((s, p) => s + ((Number(p.salary) || 0) * (Number(p.employeePct) || 0) / 100) / 12, 0);
 }
+// How your contributions are taken (drives the tax/NI treatment in the take-home calc).
+// Uses the first contributing private pension; falls back to relief-at-source.
+function pensionMethodOf(state) {
+  const p = pensionList(state).find(p => p.type !== "state" && p.contributing !== false);
+  return (p && p.taxRelief) || "source";
+}
+// The options bundle for the Job-page take-home: tax code, student loan, and the
+// real pension contribution so the figure equals what actually lands in the bank.
+function jobTakeHomeOpts(state) {
+  const job = (state || {}).job || {};
+  return {
+    taxCode: job.taxCode,
+    studentLoan: job.studentLoan,
+    pensionAnnual: pensionMonthlyContribution(state) * 12,
+    pensionMethod: pensionMethodOf(state),
+  };
+}
 // How many years a pot lasts drawing `annualDraw`, compounding at `growthPct`.
 function potLastsYears(pot, annualDraw, growthPct) {
   pot = Number(pot) || 0; annualDraw = Number(annualDraw) || 0;
@@ -1721,12 +1747,14 @@ function monthStats(state, mk) {
   // Auto commitments pulled from the Savings & Debts / Pension tabs (made there first).
   const savingsContrib = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.contribution) || 0), 0);
   const debtPayments = (state.debts || []).reduce((s, d) => { const pl = debtPlan(d); return s + (pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0)); }, 0);
-  const pensionContrib = pensionMonthlyContribution(state);
-  const commitments = savingsContrib + debtPayments + pensionContrib;
+  // Pension is taken straight from your pay (never reaches the account), so it's already
+  // reflected in the take-home base income above — it must NOT be a budget outgoing too,
+  // or it would be double-counted.
+  const commitments = savingsContrib + debtPayments;
   plannedTotal += commitments;
-  // Money set aside rather than spent (savings transfers + pension) — kept separate so
-  // the plan can show projected *expenses* distinctly from savings commitments.
-  const savingsCommitments = savingsContrib + pensionContrib;
+  // Money set aside rather than spent (savings transfers) — kept separate so the plan
+  // can show projected *expenses* distinctly from savings commitments.
+  const savingsCommitments = savingsContrib;
   const expensesTotal = plannedTotal - savingsCommitments;
 
   // Base salary is set once on the Job page and flows into every month automatically.
@@ -1743,7 +1771,7 @@ function monthStats(state, mk) {
   const bonusIncome = (salaryReceived > 0 && baseIncome > 0) ? Math.max(0, salaryReceived - baseIncome) : 0;
   const spend = cats.reduce((s, c) => s + byCat[c.id].spent, 0);
 
-  return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, jobNet, baseIncome, hasTxnIncome, salaryReceived, expectedSalary: baseIncome, bonusIncome, spend, plannedTotal, manualActualTotal, variablePlanned, subsTotal, savingsCommitments, expensesTotal, savingsContrib, debtPayments, pensionContrib, commitments, reimbursementIncome, workExpenseSpend, salaryIncome: Math.max(0, incomeActual - reimbursementIncome) };
+  return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, jobNet, baseIncome, hasTxnIncome, salaryReceived, expectedSalary: baseIncome, bonusIncome, spend, plannedTotal, manualActualTotal, variablePlanned, subsTotal, savingsCommitments, expensesTotal, savingsContrib, debtPayments, commitments, reimbursementIncome, workExpenseSpend, salaryIncome: Math.max(0, incomeActual - reimbursementIncome) };
 }
 
 // Days in a given month key ("2026-06" → 30).
@@ -2912,14 +2940,14 @@ function FinanceView({ state, up, accentColor }) {
                     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>💸 Safe to spend this month</div>
                     <div style={{ background: hex2rgba(col, 0.08), border: `1px solid ${hex2rgba(col, 0.3)}`, borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                       <div style={{ flex: 1, minWidth: 180 }}>
-                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Free to spend after plan, savings, debts &amp; pension</div>
+                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Free to spend after plan, savings &amp; debts</div>
                         <div style={{ fontSize: 28, fontWeight: 700, color: col }}>{fmtMoney(safe)}</div>
                         <div style={{ fontSize: 11.5, color: col, marginTop: 2 }}>{safe >= 0 ? "free to spend 🎉" : "over budget — trim the plan"}</div>
                       </div>
                       <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
                         <div>Income <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(expIncome, true)}</b></div>
                         <div>− Planned outgoings <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(stats.plannedTotal - stats.commitments, true)}</b></div>
-                        {stats.commitments > 0 && <div>− Savings/debt/pension <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(stats.commitments, true)}</b></div>}
+                        {stats.commitments > 0 && <div>− Savings &amp; debt <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(stats.commitments, true)}</b></div>}
                         {buffer > 0 && <div>− Safety buffer <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(buffer, true)}</b></div>}
                       </div>
                     </div>
@@ -3045,7 +3073,7 @@ function FinanceView({ state, up, accentColor }) {
               ...debts.map(d => { const pl = debtPlan(d); return { icon: "💳", label: d.name, projected: pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0), kw: d.name }; }).filter(x => x.projected > 0),
               ...insurance.map(p => ({ icon: insIcon(p.type), label: `${p.type}${p.provider ? " · " + p.provider : ""}`, projected: insMonthly(p), kw: p.provider || p.type })).filter(x => x.projected > 0),
               ...subs.map(s => ({ icon: s.kind === "directDebit" ? "🏦" : "🔁", label: s.name, projected: Number(s.amount) || 0, kw: s.name })).filter(x => x.projected > 0),
-              ...pensionList(state).filter(p => p.type !== "state" && p.contributing !== false).map(p => ({ icon: "🏖", label: `Pension${p.name ? " · " + p.name : ""}`, projected: (Number(p.salary) || 0) * (Number(p.employeePct) || 0) / 100 / 12, kw: p.name || "pension" })).filter(x => x.projected > 0),
+              // Pension is deducted from pay (already in take-home), so it's not listed here.
             ];
             if (!items.length) return null;
             return (
@@ -3055,7 +3083,7 @@ function FinanceView({ state, up, accentColor }) {
                   <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Projected</div>
                   <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Actual</div>
                 </div>
-                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>From your Savings &amp; Debts, Pension, Insurance and Subscriptions &amp; direct debits. Actual fills in when a matching transaction appears — “pending” until then.</div>
+                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>From your Savings &amp; Debts, Insurance and Subscriptions &amp; direct debits. Actual fills in when a matching transaction appears — “pending” until then.</div>
                 {items.map((it, i) => { const actual = matchActual(it.kw); return (
                   <div key={i} style={{ display: "flex", alignItems: "center", fontSize: 13, padding: "4px 0" }}>
                     <span style={{ flex: 1, color: "var(--color-text-secondary)" }}>{it.icon} {it.label}</span>
@@ -3150,7 +3178,7 @@ function FinanceView({ state, up, accentColor }) {
                 <div style={groupLabel}>Projected this month</div>
                 {line("Income", fmtMoney(stats.incomeProjected), { color: "#1D9E75" })}
                 {line("− Expenses", fmtMoney(stats.expensesTotal), { hint: "money spent" })}
-                {stats.savingsCommitments > 0 && line("− Savings & pension", fmtMoney(stats.savingsCommitments), { hint: "set aside, not spent" })}
+                {stats.savingsCommitments > 0 && line("− Savings", fmtMoney(stats.savingsCommitments), { hint: "set aside, not spent" })}
                 {buffer > 0 && line("− Safety buffer", fmtMoney(buffer), { hint: "held back", muted: true })}
                 {balRow("Projected balance left", projBal)}
 
@@ -3561,6 +3589,15 @@ function FinanceView({ state, up, accentColor }) {
                     {pfld(p, "Annual salary (£)", "salary", { ph: "e.g. 35000" })}
                     {p.contributing !== false && pfld(p, "Your contribution (%)", "employeePct", { ph: "e.g. 5" })}
                     {p.contributing !== false && pfld(p, "Employer match (%)", "employerPct", { ph: "e.g. 3" })}
+                    {p.contributing !== false && (
+                      <Field label="How it's taken">
+                        <select value={p.taxRelief || "source"} onChange={e => setPensionById(p.id, "taxRelief", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }}>
+                          <option value="source">Relief at source (from take-home)</option>
+                          <option value="netpay">Net pay (before tax)</option>
+                          <option value="sacrifice">Salary sacrifice (before tax & NI)</option>
+                        </select>
+                      </Field>
+                    )}
                     {pfld(p, "Growth (%/yr)", "growthPct", { ph: "e.g. 5" })}
                     {pfld(p, "Inflation (%/yr)", "inflationPct", { ph: "e.g. 2.5" })}
                   </div>
@@ -5206,7 +5243,7 @@ function DocsView({ state, up, accentColor, goFinance }) {
 
       {/* ── Job ── */}
       {tab === "job" && (() => {
-        const th = ukTakeHome(job.salary, { taxCode: job.taxCode, studentLoan: job.studentLoan });
+        const th = ukTakeHome(job.salary, jobTakeHomeOpts(state));
         const hasSalary = Number(job.salary) > 0;
         const inp = { width: "100%", boxSizing: "border-box" };
         const lbl = { fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 4, display: "block" };
@@ -5240,7 +5277,8 @@ function DocsView({ state, up, accentColor, goFinance }) {
                   {[["Gross salary", th.gross, "var(--color-text-primary)", false],
                     ["Income tax", th.incomeTax, "#E24B4A", true],
                     ["National Insurance", th.ni, "#E24B4A", true],
-                    (th.studentLoan > 0 ? ["Student loan", th.studentLoan, "#E24B4A", true] : null)].filter(Boolean).map(([l, v, c, minus]) => (
+                    (th.studentLoan > 0 ? ["Student loan", th.studentLoan, "#E24B4A", true] : null),
+                    (th.pension > 0 ? ["Pension contribution", th.pension, "#E24B4A", true] : null)].filter(Boolean).map(([l, v, c, minus]) => (
                     <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" }}>
                       <span style={{ color: "var(--color-text-secondary)" }}>{l}</span>
                       <span style={{ fontWeight: 500, color: c }}>{minus ? "−" : ""}{fmtMoney(v)}</span>
@@ -5256,7 +5294,7 @@ function DocsView({ state, up, accentColor, goFinance }) {
                   </div>
                 </div>
               )}
-              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>This <b>net</b> figure is your base income in every month's Breakdown Plan, automatically. When your salary lands in transactions, anything over this amount is counted as additional income. Estimate uses 2024/25 rUK rates; Scotland has different bands. Your pension contributions are tracked on the <b>Pension</b> page and show as a commitment in the Breakdown Plan.</div>
+              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>This <b>net</b> figure is your base income in every month's Breakdown Plan, automatically. When your salary lands in transactions, anything over this amount is counted as additional income. Estimate uses 2024/25 rUK rates; Scotland has different bands. Your pension contribution (set on the <b>Pension</b> page) is deducted here so this matches what reaches your bank — it's not also counted as a separate outgoing.</div>
             </div>
 
             {/* Contract key terms */}
