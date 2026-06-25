@@ -1912,15 +1912,18 @@ function BarsChart({ data, height = 150, money }) {
 
 // ── Finance: modals ──────────────────────────────────────────────────────────
 
-function TxnModal({ txn, cats, accentColor, onSave, onClose }) {
+function TxnModal({ txn, cats, accentColor, onSave, onClose, recurKind, onRecur }) {
   const spend = cats.filter(c => c.kind !== "income");
   const defaults = { date: todayStr(), amount: "", description: "", type: "spend", categoryId: spend[0]?.id || "" };
   const [t, setT] = useState({ ...defaults, ...(txn || {}) });
+  const [recur, setRecur] = useState(recurKind || "");
   const up = (k, v) => setT(p => ({ ...p, [k]: v }));
   function save() {
     const amt = parseFloat(t.amount);
     if (!amt || amt <= 0) return alert("Enter an amount greater than zero.");
-    onSave({ ...t, id: t.id || genId(), amount: Math.round(amt * 100) / 100, source: t.source || "manual" });
+    const built = { ...t, id: t.id || genId(), amount: Math.round(amt * 100) / 100, source: t.source || "manual" };
+    onSave(built);
+    if (onRecur) onRecur(t.type === "spend" ? recur : "", { name: built.description, amount: built.amount, day: Math.min(28, Math.max(1, parseInt((built.date || "").slice(8, 10), 10) || 1)), categoryId: built.categoryId });
   }
   return (
     <Modal onClose={onClose} width={400}>
@@ -1948,6 +1951,16 @@ function TxnModal({ txn, cats, accentColor, onSave, onClose }) {
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer", marginTop: 2 }}>
           <input type="checkbox" checked={!!t.workExpense} onChange={e => up("workExpense", e.target.checked)} /> 💼 Work expense — I expect this back
         </label>
+      )}
+      {t.type === "spend" && (
+        <Field label="Recurring payment">
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["", "One-off"], ["subscription", "🔁 Subscription"], ["directDebit", "🏦 Direct debit"]].map(([v, l]) => (
+              <button key={v} onClick={() => setRecur(v)} style={{ flex: 1, padding: "7px 4px", borderRadius: 8, border: `1.5px solid ${recur === v ? accentColor : "var(--color-border-tertiary)"}`, background: recur === v ? hex2rgba(accentColor, 0.1) : "transparent", color: recur === v ? accentColor : "var(--color-text-secondary)", fontSize: 11.5, fontWeight: recur === v ? 500 : 400, cursor: "pointer" }}>{l}</button>
+            ))}
+          </div>
+          {recur && <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 6 }}>Tracked in <b>Subscriptions &amp; DDs</b> and counted in your plan. Other “{t.description || "this"}” transactions get flagged too.</div>}
+        </Field>
       )}
       {t.type === "income" && (
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer", marginTop: 2 }}>
@@ -2956,6 +2969,15 @@ function FinanceView({ state, up, accentColor }) {
   function flagRecurring(t) {
     setSubModal(recurOf(t) || { name: t.description || "", amount: t.amount, day: Math.min(28, Math.max(1, parseInt((t.date || "").slice(8, 10), 10) || 1)), categoryId: t.categoryId || "", kind: "subscription" });
   }
+  const sameName = (a, b) => (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
+  const recurKindOf = desc => (subs.find(s => sameName(s.name, desc)) || {}).kind || "";
+  // From the transaction editor: create / update / remove the matching tracked payment.
+  function applyRecur(kind, info) {
+    const existing = subs.find(s => sameName(s.name, info.name));
+    if (!kind) { if (existing) up({ subscriptions: subs.filter(s => s.id !== existing.id) }); return; }
+    if (existing) up({ subscriptions: subs.map(s => s.id === existing.id ? { ...s, kind, amount: info.amount || s.amount, categoryId: info.categoryId || s.categoryId } : s) });
+    else up({ subscriptions: [...subs, { id: genId(), name: info.name, amount: info.amount, day: info.day, categoryId: info.categoryId, kind }] });
+  }
   const debts = state.debts || [];
   function saveDebt(dt) { up({ debts: debts.some(x => x.id === dt.id) ? debts.map(x => x.id === dt.id ? dt : x) : [...debts, dt] }); setDebtModal(null); }
   function deleteDebt(id) { if (confirm("Delete this debt?")) up({ debts: debts.filter(d => d.id !== id) }); }
@@ -3008,7 +3030,7 @@ function FinanceView({ state, up, accentColor }) {
 
   return (
     <div style={{ maxWidth: 880 }}>
-      {txnModal !== null && <TxnModal txn={txnModal === "new" ? null : txnModal} cats={cats} accentColor={ac} onSave={saveTxn} onClose={() => setTxnModal(null)} />}
+      {txnModal !== null && <TxnModal txn={txnModal === "new" ? null : txnModal} cats={cats} accentColor={ac} onSave={saveTxn} onClose={() => setTxnModal(null)} recurKind={txnModal && txnModal !== "new" ? recurKindOf(txnModal.description) : ""} onRecur={applyRecur} />}
       {catModal !== null && <FinanceCatModal cat={catModal === "new" ? null : catModal} accentColor={ac} onSave={saveCat} onClose={() => setCatModal(null)} />}
       {savModal !== null && <SavingsModal account={savModal === "new" ? null : savModal} accentColor={ac} onSave={saveSav} onClose={() => setSavModal(null)} />}
       {invModal !== null && <InvestmentModal holding={invModal === "new" ? null : invModal} accentColor={ac} onSave={saveInvestment} onClose={() => setInvModal(null)} />}
