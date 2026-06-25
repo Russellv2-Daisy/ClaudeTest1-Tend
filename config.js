@@ -17,5 +17,5 @@ window.TEND_CONFIG = {
   // The API runs ON THIS SAME VERCEL SITE at /api (see api/index.py + PHASE-B.md).
   // LEAVE BLANK to keep everything OFF (the app behaves exactly as today).
   // When you've added the Environment Variables in Vercel, switch this to "/api".
-  BACKEND_URL: "",
+  BACKEND_URL: "/api",
 };
