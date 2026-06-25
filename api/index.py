@@ -21,6 +21,7 @@ Vercel serves the ASGI `app` below; the vercel.json rewrite sends every
 /api/* request here. Routes are therefore defined WITH the /api prefix.
 """
 import os
+import re
 import time
 import uuid
 import datetime as dt
@@ -80,9 +81,12 @@ def _svc():
     return {"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"}
 
 
-async def db_get(query: str):
+async def db_get(filters: dict):
+    # Filters are passed as encoded query params (httpx percent-encodes the
+    # values) so untrusted input can never inject extra PostgREST operators.
+    params = {**filters, "select": "*"}
     async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.get(f"{SUPABASE_URL}/rest/v1/connections?{query}&select=*", headers=_svc())
+        r = await c.get(f"{SUPABASE_URL}/rest/v1/connections", headers=_svc(), params=params)
     r.raise_for_status()
     return r.json()
 
@@ -100,8 +104,8 @@ async def db_upsert(user_id: str, provider: str, fields: dict):
 
 async def db_delete(user_id: str, provider: str):
     async with httpx.AsyncClient(timeout=15) as c:
-        await c.delete(f"{SUPABASE_URL}/rest/v1/connections?user_id=eq.{user_id}&provider=eq.{provider}",
-                       headers=_svc())
+        await c.delete(f"{SUPABASE_URL}/rest/v1/connections", headers=_svc(),
+                       params={"user_id": f"eq.{user_id}", "provider": f"eq.{provider}"})
 
 
 # ── Enable Banking (Lloyds + Chase) ───────────────────────────────────────────
@@ -160,7 +164,7 @@ def health():
 async def connections(authorization: Optional[str] = Header(default=None)):
     uid = await current_user(authorization)
     out = []
-    for c in await db_get(f"user_id=eq.{uid}"):
+    for c in await db_get({"user_id": f"eq.{uid}"}):
         out.append({"provider": c.get("provider"),
                     "display_name": c.get("display_name") or c.get("provider"),
                     "connected": bool(c.get("session_id") or c.get("api_key")),
@@ -189,9 +193,12 @@ async def bank_auth(bank: str = "lloyds", authorization: Optional[str] = Header(
 
 @app.get("/api/bank/callback")
 async def bank_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
-    if error or not code or not state:
+    # `state` is generated server-side as uuid4().hex; reject anything that
+    # isn't exactly 32 hex chars so the (unauthenticated) callback can't be used
+    # to inject PostgREST operators and target another user's row.
+    if error or not code or not state or not re.fullmatch(r"[0-9a-f]{32}", state):
         return RedirectResponse(f"{APP_URL}/?bank=error")
-    rows = await db_get(f"state=eq.{state}")
+    rows = await db_get({"state": f"eq.{state}"})
     if not rows:
         return RedirectResponse(f"{APP_URL}/?bank=error")
     conn = rows[0]
@@ -210,7 +217,7 @@ async def bank_transactions(days: int = 90, authorization: Optional[str] = Heade
     uid = await current_user(authorization)
     date_from = (dt.date.today() - dt.timedelta(days=days)).isoformat()
     out = []
-    for conn in await db_get(f"user_id=eq.{uid}"):
+    for conn in await db_get({"user_id": f"eq.{uid}"}):
         if conn.get("provider") not in OPEN_BANKING or not conn.get("session_id"):
             continue
         bank_name = conn.get("display_name") or conn.get("provider")
@@ -257,7 +264,7 @@ async def t212_connect(body: dict, authorization: Optional[str] = Header(default
 @app.get("/api/t212/portfolio")
 async def t212_portfolio(authorization: Optional[str] = Header(default=None)):
     uid = await current_user(authorization)
-    rows = await db_get(f"user_id=eq.{uid}&provider=eq.t212")
+    rows = await db_get({"user_id": f"eq.{uid}", "provider": "eq.t212"})
     if not rows or not rows[0].get("api_key"):
         raise HTTPException(status_code=404, detail="Trading 212 not connected")
     key = rows[0]["api_key"]
