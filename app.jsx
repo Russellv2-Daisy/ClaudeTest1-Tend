@@ -1668,6 +1668,32 @@ function rangeStats(state, from, to) {
   return { txns, spent, earnt, net: earnt - spent, byCat, days, count: txns.length, topMerchants };
 }
 
+// Light normalisation for duplicate-matching: lowercase, punctuation → spaces.
+// Kept deliberately gentle — we match on the multi-word core, not single tokens,
+// so a common word like "lloyds" alone can never cause a false match.
+function _normName(s) { return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim(); }
+function _nameOverlap(a, b) {
+  a = _normName(a); b = _normName(b);
+  if (a.length < 5 || b.length < 5) return false;
+  if (a === b) return true;
+  // Only auto-match when the shorter name is multi-word AND fully inside the other
+  // (e.g. "lloyds bank insurance" contains "lloyds bank"). Single words don't match.
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short.includes(" ") && long.includes(short);
+}
+// A subscription / direct debit is "already tracked" (so must NOT be added to the
+// plan again) if the user marked it notInPlan, or its name matches an insurance
+// policy, debt or savings contribution that already feeds the plan.
+function subAlreadyTracked(s, state) {
+  if (!s) return false;
+  if (s.notInPlan) return true;
+  const cand = [];
+  (state.insurance || []).forEach(p => { if ((Number(p.premium) || 0) > 0 && p.provider) { cand.push(p.provider); cand.push(`${p.type || ""} ${p.provider}`); } });
+  (state.debts || []).forEach(d => { if (d.name) cand.push(d.name); });
+  (state.savingsAccounts || []).forEach(a => { if ((Number(a.contribution) || 0) > 0 && a.name) cand.push(a.name); });
+  return cand.some(c => _nameOverlap(s.name, c));
+}
+
 // Roll up one month's budget + transactions into the numbers every finance view needs.
 // Projected = the plan. Actual = real transactions for a group when present, otherwise the
 // manually-typed Actual column (which the Lloyds link will replace in Phase B).
@@ -1714,6 +1740,7 @@ function monthStats(state, mk) {
   (state.subscriptions || []).forEach(s => {
     const amt = Number(s.amount) || 0;
     if (amt <= 0) return;
+    if (subAlreadyTracked(s, state)) return; // counted via insurance/debt/savings instead
     const isDD = s.kind === "directDebit";
     if (s.categoryId && cats.some(c => c.id === s.categoryId)) {
       pushAuto(s.categoryId, { label: s.name || (isDD ? "Direct debit" : "Subscription"), amount: amt, source: isDD ? "directDebit" : "subscription" });
@@ -2332,9 +2359,12 @@ function SubModal({ sub, cats, accentColor, onSave, onClose }) {
           {(cats || []).map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
         </select>
       </Field>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer", marginTop: 4 }}>
+        <input type="checkbox" checked={!!s.notInPlan} onChange={e => up("notInPlan", e.target.checked)} /> 🚫 Already counted elsewhere (insurance / loan / savings) — don’t add to the plan
+      </label>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (s.name.trim()) onSave({ id: sub?.id || genId(), name: s.name.trim(), amount: parseFloat(s.amount) || 0, day: Math.min(28, Math.max(1, parseInt(s.day, 10) || 1)), categoryId: s.categoryId, kind: s.kind === "directDebit" ? "directDebit" : "subscription" }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{sub?.id ? "Save" : "Add"}</button>
+        <button onClick={() => { if (s.name.trim()) onSave({ id: sub?.id || genId(), name: s.name.trim(), amount: parseFloat(s.amount) || 0, day: Math.min(28, Math.max(1, parseInt(s.day, 10) || 1)), categoryId: s.categoryId, kind: s.kind === "directDebit" ? "directDebit" : "subscription", notInPlan: !!s.notInPlan }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{sub?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -3207,7 +3237,7 @@ function FinanceView({ state, up, accentColor }) {
               ...savings.filter(a => Number(a.contribution) > 0).map(a => ({ icon: "🐖", label: a.name, projected: Number(a.contribution) || 0, kw: a.name })),
               ...debts.map(d => { const pl = debtPlan(d); return { icon: "💳", label: d.name, projected: pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0), kw: d.name }; }).filter(x => x.projected > 0),
               ...insurance.map(p => ({ icon: insIcon(p.type), label: `${p.type}${p.provider ? " · " + p.provider : ""}`, projected: insMonthly(p), kw: p.provider || p.type })).filter(x => x.projected > 0),
-              ...subs.map(s => ({ icon: s.kind === "directDebit" ? "🏦" : "🔁", label: s.name, projected: Number(s.amount) || 0, kw: s.name })).filter(x => x.projected > 0),
+              ...subs.filter(s => !subAlreadyTracked(s, state)).map(s => ({ icon: s.kind === "directDebit" ? "🏦" : "🔁", label: s.name, projected: Number(s.amount) || 0, kw: s.name })).filter(x => x.projected > 0),
               // Pension is deducted from pay (already in take-home), so it's not listed here.
             ];
             if (!items.length) return null;
@@ -3782,16 +3812,17 @@ function FinanceView({ state, up, accentColor }) {
       {tab === "subs" && (() => {
         const ymd = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
         const nextFromDay = day => { const t = new Date(); t.setHours(0, 0, 0, 0); const mk2 = (yy, mm) => { const dim = new Date(yy, mm + 1, 0).getDate(); return new Date(yy, mm, Math.min(day || 1, dim)); }; let d = mk2(t.getFullYear(), t.getMonth()); if (d < t) d = mk2(t.getFullYear(), t.getMonth() + 1); return ymd(d); };
-        const manual = subs.map(s => ({ id: s.id, name: s.name, amount: Number(s.amount) || 0, next: nextFromDay(Number(s.day) || 1), categoryId: s.categoryId, kind: s.kind === "directDebit" ? "directDebit" : "subscription", auto: false }));
+        const manual = subs.map(s => ({ id: s.id, name: s.name, amount: Number(s.amount) || 0, next: nextFromDay(Number(s.day) || 1), categoryId: s.categoryId, kind: s.kind === "directDebit" ? "directDebit" : "subscription", auto: false, tracked: subAlreadyTracked(s, state) }));
         const dismissed = state.dismissedSubs || [];
         const auto = detectSubscriptions(state).filter(a => !manual.some(m => m.name.toLowerCase() === a.name.toLowerCase()) && !dismissed.includes(a.name.toLowerCase())).map(a => ({ id: "auto_" + a.name, name: a.name, amount: a.amount, next: a.lastDate ? (() => { const d = new Date(a.lastDate + "T00:00:00"); d.setMonth(d.getMonth() + 1); return ymd(d); })() : "", categoryId: a.categoryId, kind: "subscription", auto: true }));
         const items = [...manual, ...auto].sort((x, y) =>
           subSort === "name" ? x.name.localeCompare(y.name, undefined, { sensitivity: "base" })
           : subSort === "amount" ? y.amount - x.amount
           : (x.next || "z").localeCompare(y.next || "z"));
-        const totalM = items.reduce((s, i) => s + i.amount, 0);
-        const subsM = items.filter(i => i.kind !== "directDebit").reduce((s, i) => s + i.amount, 0);
-        const ddM = items.filter(i => i.kind === "directDebit").reduce((s, i) => s + i.amount, 0);
+        const counted = items.filter(i => !i.tracked); // tracked ones are counted via insurance/debt/savings
+        const totalM = counted.reduce((s, i) => s + i.amount, 0);
+        const subsM = counted.filter(i => i.kind !== "directDebit").reduce((s, i) => s + i.amount, 0);
+        const ddM = counted.filter(i => i.kind === "directDebit").reduce((s, i) => s + i.amount, 0);
         return (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
@@ -3827,7 +3858,7 @@ function FinanceView({ state, up, accentColor }) {
                     <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: "var(--color-background-primary)", borderRadius: 10, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 7 }}>
                       <span style={{ fontSize: 20, width: 26, textAlign: "center" }}>{c?.emoji || (isDD ? "🏦" : "🔁")}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 14, fontWeight: 500 }}>{it.name} <span style={{ fontSize: 10, background: isDD ? hex2rgba("#888", 0.18) : hex2rgba(ac, 0.12), color: isDD ? "var(--color-text-secondary)" : ac, padding: "1px 7px", borderRadius: 10 }}>{isDD ? "direct debit" : "subscription"}</span> {it.auto && <span style={{ fontSize: 10, background: hex2rgba(ac, 0.12), color: ac, padding: "1px 7px", borderRadius: 10 }}>auto</span>}</div>
+                        <div style={{ fontSize: 14, fontWeight: 500 }}>{it.name} <span style={{ fontSize: 10, background: isDD ? hex2rgba("#888", 0.18) : hex2rgba(ac, 0.12), color: isDD ? "var(--color-text-secondary)" : ac, padding: "1px 7px", borderRadius: 10 }}>{isDD ? "direct debit" : "subscription"}</span> {it.auto && <span style={{ fontSize: 10, background: hex2rgba(ac, 0.12), color: ac, padding: "1px 7px", borderRadius: 10 }}>auto</span>} {it.tracked && <span title="Counted via your insurance / loan / savings instead — not double-counted in the plan" style={{ fontSize: 10, background: hex2rgba("#888", 0.18), color: "var(--color-text-secondary)", padding: "1px 7px", borderRadius: 10 }}>not in plan</span>}</div>
                         <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{it.next ? `next ~${fmtShort(it.next)}` : "—"} · {fmtMoney(it.amount * 12, true)}/yr</div>
                       </div>
                       <div style={{ fontSize: 14, fontWeight: 600, width: 90, textAlign: "right" }}>{fmtMoney(it.amount)}<span style={{ fontSize: 11, color: "var(--color-text-secondary)", fontWeight: 400 }}>/mo</span></div>
