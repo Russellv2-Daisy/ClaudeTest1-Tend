@@ -39,7 +39,9 @@ SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 # ── Lunch Flow (UK/EU Open Banking aggregator — holds the AISP licence) ────────
 # The user connects their banks inside Lunch Flow's own widget, then pastes a
 # single read-only API key into Tend. We pull accounts + transactions with it.
-LUNCHFLOW_BASE = os.environ.get("LUNCHFLOW_API_BASE", "https://lunchflow.app/api/v1").rstrip("/")
+# NB the canonical host is www.lunchflow.app — the bare host 308-redirects with a
+# custom JSON body that isn't a standard redirect, so point straight at www.
+LUNCHFLOW_BASE = os.environ.get("LUNCHFLOW_API_BASE", "https://www.lunchflow.app/api/v1").rstrip("/")
 
 T212_BASE = (os.environ.get("T212_API_BASE")
              or ("https://demo.trading212.com/api/v0" if T212_MODE == "demo"
