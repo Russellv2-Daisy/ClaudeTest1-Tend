@@ -2187,6 +2187,7 @@ function parseBankCSV(text, cats) {
     if (dr >= 0 || cr >= 0) { const d = parseFloat((r[dr] || "").replace(/[^\d.\-]/g, "")) || 0; const c = parseFloat((r[cr] || "").replace(/[^\d.\-]/g, "")) || 0; if (c > 0) { amount = c; type = "income"; } else { amount = d; type = "spend"; } }
     else if (am >= 0) { const v = parseFloat((r[am] || "").replace(/[^\d.\-]/g, "")) || 0; amount = Math.abs(v); type = v >= 0 ? "income" : "spend"; }
     if (!amount) continue;
+    if (looksLikeTransfer(desc)) type = "transfer"; // round-ups / savings sweeps aren't spend or income
     out.push({ id: genId(), date, description: desc, amount: Math.round(amount * 100) / 100, type, categoryId: type === "spend" ? guessCat(desc) : "", source: "csv" });
   }
   return out;
@@ -6101,8 +6102,14 @@ function App({ user }) {
     const cutoff24 = monthsAgoKey(24);
     Object.keys(reports).forEach(mk => { if (mk < cutoff24) delete reports[mk]; });
     const sixAgo = addDaysStr(todayStr(), -183);
-    const pruned = txns.filter(t => (t.date || "") >= sixAgo);
-    if (pruned.length !== txns.length || JSON.stringify(reports) !== JSON.stringify(state.monthlyReports || {})) {
+    // Retype any round-up / savings sweep (e.g. Lloyds "Save the Change") imported
+    // before transfer-detection existed, so it stops counting as spending.
+    let retyped = false;
+    const pruned = txns.filter(t => (t.date || "") >= sixAgo).map(t => {
+      if (t.type !== "transfer" && looksLikeTransfer(t.description)) { retyped = true; return { ...t, type: "transfer" }; }
+      return t;
+    });
+    if (pruned.length !== txns.length || retyped || JSON.stringify(reports) !== JSON.stringify(state.monthlyReports || {})) {
       up({ transactions: pruned, monthlyReports: reports });
     }
   }, [meta.loaded]);
