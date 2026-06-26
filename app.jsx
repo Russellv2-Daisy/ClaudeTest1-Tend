@@ -1843,10 +1843,11 @@ function monthStats(state, mk) {
   const incomeManualActual = ["income", "income2", "extra"].reduce((s, k) => s + (Number((plan[k] || {}).actual) || 0), 0);
   const hasTxnIncome = txnIncome > 0;
   const incomeActual = hasTxnIncome ? txnIncome : incomeManualActual;
-  // Transactions notice the salary landing: anything over the expected base take-home
-  // is treated as additional (bonus / overtime / back-pay) income for the month.
+  // The salary credit is the recognised pay packet; any *other* income that landed
+  // this month (bonus, overtime, refunds, side income) is shown as one "additional"
+  // row so the breakdown rows reconcile exactly to the actual total.
   const salaryReceived = detectSalaryReceived(incomeTxns, state);
-  const bonusIncome = (salaryReceived > 0 && baseIncome > 0) ? Math.max(0, salaryReceived - baseIncome) : 0;
+  const bonusIncome = hasTxnIncome ? Math.max(0, incomeActual - salaryReceived) : 0;
   const spend = cats.reduce((s, c) => s + byCat[c.id].spent, 0);
 
   return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, jobNet, baseIncome, hasTxnIncome, salaryReceived, expectedSalary: baseIncome, bonusIncome, spend, plannedTotal, manualActualTotal, variablePlanned, subsTotal, savingsCommitments, expensesTotal, savingsContrib, debtPayments, commitments, reimbursementIncome, workExpenseSpend, salaryIncome: Math.max(0, incomeActual - reimbursementIncome) };
