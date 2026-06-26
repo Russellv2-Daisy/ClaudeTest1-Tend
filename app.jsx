@@ -2945,9 +2945,14 @@ function FinanceView({ state, up, accentColor }) {
     const accs = bankAccounts || [];
     if (!accs.length) { setBankErr("No accounts to import — try “Refresh accounts” first."); return; }
     const norm = s => (s || "").trim().toLowerCase();
-    const cur = [...(state.currentAccounts || [])];
-    const sav = [...(state.savingsAccounts || [])];
-    const dbt = [...(state.debts || [])];
+    let cur = [...(state.currentAccounts || [])];
+    let sav = [...(state.savingsAccounts || [])];
+    let dbt = [...(state.debts || [])];
+    // Drop a same-named bank-linked entry from a bucket it no longer belongs to, so an
+    // account whose type changed (e.g. Capital One first imported as a current account,
+    // now recognised as a credit card) MOVES instead of lingering as a duplicate. Only
+    // touches linked/imported rows — manual entries the user typed are left alone.
+    const dropFrom = (arr, name) => arr.filter(x => !(norm(x.name) === norm(name) && (x.source === "lunchflow" || x.linked)));
     let added = 0, updated = 0;
     accs.forEach(a => {
       if (a.balance == null) return;
@@ -2956,16 +2961,19 @@ function FinanceView({ state, up, accentColor }) {
       const isDebt = /credit|loan|debt|card|mortgage/.test(t) || a.balance < 0;
       const isSav = !isDebt && /sav/.test(t);
       if (isDebt) {
+        cur = dropFrom(cur, name); sav = dropFrom(sav, name);
         const i = dbt.findIndex(d => norm(d.name) === norm(name));
         const bal = Math.abs(a.balance);
         const kind = /credit|card/.test(t) ? "card" : "loan";
         if (i >= 0) { dbt[i] = { ...dbt[i], balance: bal, kind: dbt[i].kind || kind, linked: true }; updated++; }
         else { dbt.push({ id: genId(), name, balance: bal, rate: 0, minPayment: 0, kind, linked: true, source: "lunchflow" }); added++; }
       } else if (isSav) {
+        cur = dropFrom(cur, name); dbt = dropFrom(dbt, name);
         const i = sav.findIndex(s => norm(s.name) === norm(name));
         if (i >= 0) { sav[i] = { ...sav[i], balance: a.balance, institution: a.institution || sav[i].institution, linked: true }; updated++; }
         else { sav.push({ id: genId(), name, institution: a.institution || "", balance: a.balance, contribution: 0, rate: 0, target: 0, targetDate: "", linked: true, source: "lunchflow" }); added++; }
       } else {
+        sav = dropFrom(sav, name); dbt = dropFrom(dbt, name);
         const i = cur.findIndex(c => norm(c.name) === norm(name));
         if (i >= 0) { cur[i] = { ...cur[i], balance: a.balance, institution: a.institution || cur[i].institution, linked: true }; updated++; }
         else { cur.push({ id: genId(), name, institution: a.institution || "", balance: a.balance, linked: true, source: "lunchflow" }); added++; }
