@@ -217,4 +217,16 @@
     disconnectT212() { return backendFetch("/t212/disconnect", { method: "POST" }); },
   };
   window.TendBank = TendBank;
+
+  // ── Phase B: Tend's AI (Claude) — same authed backend, gated server-side to
+  // the owner's account so visitors can't spend the API credits. Every method
+  // sends the Supabase token via backendFetch and throws when unavailable /
+  // unauthorised, so callers fall back to their offline helpers.
+  const TendAI = {
+    enabled: !!BACKEND_URL,
+    parse(text, context) { return backendFetch("/parse", { method: "POST", body: { text, context } }); },
+    gifts(person, occasion, budget) { return backendFetch("/gifts", { method: "POST", body: { person, occasion, budget } }); },
+    ask(prompt, context) { return backendFetch("/ask", { method: "POST", body: { prompt, context } }); },
+  };
+  window.TendAI = TendAI;
 })();

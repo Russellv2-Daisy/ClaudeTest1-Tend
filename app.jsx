@@ -1070,14 +1070,9 @@ function QuickAdd({ ctx, accentColor, defaults, onAdd }) {
     setBusy(true); setHint(null);
     let parsed = null, ai = false;
     try {
-      const res = await fetch("/api/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: value, context: { tags: ctx.tags, groups: ctx.groups } }),
-      });
-      const data = await res.json();
+      const data = await window.TendAI.parse(value, { tags: ctx.tags, groups: ctx.groups });
       if (data && data.ai && data.result) { parsed = data.result; ai = true; }
-    } catch (e) { /* offline — fall through to local parser */ }
+    } catch (e) { /* offline / not authorised — fall through to local parser */ }
     if (!parsed) parsed = localParse(value, ctx);
 
     const task = buildTask(parsed, ctx, defaults);
@@ -4749,10 +4744,9 @@ function localGiftIdeas(person, budget) {
 // Try Claude (/api/gifts) for tailored ideas; fall back to the offline generator.
 async function fetchGiftIdeas(person, occasion, budget) {
   try {
-    const res = await fetch("/api/gifts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ person, occasion, budget }) });
-    const data = await res.json();
+    const data = await window.TendAI.gifts(person, occasion, budget);
     if (data && data.ai && data.result && Array.isArray(data.result.ideas) && data.result.ideas.length) return { ideas: data.result.ideas, ai: true };
-  } catch (e) { /* offline */ }
+  } catch (e) { /* offline / not authorised */ }
   return { ideas: localGiftIdeas(person, budget), ai: false };
 }
 
@@ -5170,7 +5164,55 @@ function runAssistant(state, prompt) {
       .map(t => ({ id: t.id, title: t.title, tag: fmtShort(t.deadline || t.scheduledDate) }));
     return { reply: list.length ? "Coming up in the next 7 days:" : "Nothing scheduled in the next week.", list };
   }
-  return { reply: "I can plan your day, summarise your finances, or add tasks. Try “what should I focus on today?”, “how are my finances?”, or “add buy milk tomorrow”. Full conversational Claude arrives with the API key (Phase B)." };
+  return { reply: "I can plan your day, summarise your finances, or add tasks. Try “what should I focus on today?”, “how are my finances?”, or “add buy milk tomorrow”. Add an Anthropic API key for full conversational Claude." };
+}
+
+// Compact snapshot of the user's Tend data, sent to /api/ask so the real Claude
+// can answer as their chief of staff. Kept small (caps + only what's useful) and
+// never stored server-side.
+function buildAssistantContext(state) {
+  const today = todayStr();
+  const open = (state.tasks || []).filter(t => !t.done);
+  const task = t => ({ title: t.title, priority: t.priority,
+    due: t.deadline || "", scheduled: t.scheduledDate || "" });
+  const overdue = open.filter(t => t.deadline && t.deadline < today);
+  const todays = open.filter(t => t.scheduledDate === today || t.deadline === today);
+  const soon = open.filter(t => { const d = t.deadline || t.scheduledDate; return d && d > today && daysUntil(d) <= 14; })
+    .sort((a, b) => (a.deadline || a.scheduledDate).localeCompare(b.deadline || b.scheduledDate));
+  const cur = (state.currentAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const sav = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.balance) || 0), 0);
+  const debt = (state.debts || []).reduce((s, d) => s + (Number(d.balance) || 0), 0);
+  const st = monthStats(state, curMonthKey());
+  const nw = cur + sav + investmentTotals(state.investments).value + pensionPotsTotal(state) - debt;
+  const dates = (state.importantDates || []).map(d => ({ label: d.label || d.name, date: d.date,
+    days: d.date ? daysUntil(`${new Date().getFullYear()}-${String(d.date).slice(5)}`) : null }))
+    .filter(x => x.days != null && x.days >= 0 && x.days <= 60).sort((a, b) => a.days - b.days).slice(0, 8);
+  const people = (state.people || []).filter(p => p.birthday)
+    .map(p => ({ name: p.name, birthday: p.birthday, days: daysUntil(`${new Date().getFullYear()}-${String(p.birthday).slice(5)}`) }))
+    .filter(p => p.days >= 0 && p.days <= 45).sort((a, b) => a.days - b.days).slice(0, 6);
+  return {
+    today,
+    openTaskCount: open.length,
+    overdue: overdue.slice(0, 8).map(task),
+    today_tasks: todays.slice(0, 8).map(task),
+    upcoming_tasks: soon.slice(0, 10).map(task),
+    finance: {
+      inBank: Math.round(cur), savings: Math.round(sav), debt: Math.round(debt),
+      netWorth: Math.round(nw), incomeThisMonth: Math.round(st.income || st.incomeProjected || 0),
+      spentThisMonth: Math.round(st.spend || 0), plannedThisMonth: Math.round(st.plannedTotal || 0),
+      safeToSpend: Math.round((st.income || st.incomeProjected || 0) - st.plannedTotal - (Number(state.safetyBuffer) || 0)),
+    },
+    upcomingDates: dates,
+    upcomingBirthdays: people,
+  };
+}
+
+// Try the real Claude (/api/ask) for a conversational reply; the caller falls
+// back to the offline runAssistant when this throws (no API key / offline).
+async function fetchAssistant(state, prompt) {
+  const data = await window.TendAI.ask(prompt, buildAssistantContext(state));
+  if (data && data.ai && data.reply) return { reply: data.reply, list: [], ai: true };
+  throw new Error("AI unavailable");
 }
 
 function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTasks, userName, onOpenDates }) {
@@ -5181,16 +5223,29 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
   // Live clock for the long date + 24-hour time line. Ticks each minute.
   const [now, setNow] = useState(new Date());
   useEffect(() => { const id = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(id); }, []);
-  const ask = () => {
-    if (!q.trim()) return;
-    const r = runAssistant(state, q);
-    if (r.addText) {
+  const [asking, setAsking] = useState(false);
+  const ask = async (override) => {
+    const query = (override != null ? override : q).trim();
+    if (!query || asking) return;
+    setQ("");
+    // Deterministic "add …" intent stays local and instant.
+    const local = runAssistant(state, query);
+    if (local.addText) {
       const ctx = { tags: state.tags, groups: state.groups };
-      const task = buildTask(localParse(r.addText, ctx), ctx, {});
+      const task = buildTask(localParse(local.addText, ctx), ctx, {});
       onAddTask(task);
       setResp({ reply: `Added “${task.title}”${task.deadline ? ` · ⚑ ${fmtShort(task.deadline)}` : ""} ✓`, list: [] });
-    } else setResp(r);
-    setQ("");
+      return;
+    }
+    // Otherwise ask the real Claude; fall back to the offline assistant.
+    setAsking(true);
+    setResp({ reply: "Thinking…", list: [], pending: true });
+    try {
+      setResp(await fetchAssistant(state, query));
+    } catch (e) {
+      setResp(local);
+    }
+    setAsking(false);
   };
   const open = allTasks.filter(t => !t.done);
   const todays = open.filter(t => t.scheduledDate === today || t.deadline === today);
@@ -5234,10 +5289,10 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>✨ Ask Claude</div>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>Plan your day, sort your tasks, check your money — or just say “add …”.</div>
         <div style={{ display: "flex", gap: 8 }}>
-          <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && ask()} placeholder="e.g. what should I focus on today?" style={{ flex: 1, fontSize: 14, boxSizing: "border-box" }} />
-          <button onClick={ask} style={{ padding: "0 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>Ask</button>
+          <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === "Enter" && ask()} disabled={asking} placeholder="e.g. what should I focus on today?" style={{ flex: 1, fontSize: 14, boxSizing: "border-box" }} />
+          <button onClick={() => ask()} disabled={asking} style={{ padding: "0 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: asking ? "default" : "pointer", opacity: asking ? 0.6 : 1, fontWeight: 500 }}>{asking ? "…" : "Ask"}</button>
         </div>
-        {!resp && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>{["What should I focus on today?", "How are my finances?", "What's coming up?"].map(s => <button key={s} onClick={() => { setQ(s); setTimeout(() => { setResp(runAssistant(state, s)); setQ(""); }, 0); }} style={{ fontSize: 12, padding: "5px 11px", borderRadius: 20, cursor: "pointer", color: ac }}>{s}</button>)}</div>}
+        {!resp && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>{["What should I focus on today?", "How are my finances?", "What's coming up?"].map(s => <button key={s} onClick={() => ask(s)} style={{ fontSize: 12, padding: "5px 11px", borderRadius: 20, cursor: "pointer", color: ac }}>{s}</button>)}</div>}
         {resp && (
           <div style={{ marginTop: 12, background: "var(--color-background-primary)", borderRadius: 10, padding: "12px 14px" }}>
             <div style={{ fontSize: 13.5 }}>{resp.reply}</div>

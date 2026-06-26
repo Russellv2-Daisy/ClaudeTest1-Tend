@@ -80,9 +80,21 @@ Vercel → your project → **Settings → Environment Variables** (Production):
 | `SUPABASE_SERVICE_KEY` | the secret service-role key from A1 |
 | `APP_URL` | `https://claude-test1-tend.vercel.app` |
 | `T212_MODE` | `live` (or `demo` to practise) |
+| `ANTHROPIC_API_KEY` | your Claude API key — **switches the AI on** (Quick Add, gift ideas, Ask Claude) |
+| `AI_ALLOWED_EMAILS` | (optional) comma-separated Supabase account emails allowed to use the AI. Defaults to your account so visitors can't spend your credits |
 
 > Note: there are **no bank-provider secrets here** — your Lunch Flow and Trading
 > 212 keys are pasted in-app and stored in the locked Supabase table.
+
+> **AI is optional.** Leave `ANTHROPIC_API_KEY` unset and the `/api/parse`,
+> `/api/gifts` and `/api/ask` routes return 503 — the app silently falls back to
+> its built-in offline helpers, exactly as before. Set the key and Tend's Claude
+> (the "AI Chief of Staff" persona in `api/index.py`) powers those features.
+> Optional overrides: `CLAUDE_MODEL` (default `claude-opus-4-8`, the Ask Claude
+> assistant) and `CLAUDE_FAST_MODEL` (default `claude-haiku-4-5-20251001`, the
+> Quick Add task parser). The AI routes require a signed-in Supabase session AND
+> an allowlisted email (`AI_ALLOWED_EMAILS`, default = your account) — a 401/403
+> just makes the app use its offline helpers, so nobody else can spend credits.
 
 ### A4 · Trading 212 (optional, ≈2 min)
 Trading 212 app → **Settings → API (Beta)** → create a **read-only** key. You'll
