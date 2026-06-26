@@ -2106,7 +2106,7 @@ function FinanceCatModal({ cat, accentColor, onSave, onClose }) {
 const FINANCE_TABS = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
   { id: "plan", icon: "🎯", label: "Breakdown Plan" },
-  { id: "savings", icon: "🐖", label: "Savings & Debts" },
+  { id: "savings", icon: "💷", label: "Banking" },
   { id: "investments", icon: "💹", label: "Investments" },
   { id: "pension", icon: "🏖", label: "Pension" },
   { id: "subs", icon: "🔁", label: "Subscriptions & DDs" },
@@ -2255,7 +2255,7 @@ function CurrentAccountModal({ account, accentColor, onSave, onClose }) {
         <Field label="Current balance (£)"><input type="number" step="0.01" placeholder="0.00" value={a.balance} onChange={e => up("balance", e.target.value)} style={inp} /></Field>
       </div>
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer" }}>
-        <input type="checkbox" checked={!!a.linked} onChange={e => up("linked", e.target.checked)} /> Link this to my bank (auto-updates once Open Banking is on — Phase B)
+        <input type="checkbox" checked={!!a.linked} onChange={e => up("linked", e.target.checked)} /> Link this to my bank (auto-updates from the balances you import in the Connect bank tab)
       </label>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
@@ -2697,11 +2697,13 @@ function CashFlowForecast({ state, accentColor }) {
 }
 
 function DebtModal({ debt, accentColor, onSave, onClose }) {
-  const blank = { name: "", balance: "", rate: "", minPayment: "", termMonths: "", monthsPaid: "", adjustments: [] };
+  const blank = { name: "", balance: "", rate: "", minPayment: "", termMonths: "", monthsPaid: "", adjustments: [], kind: "loan" };
   const [d, setD] = useState({ ...blank, ...(debt || {}) });
   const up = (k, v) => setD(x => ({ ...x, [k]: v }));
   const ac = accentColor;
   const inp = { width: "100%", boxSizing: "border-box" };
+  const isCard = d.kind === "card";
+  const noun = isCard ? "credit card" : "debt / loan";
   const adj = d.adjustments || [];
   const [exVal, setExVal] = useState("");
   const [brkVal, setBrkVal] = useState("");
@@ -2712,8 +2714,15 @@ function DebtModal({ debt, accentColor, onSave, onClose }) {
   const plan = debtPlan({ ...d, balance: Number(d.balance) || 0 });
   return (
     <Modal onClose={onClose} width={470}>
-      <ModalHeader title={debt?.id ? "Edit debt / loan" : "New debt / loan"} onClose={onClose} />
-      <Field label="Name"><input placeholder="e.g. Visa, Car loan, Klarna" value={d.name} onChange={e => up("name", e.target.value)} style={inp} autoFocus /></Field>
+      <ModalHeader title={(debt?.id ? "Edit " : "New ") + noun} onClose={onClose} />
+      <Field label="Type">
+        <div style={{ display: "flex", gap: 8 }}>
+          {[["card", "💳 Credit card"], ["loan", "🏦 Loan / other"]].map(([v, l]) => (
+            <button key={v} onClick={() => up("kind", v)} style={{ flex: 1, padding: "8px 10px", borderRadius: 9, border: "none", cursor: "pointer", fontSize: 13, fontWeight: d.kind === v ? 500 : 400, background: d.kind === v ? ac : "var(--color-background-secondary)", color: d.kind === v ? "#fff" : "var(--color-text-secondary)" }}>{l}</button>
+          ))}
+        </div>
+      </Field>
+      <Field label="Name"><input placeholder={isCard ? "e.g. Amex, Barclaycard" : "e.g. Car loan, Klarna"} value={d.name} onChange={e => up("name", e.target.value)} style={inp} autoFocus /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Balance owed now (£)"><input type="number" step="0.01" placeholder="0.00" value={d.balance} onChange={e => up("balance", e.target.value)} style={inp} /></Field>
         <Field label="Interest (% APR)"><input type="number" step="0.01" placeholder="e.g. 22.9" value={d.rate} onChange={e => up("rate", e.target.value)} style={inp} /></Field>
@@ -2754,7 +2763,7 @@ function DebtModal({ debt, accentColor, onSave, onClose }) {
 
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (d.name.trim()) onSave({ id: debt?.id || genId(), name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0, termMonths: parseInt(d.termMonths, 10) || 0, monthsPaid: parseInt(d.monthsPaid, 10) || 0, adjustments: adj }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
+        <button onClick={() => { if (d.name.trim()) onSave({ ...(debt || {}), id: debt?.id || genId(), kind: d.kind || "loan", name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0, termMonths: parseInt(d.termMonths, 10) || 0, monthsPaid: parseInt(d.monthsPaid, 10) || 0, adjustments: adj }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -2942,8 +2951,9 @@ function FinanceView({ state, up, accentColor }) {
       if (isDebt) {
         const i = dbt.findIndex(d => norm(d.name) === norm(name));
         const bal = Math.abs(a.balance);
-        if (i >= 0) { dbt[i] = { ...dbt[i], balance: bal }; updated++; }
-        else { dbt.push({ id: genId(), name, balance: bal, rate: 0, minPayment: 0, source: "lunchflow" }); added++; }
+        const kind = /credit|card/.test(t) ? "card" : "loan";
+        if (i >= 0) { dbt[i] = { ...dbt[i], balance: bal, kind: dbt[i].kind || kind, linked: true }; updated++; }
+        else { dbt.push({ id: genId(), name, balance: bal, rate: 0, minPayment: 0, kind, linked: true, source: "lunchflow" }); added++; }
       } else if (isSav) {
         const i = sav.findIndex(s => norm(s.name) === norm(name));
         if (i >= 0) { sav[i] = { ...sav[i], balance: a.balance, institution: a.institution || sav[i].institution, linked: true }; updated++; }
@@ -2955,7 +2965,7 @@ function FinanceView({ state, up, accentColor }) {
       }
     });
     up({ currentAccounts: cur, savingsAccounts: sav, debts: dbt });
-    setBankErr(`Balances imported — ${added} added, ${updated} updated. See the Savings & Debts tab.`);
+    setBankErr(`Balances imported — ${added} added, ${updated} updated. See the Banking tab.`);
   }
   async function doSyncBank() {
     setBankErr(""); setBankBusy("sync");
@@ -3134,11 +3144,72 @@ function FinanceView({ state, up, accentColor }) {
     else up({ subscriptions: [...subs, { id: genId(), name: info.name, amount: info.amount, day: info.day, categoryId: info.categoryId, kind }] });
   }
   const debts = state.debts || [];
+  const cards = debts.filter(d => d.kind === "card");
+  const loans = debts.filter(d => d.kind !== "card");
   function saveDebt(dt) { up({ debts: debts.some(x => x.id === dt.id) ? debts.map(x => x.id === dt.id ? dt : x) : [...debts, dt] }); setDebtModal(null); }
   function deleteDebt(id) { if (confirm("Delete this debt?")) up({ debts: debts.filter(d => d.id !== id) }); }
   const currentAccounts = state.currentAccounts || [];
   function saveCA(c) { up({ currentAccounts: currentAccounts.some(x => x.id === c.id) ? currentAccounts.map(x => x.id === c.id ? c : x) : [...currentAccounts, c] }); setCaModal(null); }
   function deleteCA(id) { if (confirm("Delete this account?")) up({ currentAccounts: currentAccounts.filter(c => c.id !== id) }); }
+  // Move an account up or down in its list (dir = -1 up, +1 down) and persist.
+  function moveItem(key, list, id, dir) {
+    const i = list.findIndex(x => x.id === id), j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    const next = [...list]; [next[i], next[j]] = [next[j], next[i]];
+    up({ [key]: next });
+  }
+  // Debts live in one array but display in two groups (cards / loans). Reorder by
+  // swapping with the nearest neighbour OF THE SAME KIND so each group stays sane.
+  const debtKind = d => (d.kind === "card" ? "card" : "loan");
+  function moveDebt(id, dir) {
+    const list = state.debts || [];
+    const i = list.findIndex(x => x.id === id); if (i < 0) return;
+    let j = i + dir;
+    while (j >= 0 && j < list.length && debtKind(list[j]) !== debtKind(list[i])) j += dir;
+    if (j < 0 || j >= list.length) return;
+    const next = [...list]; [next[i], next[j]] = [next[j], next[i]];
+    up({ debts: next });
+  }
+  const reorderBtn = disabled => ({ background: "none", border: "none", cursor: disabled ? "default" : "pointer", fontSize: 9, lineHeight: 1, padding: "1px 4px", color: disabled ? "var(--color-border-tertiary)" : "var(--color-text-secondary)" });
+  const Reorder = ({ upDisabled, downDisabled, onUp, onDown }) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      <button onClick={onUp} disabled={upDisabled} title="Move up" style={reorderBtn(upDisabled)}>▲</button>
+      <button onClick={onDown} disabled={downDisabled} title="Move down" style={reorderBtn(downDisabled)}>▼</button>
+    </div>
+  );
+  const LinkedBadge = () => <span style={{ fontSize: 10, background: hex2rgba(ac, 0.14), color: ac, padding: "1px 7px", borderRadius: 10, fontWeight: 500 }}>🔗 Connected via API</span>;
+  // One credit-card / debt card, shared by the Credit-cards and Debts-&-loans groups.
+  const renderDebtCard = (d, idx, list, emoji) => {
+    const mi = (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12;
+    const term = Number(d.termMonths) || 0;
+    const plan = debtPlan(d);
+    const pctPaid = term > 0 ? Math.min(100, Math.round((plan.paid / term) * 100)) : 0;
+    return (
+      <div key={d.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 22 }}>{emoji}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontWeight: 600, fontSize: 15 }}>{d.name}</span>
+              {d.linked && <LinkedBadge />}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR{term > 0 ? ` · ${term}-month term` : ""}{d.minPayment ? ` · min ${fmtMoney(d.minPayment, true)}/mo` : ""}{mi > 0 ? ` · ~${fmtMoney(mi, true)}/mo interest` : ""}</div>
+            {plan.hasTerm && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>{plan.paid}/{term} months paid · {plan.monthsToEnd} left · ≈ {fmtMoney(plan.monthly, true)}/mo · still payable <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(plan.remainingPayable, true)}</b></div>}
+          </div>
+          <div style={{ fontSize: 17, fontWeight: 600, color: "#E24B4A" }}>{fmtMoney(d.balance)}</div>
+          <Reorder upDisabled={idx === 0} downDisabled={idx === list.length - 1} onUp={() => moveDebt(d.id, -1)} onDown={() => moveDebt(d.id, 1)} />
+          <button onClick={() => setDebtModal(d)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+          <button onClick={() => deleteDebt(d.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+        </div>
+        {plan.hasTerm && term > 0 && (
+          <div style={{ height: 6, background: "var(--color-background-secondary)", borderRadius: 4, overflow: "hidden", marginTop: 10 }}>
+            <div style={{ height: "100%", width: `${pctPaid}%`, background: "#1D9E75", borderRadius: 4 }} />
+          </div>
+        )}
+        {(d.adjustments || []).length > 0 && <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 6 }}>{(d.adjustments || []).map(a => a.kind === "extra" ? `+${fmtMoney(a.value, true)} extra` : `${a.value}mo break (${a.mode === "extend" ? "pushed back" : "pay more"})`).join(" · ")}</div>}
+      </div>
+    );
+  };
   // Pensions: migrate the legacy single pension into the array once, then operate on the array.
   useEffect(() => {
     if ((state.pensions || []).length) return;
@@ -3381,7 +3452,7 @@ function FinanceView({ state, up, accentColor }) {
                   <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Projected</div>
                   <div style={{ width: 90, fontSize: 11, color: "var(--color-text-secondary)", textAlign: "right" }}>Actual</div>
                 </div>
-                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>From your Savings &amp; Debts, Insurance and Subscriptions &amp; direct debits. Actual fills in when a matching transaction appears — “pending” until then.</div>
+                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>From your Banking, Insurance and Subscriptions &amp; direct debits. Actual fills in when a matching transaction appears — “pending” until then.</div>
                 {items.map((it, i) => { const actual = matchActual(it.kw); return (
                   <div key={i} style={{ display: "flex", alignItems: "center", fontSize: 13, padding: "4px 0" }}>
                     <span style={{ flex: 1, color: "var(--color-text-secondary)" }}>{it.icon} {it.label}</span>
@@ -3539,23 +3610,24 @@ function FinanceView({ state, up, accentColor }) {
                 <div style={{ fontSize: 15, fontWeight: 600 }}>🏦 Current / Debit accounts</div>
                 <button onClick={() => setCaModal("new")} style={{ fontSize: 13, padding: "6px 14px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Account</button>
               </div>
-              {currentAccounts.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2px 0 6px" }}>Add your everyday current/debit accounts to see your spending money separate from savings. Link them to your bank in Phase B to auto-update.</div>}
+              {currentAccounts.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2px 0 6px" }}>Add your everyday current/debit accounts to see your spending money separate from savings. Link them to your bank to auto-update their balances.</div>}
               {currentAccounts.length > 0 && (
                 <>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
                     <StatCard label="In current accounts" value={fmtMoney(currentAccounts.reduce((s, c) => s + (Number(c.balance) || 0), 0))} color={ac} sub="available to spend" />
                   </div>
-                  {currentAccounts.map(c => (
+                  {currentAccounts.map((c, idx) => (
                     <div key={c.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontSize: 22 }}>🏦</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                           <span style={{ fontWeight: 600, fontSize: 15 }}>{c.name}</span>
-                          {c.linked && <span style={{ fontSize: 10, background: hex2rgba(ac, 0.14), color: ac, padding: "1px 7px", borderRadius: 10, fontWeight: 500 }}>🔗 Bank link (Phase B)</span>}
+                          {c.linked && <LinkedBadge />}
                         </div>
                         <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{c.institution || "Current account"}</div>
                       </div>
                       <div style={{ fontSize: 17, fontWeight: 600, color: ac }}>{fmtMoney(c.balance)}</div>
+                      <Reorder upDisabled={idx === 0} downDisabled={idx === currentAccounts.length - 1} onUp={() => moveItem("currentAccounts", currentAccounts, c.id, -1)} onDown={() => moveItem("currentAccounts", currentAccounts, c.id, 1)} />
                       <button onClick={() => setCaModal(c)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
                       <button onClick={() => deleteCA(c.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
                     </div>
@@ -3606,7 +3678,7 @@ function FinanceView({ state, up, accentColor }) {
                     {!savDate && <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Pick a date to forecast your total savings.</span>}
                   </div>
                 </div>
-                {savings.map(a => {
+                {savings.map((a, idx) => {
                   const bal = Number(a.balance) || 0, target = Number(a.target) || 0;
                   const pct = target ? Math.min(100, Math.round(bal / target * 100)) : 0;
                   let forecast = null;
@@ -3627,6 +3699,7 @@ function FinanceView({ state, up, accentColor }) {
                           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                             <span style={{ fontWeight: 600, fontSize: 15 }}>{a.name}</span>
                             {a.type === "emergency" && <span style={{ fontSize: 10, background: hex2rgba("#E24B4A", 0.14), color: "#E24B4A", padding: "1px 7px", borderRadius: 10, fontWeight: 500 }}>Emergency fund</span>}
+                            {a.linked && <LinkedBadge />}
                           </div>
                           <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{savTypeLabel(a.type).replace(/^\S+\s/, "")}{a.institution ? ` · ${a.institution}` : ""}{a.rate ? ` · ${a.rate}% AER` : ""}{a.contribution ? ` · ${fmtMoney(a.contribution, true)}/mo` : ""}</div>
                         </div>
@@ -3634,6 +3707,7 @@ function FinanceView({ state, up, accentColor }) {
                           <div style={{ fontSize: 17, fontWeight: 600, color: "#1D9E75" }}>{fmtMoney(bal)}</div>
                           {target > 0 && <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>of {fmtMoney(target, true)}</div>}
                         </div>
+                        <Reorder upDisabled={idx === 0} downDisabled={idx === savings.length - 1} onUp={() => moveItem("savingsAccounts", savings, a.id, -1)} onDown={() => moveItem("savingsAccounts", savings, a.id, 1)} />
                         <button onClick={() => setSavModal(a)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
                         <button onClick={() => deleteSav(a.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
                       </div>
@@ -3669,18 +3743,41 @@ function FinanceView({ state, up, accentColor }) {
             )}
             </div>
 
-            {/* Debts — bottom */}
+            {/* Credit cards */}
             <div style={{ marginTop: 26, paddingTop: 20, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
-                <div style={{ fontSize: 15, fontWeight: 600 }}>💳 Debts</div>
-                <button onClick={() => setDebtModal("new")} style={{ fontSize: 13, padding: "6px 14px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Debt</button>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>💳 Credit cards</div>
+                <button onClick={() => setDebtModal({ kind: "card" })} style={{ fontSize: 13, padding: "6px 14px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Card</button>
               </div>
-              {debts.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2px 0 6px" }}>No debts tracked. Add credit cards, loans or car finance to see payoff order and what interest is costing you.</div>}
-              {debts.length > 0 && (() => {
-                const totalOwed = debts.reduce((s, d) => s + (Number(d.balance) || 0), 0);
-                const totalMin = debts.reduce((s, d) => s + (Number(d.minPayment) || 0), 0);
-                const monthlyInterest = debts.reduce((s, d) => s + (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12, 0);
-                const ordered = [...debts].sort((a, b) => debtStrategy === "avalanche" ? (Number(b.rate) || 0) - (Number(a.rate) || 0) : (Number(a.balance) || 0) - (Number(b.balance) || 0));
+              {cards.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2px 0 6px" }}>No credit cards tracked. Add one (or import it from your linked bank) to see the balance, interest and how it fits your payoff plan.</div>}
+              {cards.length > 0 && (() => {
+                const totalOwed = cards.reduce((s, d) => s + (Number(d.balance) || 0), 0);
+                const totalMin = cards.reduce((s, d) => s + (Number(d.minPayment) || 0), 0);
+                const monthlyInterest = cards.reduce((s, d) => s + (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12, 0);
+                return (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
+                      <StatCard label="Card balances" value={fmtMoney(totalOwed)} color="#E24B4A" />
+                      <StatCard label="Min payments / mo" value={fmtMoney(totalMin)} />
+                      <StatCard label="Interest / mo" value={fmtMoney(monthlyInterest)} color="#E24B4A" sub="at current balances" />
+                    </div>
+                    {cards.map((d, idx) => renderDebtCard(d, idx, cards, "💳"))}
+                  </>
+                );
+              })()}
+            </div>
+
+            {/* Debts & loans */}
+            <div style={{ marginTop: 26, paddingTop: 20, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>🏦 Debts & loans</div>
+                <button onClick={() => setDebtModal({ kind: "loan" })} style={{ fontSize: 13, padding: "6px 14px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Debt</button>
+              </div>
+              {loans.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2px 0 6px" }}>No loans tracked. Add car finance, a personal loan or Klarna to see payoff order and what interest is costing you.</div>}
+              {loans.length > 0 && (() => {
+                const totalOwed = loans.reduce((s, d) => s + (Number(d.balance) || 0), 0);
+                const totalMin = loans.reduce((s, d) => s + (Number(d.minPayment) || 0), 0);
+                const monthlyInterest = loans.reduce((s, d) => s + (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12, 0);
                 return (
                   <>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
@@ -3688,54 +3785,35 @@ function FinanceView({ state, up, accentColor }) {
                       <StatCard label="Min payments / mo" value={fmtMoney(totalMin)} />
                       <StatCard label="Interest / mo" value={fmtMoney(monthlyInterest)} color="#E24B4A" sub="at current balances" />
                     </div>
-                    <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-                        <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>🎯 Payoff order</div>
-                        {[["avalanche", "Avalanche"], ["snowball", "Snowball"]].map(([v, l]) => (
-                          <button key={v} onClick={() => setDebtStrategy(v)} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 20, border: "none", cursor: "pointer", background: debtStrategy === v ? ac : "var(--color-background-secondary)", color: debtStrategy === v ? "#fff" : "var(--color-text-secondary)", fontWeight: debtStrategy === v ? 500 : 400 }}>{l}</button>
-                        ))}
-                      </div>
-                      <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>{debtStrategy === "avalanche" ? "Highest interest rate first — costs you the least overall." : "Smallest balance first — quick wins to keep you motivated."} Pay the minimum on all, then put any spare money on #1.</div>
-                      {ordered.map((d, i) => (
-                        <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "6px 0", borderBottom: i < ordered.length - 1 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
-                          <span style={{ width: 22, height: 22, borderRadius: "50%", background: i === 0 ? ac : "var(--color-background-secondary)", color: i === 0 ? "#fff" : "var(--color-text-secondary)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{i + 1}</span>
-                          <span style={{ flex: 1 }}>{d.name}{i === 0 && <span style={{ fontSize: 10.5, color: ac, marginLeft: 6 }}>pay this first</span>}</span>
-                          <span style={{ color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR</span>
-                          <span style={{ color: "#E24B4A", fontWeight: 500, minWidth: 64, textAlign: "right" }}>{fmtMoney(d.balance, true)}</span>
-                        </div>
-                      ))}
-                    </div>
-                    {debts.map(d => {
-                      const mi = (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12;
-                      const term = Number(d.termMonths) || 0;
-                      const plan = debtPlan(d);
-                      const pctPaid = term > 0 ? Math.min(100, Math.round((plan.paid / term) * 100)) : 0;
-                      return (
-                        <div key={d.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          <span style={{ fontSize: 22 }}>💳</span>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontWeight: 600, fontSize: 15 }}>{d.name}</div>
-                            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR{term > 0 ? ` · ${term}-month term` : ""}{d.minPayment ? ` · min ${fmtMoney(d.minPayment, true)}/mo` : ""}{mi > 0 ? ` · ~${fmtMoney(mi, true)}/mo interest` : ""}</div>
-                            {plan.hasTerm && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>{plan.paid}/{term} months paid · {plan.monthsToEnd} left · ≈ {fmtMoney(plan.monthly, true)}/mo · still payable <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(plan.remainingPayable, true)}</b></div>}
-                          </div>
-                          <div style={{ fontSize: 17, fontWeight: 600, color: "#E24B4A" }}>{fmtMoney(d.balance)}</div>
-                          <button onClick={() => setDebtModal(d)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
-                          <button onClick={() => deleteDebt(d.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
-                          </div>
-                          {plan.hasTerm && term > 0 && (
-                            <div style={{ height: 6, background: "var(--color-background-secondary)", borderRadius: 4, overflow: "hidden", marginTop: 10 }}>
-                              <div style={{ height: "100%", width: `${pctPaid}%`, background: "#1D9E75", borderRadius: 4 }} />
-                            </div>
-                          )}
-                          {(d.adjustments || []).length > 0 && <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 6 }}>{(d.adjustments || []).map(a => a.kind === "extra" ? `+${fmtMoney(a.value, true)} extra` : `${a.value}mo break (${a.mode === "extend" ? "pushed back" : "pay more"})`).join(" · ")}</div>}
-                        </div>
-                      );
-                    })}
+                    {loans.map((d, idx) => renderDebtCard(d, idx, loans, "🏦"))}
                   </>
                 );
               })()}
             </div>
+
+            {/* Payoff order — across cards + loans together */}
+            {debts.length > 0 && (() => {
+              const ordered = [...debts].sort((a, b) => debtStrategy === "avalanche" ? (Number(b.rate) || 0) - (Number(a.rate) || 0) : (Number(a.balance) || 0) - (Number(b.balance) || 0));
+              return (
+                <div style={{ marginTop: 20, background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>🎯 Payoff order <span style={{ fontWeight: 400, color: "var(--color-text-secondary)", fontSize: 12 }}>· cards &amp; loans together</span></div>
+                    {[["avalanche", "Avalanche"], ["snowball", "Snowball"]].map(([v, l]) => (
+                      <button key={v} onClick={() => setDebtStrategy(v)} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 20, border: "none", cursor: "pointer", background: debtStrategy === v ? ac : "var(--color-background-secondary)", color: debtStrategy === v ? "#fff" : "var(--color-text-secondary)", fontWeight: debtStrategy === v ? 500 : 400 }}>{l}</button>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 10 }}>{debtStrategy === "avalanche" ? "Highest interest rate first — costs you the least overall." : "Smallest balance first — quick wins to keep you motivated."} Pay the minimum on all, then put any spare money on #1.</div>
+                  {ordered.map((d, i) => (
+                    <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "6px 0", borderBottom: i < ordered.length - 1 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                      <span style={{ width: 22, height: 22, borderRadius: "50%", background: i === 0 ? ac : "var(--color-background-secondary)", color: i === 0 ? "#fff" : "var(--color-text-secondary)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{i + 1}</span>
+                      <span style={{ flex: 1 }}>{debtKind(d) === "card" ? "💳 " : ""}{d.name}{i === 0 && <span style={{ fontSize: 10.5, color: ac, marginLeft: 6 }}>pay this first</span>}</span>
+                      <span style={{ color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR</span>
+                      <span style={{ color: "#E24B4A", fontWeight: 500, minWidth: 64, textAlign: "right" }}>{fmtMoney(d.balance, true)}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
@@ -4393,7 +4471,7 @@ function FinanceView({ state, up, accentColor }) {
                           </div>
                         ))}
                         <button onClick={doImportBalances} style={{ width: "100%", fontSize: 13, padding: "9px 14px", marginTop: 12, background: ac, color: "#fff", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>⬇ Import balances into my accounts</button>
-                        <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 8, lineHeight: 1.5 }}>Fills your <b>Savings &amp; Debts</b> page from these balances (matched by name, so it updates rather than duplicates). Only accounts your bank shares over Open Banking show here — some products (e.g. Lloyds Monthly/regular savers, ISAs, fixed-term) aren’t exposed and need adding manually.</div>
+                        <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 8, lineHeight: 1.5 }}>Fills your <b>Banking</b> page from these balances (matched by name, so it updates rather than duplicates). Only accounts your bank shares over Open Banking show here — some products (e.g. Lloyds Monthly/regular savers, ISAs, fixed-term) aren’t exposed and need adding manually.</div>
                       </>
                     )}
                   </div>
