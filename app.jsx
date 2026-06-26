@@ -1477,7 +1477,7 @@ function computeMonthReport(state, mk) {
   const st = monthStats(state, mk);
   const giftsCat = (state.financeCategories || []).find(c => c.id === "g_gifts") || (state.financeCategories || []).find(c => /gift/i.test(c.name));
   const giftId = giftsCat && giftsCat.id;
-  const gifts = (state.transactions || []).filter(t => t.type !== "income" && (t.date || "").slice(0, 7) === mk && t.categoryId === giftId).length;
+  const gifts = (state.transactions || []).filter(t => t.type !== "income" && t.type !== "transfer" && (t.date || "").slice(0, 7) === mk && t.categoryId === giftId).length;
   const nwHist = state.netWorthHistory || {};
   const netWorth = nwHist[mk] != null ? nwHist[mk] : currentNetWorth(state);
   return { forecast: st.plannedTotal, actual: st.spend, income: st.income, saved: Math.max(0, st.income - st.spend),
@@ -1658,6 +1658,7 @@ function rangeStats(state, from, to) {
   cats.forEach(c => { byCat[c.id] = 0; });
   txns.forEach(t => {
     const amt = Number(t.amount) || 0;
+    if (t.type === "transfer") return; // money moved between your own accounts — not spending or income
     if (t.type === "income") { earnt += amt; return; }
     spent += amt;
     if (byCat[t.categoryId] != null) byCat[t.categoryId] += amt;
@@ -1709,6 +1710,7 @@ function monthStats(state, mk) {
   const txnByCat = {}; let txnIncome = 0, reimbursementIncome = 0, workExpenseSpend = 0;
   txns.forEach(t => {
     const amt = Number(t.amount) || 0;
+    if (t.type === "transfer") return; // money moved between your own accounts — neither spend nor income
     if (t.type === "income") { txnIncome += amt; if (t.reimbursement) reimbursementIncome += amt; return; }
     if (t.workExpense) workExpenseSpend += amt;
     txnByCat[t.categoryId] = (txnByCat[t.categoryId] || 0) + amt;
@@ -1822,7 +1824,7 @@ function recurringFixed(state) {
 // cash-flow forecast: fixed bills still to come are added on top of your spending pace.
 function cashflowParts(state, mk, fixed) {
   fixed = fixed || recurringFixed(state);
-  const monthTxns = (state.transactions || []).filter(t => t.type !== "income" && (t.date || "").slice(0, 7) === mk);
+  const monthTxns = (state.transactions || []).filter(t => t.type !== "income" && t.type !== "transfer" && (t.date || "").slice(0, 7) === mk);
   // All money out this month (categorised or not) — what actually left the account.
   const spend = monthTxns.reduce((s, t) => s + (Number(t.amount) || 0), 0);
   const matchPaid = kw => { kw = (kw || "").toLowerCase().trim(); if (!kw) return 0; return monthTxns.filter(t => (t.description || "").toLowerCase().includes(kw)).reduce((s, t) => s + (Number(t.amount) || 0), 0); };
@@ -1957,10 +1959,11 @@ function TxnModal({ txn, cats, accentColor, onSave, onClose, recurKind, onRecur 
       <ModalHeader title={txn?.id ? "Edit transaction" : "New transaction"} onClose={onClose} />
       <Field label="Type">
         <div style={{ display: "flex", gap: 6 }}>
-          {[["spend", "💸 Spending"], ["income", "💰 Income"]].map(([v, l]) => (
-            <button key={v} onClick={() => up("type", v)} style={{ flex: 1, padding: "7px 4px", borderRadius: 8, border: `1.5px solid ${t.type === v ? accentColor : "var(--color-border-tertiary)"}`, background: t.type === v ? hex2rgba(accentColor, 0.1) : "transparent", color: t.type === v ? accentColor : "var(--color-text-secondary)", fontSize: 12, fontWeight: t.type === v ? 500 : 400, cursor: "pointer" }}>{l}</button>
+          {[["spend", "💸 Spending"], ["income", "💰 Income"], ["transfer", "🔄 Transfer"]].map(([v, l]) => (
+            <button key={v} onClick={() => up("type", v)} style={{ flex: 1, padding: "7px 4px", borderRadius: 8, border: `1.5px solid ${t.type === v ? accentColor : "var(--color-border-tertiary)"}`, background: t.type === v ? hex2rgba(accentColor, 0.1) : "transparent", color: t.type === v ? accentColor : "var(--color-text-secondary)", fontSize: 11.5, fontWeight: t.type === v ? 500 : 400, cursor: "pointer" }}>{l}</button>
           ))}
         </div>
+        {t.type === "transfer" && <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 6 }}>Money moved between your own accounts (e.g. into savings, round-ups). Counted as <b>neither spending nor income</b>, so it won't affect your monthly totals.</div>}
       </Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Amount (£)"><input type="number" step="0.01" placeholder="0.00" value={t.amount} onChange={e => up("amount", e.target.value)} style={{ width: "100%", boxSizing: "border-box" }} autoFocus /></Field>
@@ -2058,7 +2061,7 @@ function detectSubscriptions(state) {
   const norm = s => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const byName = {};
   (state.transactions || []).forEach(t => {
-    if (t.type === "income") return;
+    if (t.type === "income" || t.type === "transfer") return;
     const k = norm(t.description);
     if (!k) return;
     (byName[k] = byName[k] || { name: (t.description || "").trim(), amounts: [], months: new Set(), lastDate: "", categoryId: t.categoryId }).amounts.push(Number(t.amount) || 0);
@@ -2088,6 +2091,16 @@ function guessTxnCat(desc, cats) {
   return "";
 }
 
+// Money the user shifts between their own accounts (round-ups, savings sweeps) reads
+// like both a spend and an income but is neither. Spot the obvious ones by description
+// so they're imported as "transfer" and kept out of the monthly totals. Deliberately
+// narrow (savings-style sweeps) so a genuine "transfer from Mum" income isn't hidden.
+const TRANSFER_KEYWORDS = ["save the change", "save the difference", "round up", "round-up", "roundup", "savings transfer", "transfer to savings", "to savings", "from savings", "savings pot", "money box", "moneybox", "savings sweep", "auto save", "autosave"];
+function looksLikeTransfer(desc) {
+  const d = (desc || "").toLowerCase();
+  return TRANSFER_KEYWORDS.some(k => d.includes(k));
+}
+
 // Merge transactions pulled from a live bank into the existing list, de-duping
 // against bank rows already imported (same date+amount+description+bank) and
 // auto-categorising spends. Returns the new list and how many were added.
@@ -2099,7 +2112,9 @@ function mergeBankTxns(existing, incoming, cats) {
   for (const t of (incoming || [])) {
     if (seen.has(key(t))) continue;
     seen.add(key(t));
-    list.unshift({ ...t, id: genId(), categoryId: t.type === "spend" ? guessTxnCat(t.description, cats) : "" });
+    const isTransfer = looksLikeTransfer(t.description);
+    const type = isTransfer ? "transfer" : t.type;
+    list.unshift({ ...t, id: genId(), type, categoryId: type === "spend" ? guessTxnCat(t.description, cats) : "" });
     added++;
   }
   return { list, added };
@@ -3231,7 +3246,7 @@ function FinanceView({ state, up, accentColor }) {
 
           {/* Commitments pulled automatically from the other tabs — projected vs actual */}
           {(() => {
-            const monthTxns = (state.transactions || []).filter(t => t.type !== "income" && (t.date || "").slice(0, 7) === month);
+            const monthTxns = (state.transactions || []).filter(t => t.type !== "income" && t.type !== "transfer" && (t.date || "").slice(0, 7) === month);
             const matchActual = kw => { kw = (kw || "").toLowerCase().trim(); if (!kw) return null; const ms = monthTxns.filter(t => (t.description || "").toLowerCase().includes(kw)); return ms.length ? ms.reduce((s, t) => s + (Number(t.amount) || 0), 0) : null; };
             const items = [
               ...savings.filter(a => Number(a.contribution) > 0).map(a => ({ icon: "🐖", label: a.name, projected: Number(a.contribution) || 0, kw: a.name })),
@@ -3351,6 +3366,38 @@ function FinanceView({ state, up, accentColor }) {
                 {line("Income received", fmtMoney(stats.incomeActual), { color: "#1D9E75" })}
                 {line("− Spent so far", fmtMoney(stats.manualActualTotal))}
                 {balRow("Actual balance", actBal)}
+              </div>
+            );
+          })()}
+
+          {/* This month's transactions, listed beneath the projected plan */}
+          {(() => {
+            const monthTx = (state.transactions || []).filter(t => (t.date || "").slice(0, 7) === month).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+            const spent = monthTx.filter(t => t.type !== "income" && t.type !== "transfer").reduce((s, t) => s + (Number(t.amount) || 0), 0);
+            const earnt = monthTx.filter(t => t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0);
+            return (
+              <div style={{ marginTop: 16, background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
+                <div style={{ display: "flex", alignItems: "center", marginBottom: 4, gap: 8, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, fontSize: 14, fontWeight: 600, minWidth: 140 }}>🧾 Transactions this month</div>
+                  <button onClick={() => setTab("transactions")} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", color: ac, background: "var(--color-background-secondary)", border: "none" }}>Full transactions tab →</button>
+                </div>
+                {monthTx.length > 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Spent <b style={{ color: "#E24B4A" }}>{fmtMoney(spent)}</b> · Earnt <b style={{ color: "#1D9E75" }}>{fmtMoney(earnt)}</b> · {monthTx.length} transaction{monthTx.length !== 1 ? "s" : ""}</div>}
+                {monthTx.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "6px 0" }}>No transactions logged for {monthShort(month)} yet. They appear here automatically once you import or add them.</div>}
+                {monthTx.map(t => {
+                  const c = catById(t.categoryId);
+                  const income = t.type === "income";
+                  const transfer = t.type === "transfer";
+                  return (
+                    <div key={t.id} onClick={() => setTxnModal(t)} title="Edit transaction" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 4px", borderTop: "0.5px solid var(--color-border-tertiary)", cursor: "pointer", opacity: transfer ? 0.7 : 1 }}>
+                      <span style={{ fontSize: 17, width: 24, textAlign: "center" }}>{transfer ? "🔄" : income ? "💰" : (c?.emoji || "❓")}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (transfer ? "Transfer" : income ? "Income" : "Transaction")}{transfer && <span style={{ fontSize: 9.5, marginLeft: 6, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", padding: "1px 6px", borderRadius: 9 }}>not counted</span>}</div>
+                        <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{fmtDate(t.date)}{!income && !transfer && c ? ` · ${c.name}` : ""}</div>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: transfer ? "var(--color-text-secondary)" : income ? "#1D9E75" : "var(--color-text-primary)" }}>{transfer ? "↔ " : income ? "+" : "−"}{fmtMoney(t.amount)}</div>
+                    </div>
+                  );
+                })}
               </div>
             );
           })()}
@@ -3943,8 +3990,9 @@ function FinanceView({ state, up, accentColor }) {
         let list = (state.transactions || []).filter(t => (t.date || "") >= bounds.from && (t.date || "") <= bounds.to).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
         if (txnFilter) list = list.filter(t => t.categoryId === txnFilter);
         if (txnSearch.trim()) { const q = txnSearch.toLowerCase(); list = list.filter(t => (t.description || "").toLowerCase().includes(q)); }
-        const pSpent = list.filter(t => t.type !== "income").reduce((s, t) => s + (Number(t.amount) || 0), 0);
+        const pSpent = list.filter(t => t.type !== "income" && t.type !== "transfer").reduce((s, t) => s + (Number(t.amount) || 0), 0);
         const pEarnt = list.filter(t => t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0);
+        const pMoved = list.filter(t => t.type === "transfer").reduce((s, t) => s + (Number(t.amount) || 0), 0);
         const modeBtn = (m, l) => <button key={m} onClick={() => { setTxnMode(m); setTxnOffset(0); }} style={{ fontSize: 12.5, padding: "6px 12px", borderRadius: 20, border: "none", cursor: "pointer", background: txnMode === m ? ac : "var(--color-background-secondary)", color: txnMode === m ? "#fff" : "var(--color-text-secondary)", fontWeight: txnMode === m ? 500 : 400 }}>{l}</button>;
         return (
           <div>
@@ -3991,6 +4039,7 @@ function FinanceView({ state, up, accentColor }) {
                 <span>Spent <b style={{ color: "#E24B4A" }}>{fmtMoney(pSpent)}</b></span>
                 <span>Earnt <b style={{ color: "#1D9E75" }}>{fmtMoney(pEarnt)}</b></span>
                 <span>Net <b style={{ color: pEarnt - pSpent >= 0 ? "#639922" : "#E24B4A" }}>{pEarnt - pSpent >= 0 ? "+" : "−"}{fmtMoney(Math.abs(pEarnt - pSpent))}</b></span>
+                {pMoved > 0 && <span title="Moved between your own accounts — not counted as spending or income">Moved <b style={{ color: "var(--color-text-secondary)" }}>↔ {fmtMoney(pMoved)}</b></span>}
                 <span style={{ color: "var(--color-text-secondary)" }}>{list.length} transaction{list.length !== 1 ? "s" : ""}</span>
               </div>
             </div>
@@ -4042,23 +4091,24 @@ function FinanceView({ state, up, accentColor }) {
             {list.map(t => {
               const c = catById(t.categoryId);
               const income = t.type === "income";
-              const recur = income ? null : recurOf(t);
+              const transfer = t.type === "transfer";
+              const recur = (income || transfer) ? null : recurOf(t);
               const isDD = recur && recur.kind === "directDebit";
               return (
-                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: recur ? hex2rgba(ac, 0.06) : "var(--color-background-primary)", borderRadius: 10, border: `0.5px solid ${recur ? hex2rgba(ac, 0.4) : "var(--color-border-tertiary)"}`, marginBottom: 7 }}>
-                  <span style={{ fontSize: 20, width: 26, textAlign: "center" }}>{income ? "💰" : recur ? (isDD ? "🏦" : "🔁") : (c?.emoji || "❓")}</span>
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", background: recur ? hex2rgba(ac, 0.06) : "var(--color-background-primary)", borderRadius: 10, border: `0.5px solid ${recur ? hex2rgba(ac, 0.4) : "var(--color-border-tertiary)"}`, marginBottom: 7, opacity: transfer ? 0.75 : 1 }}>
+                  <span style={{ fontSize: 20, width: 26, textAlign: "center" }}>{transfer ? "🔄" : income ? "💰" : recur ? (isDD ? "🏦" : "🔁") : (c?.emoji || "❓")}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (income ? "Income" : "Transaction")}{recur && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba(ac, 0.14), color: ac, padding: "1px 7px", borderRadius: 10 }}>{isDD ? "🏦 Direct debit" : "🔁 Subscription"}</span>}{t.workExpense && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#378ADD", 0.14), color: "#378ADD", padding: "1px 7px", borderRadius: 10 }}>💼 {t.reimbursed ? "reimbursed" : "expense"}</span>}{t.reimbursement && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#1D9E75", 0.14), color: "#1D9E75", padding: "1px 7px", borderRadius: 10 }}>↩️ reimbursement</span>}</div>
+                    <div style={{ fontSize: 14, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (transfer ? "Transfer" : income ? "Income" : "Transaction")}{transfer && <span style={{ fontSize: 10, marginLeft: 6, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", padding: "1px 7px", borderRadius: 10 }}>🔄 transfer · not counted</span>}{recur && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba(ac, 0.14), color: ac, padding: "1px 7px", borderRadius: 10 }}>{isDD ? "🏦 Direct debit" : "🔁 Subscription"}</span>}{t.workExpense && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#378ADD", 0.14), color: "#378ADD", padding: "1px 7px", borderRadius: 10 }}>💼 {t.reimbursed ? "reimbursed" : "expense"}</span>}{t.reimbursement && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba("#1D9E75", 0.14), color: "#1D9E75", padding: "1px 7px", borderRadius: 10 }}>↩️ reimbursement</span>}</div>
                     <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{fmtDate(t.date)}{t.source === "manual" ? "" : " · 🏦"}</div>
                   </div>
-                  {!income && (
+                  {!income && !transfer && (
                     <select value={t.categoryId || ""} onChange={e => setTxnCat(t.id, e.target.value)} style={{ fontSize: 11, padding: "3px 6px", maxWidth: 130 }}>
                       <option value="">Uncategorised</option>
                       {cats.map(sc => <option key={sc.id} value={sc.id}>{sc.emoji} {sc.name}</option>)}
                     </select>
                   )}
-                  <div style={{ fontSize: 14, fontWeight: 600, color: income ? "#1D9E75" : "var(--color-text-primary)", width: 84, textAlign: "right" }}>{income ? "+" : "−"}{fmtMoney(t.amount)}</div>
-                  {!income && <button onClick={() => flagRecurring(t)} title={recur ? "Edit this tracked payment" : "Mark as a subscription or direct debit"} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "2px 4px", opacity: recur ? 1 : 0.55 }}>🔁</button>}
+                  <div style={{ fontSize: 14, fontWeight: 600, color: transfer ? "var(--color-text-secondary)" : income ? "#1D9E75" : "var(--color-text-primary)", width: 84, textAlign: "right" }}>{transfer ? "↔ " : income ? "+" : "−"}{fmtMoney(t.amount)}</div>
+                  {!income && !transfer && <button onClick={() => flagRecurring(t)} title={recur ? "Edit this tracked payment" : "Mark as a subscription or direct debit"} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "2px 4px", opacity: recur ? 1 : 0.55 }}>🔁</button>}
                   <button onClick={() => setTxnModal(t)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "2px 4px" }}>✏️</button>
                   <button onClick={() => deleteTxn(t.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, padding: "2px 4px" }}>🗑</button>
                 </div>
