@@ -1443,6 +1443,16 @@ function payPeriodBounds(payday, anchor, offset) {
     // Payday-to-next-payday so the boundaries read clearly, e.g. "29th May to 5th June".
     return { from, to, label: `${fmtDMY(from)} to ${fmtDMY(addDaysStr(from, 7))}` };
   }
+  if (payday.type === "lastDay") {
+    // Paid on the last calendar day of each month (28th–31st), whatever weekday it is.
+    const lastOf = (y, m) => new Date(y, m + 1, 0);
+    const a = new Date(anchor + "T00:00:00");
+    let start = lastOf(a.getFullYear(), a.getMonth());
+    if (a < start) start = lastOf(a.getFullYear(), a.getMonth() - 1);
+    start = lastOf(start.getFullYear(), start.getMonth() + offset);
+    const next = lastOf(start.getFullYear(), start.getMonth() + 1);
+    return { from: ymdLocal(start), to: addDaysStr(ymdLocal(next), -1), label: `${fmtDMY(ymdLocal(start))} to ${fmtDMY(ymdLocal(next))}` };
+  }
   if (payday.type === "lastWeekday") {
     const w = Number(payday.day); // 0=Sun..6=Sat
     const lastOf = (y, m) => { const e = new Date(y, m + 1, 0); while (e.getDay() !== w) e.setDate(e.getDate() - 1); return e; };
@@ -2854,6 +2864,7 @@ function FinanceView({ state, up, accentColor }) {
   const [caModal, setCaModal] = useState(null);
   const [planText, setPlanText] = useState("");
   const [txnFilter, setTxnFilter] = useState("");
+  const [txnTypeFilter, setTxnTypeFilter] = useState(""); // "", "income", "spend", "transfer"
   const [txnSearch, setTxnSearch] = useState("");
   const [txnMode, setTxnMode] = useState("payperiod"); // payperiod | week | month | range
   const [txnOffset, setTxnOffset] = useState(0);
@@ -4020,7 +4031,9 @@ function FinanceView({ state, up, accentColor }) {
           : txnMode === "month" ? monthBoundsStr(todayStr(), txnOffset)
           : payPeriodBounds(payday, todayStr(), txnOffset);
         let list = (state.transactions || []).filter(t => (t.date || "") >= bounds.from && (t.date || "") <= bounds.to).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-        if (txnFilter) list = list.filter(t => t.categoryId === txnFilter);
+        if (txnTypeFilter) list = list.filter(t => txnTypeFilter === "spend" ? (t.type !== "income" && t.type !== "transfer") : t.type === txnTypeFilter);
+        if (txnFilter === "__uncat__") list = list.filter(t => t.type !== "income" && t.type !== "transfer" && !t.categoryId);
+        else if (txnFilter) list = list.filter(t => t.categoryId === txnFilter);
         if (txnSearch.trim()) { const q = txnSearch.toLowerCase(); list = list.filter(t => (t.description || "").toLowerCase().includes(q)); }
         const pSpent = list.filter(t => t.type !== "income" && t.type !== "transfer").reduce((s, t) => s + (Number(t.amount) || 0), 0);
         const pEarnt = list.filter(t => t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0);
@@ -4039,12 +4052,15 @@ function FinanceView({ state, up, accentColor }) {
                   <span style={{ color: "var(--color-text-secondary)" }}>I get paid</span>
                   <select value={payday.type} onChange={e => up({ payday: { ...payday, type: e.target.value, day: e.target.value === "monthly" ? 1 : 5 } })} style={{ fontSize: 12.5 }}>
                     <option value="monthly">monthly (on a date)</option>
+                    <option value="lastDay">monthly (last day of month)</option>
                     <option value="lastWeekday">monthly (last weekday)</option>
                     <option value="weekly">weekly</option>
                   </select>
-                  {payday.type === "monthly" ? (
+                  {payday.type === "monthly" && (
                     <><span style={{ color: "var(--color-text-secondary)" }}>on day</span><input type="number" min="1" max="28" value={payday.day} onChange={e => up({ payday: { ...payday, day: Math.min(28, Math.max(1, parseInt(e.target.value, 10) || 1)) } })} style={{ width: 60, fontSize: 12.5 }} /></>
-                  ) : (
+                  )}
+                  {payday.type === "lastDay" && <span style={{ color: "var(--color-text-secondary)" }}>— the last calendar day, whatever weekday it lands on</span>}
+                  {(payday.type === "lastWeekday" || payday.type === "weekly") && (
                     <><span style={{ color: "var(--color-text-secondary)" }}>{payday.type === "lastWeekday" ? "last" : "every"}</span>
                     <select value={payday.day} onChange={e => up({ payday: { ...payday, day: parseInt(e.target.value, 10) } })} style={{ fontSize: 12.5 }}>
                       {["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map((d, i) => <option key={i} value={i}>{d}</option>)}
@@ -4079,8 +4095,15 @@ function FinanceView({ state, up, accentColor }) {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <input placeholder="Search…" value={txnSearch} onChange={e => setTxnSearch(e.target.value)} style={{ fontSize: 13, width: 140 }} />
+                <select value={txnTypeFilter} onChange={e => setTxnTypeFilter(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
+                  <option value="">All types</option>
+                  <option value="income">💰 Income</option>
+                  <option value="spend">💸 Spending</option>
+                  <option value="transfer">🔄 Transfers</option>
+                </select>
                 <select value={txnFilter} onChange={e => setTxnFilter(e.target.value)} style={{ fontSize: 12, padding: "5px 8px" }}>
                   <option value="">All categories</option>
+                  <option value="__uncat__">❓ Uncategorised</option>
                   {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
                 </select>
               </div>
