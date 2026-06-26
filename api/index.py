@@ -293,6 +293,19 @@ async def bank_accounts(authorization: Optional[str] = Header(default=None)):
     return {"accounts": out}
 
 
+@app.get("/api/bank/raw")
+async def bank_raw(authorization: Optional[str] = Header(default=None)):
+    # TEMPORARY DEBUG. Returns the raw, unparsed JSON Lunch Flow gives us for
+    # /accounts so we can see exactly where the balance lives and fix the parser.
+    # Read-only and scoped to the user; remove once balances are mapped correctly.
+    uid = await current_user(authorization)
+    rows = await db_get({"user_id": f"eq.{uid}", "provider": "eq.lunchflow"})
+    if not rows or not rows[0].get("api_key"):
+        return {"raw": None, "note": "no Lunch Flow key stored"}
+    key = rows[0]["api_key"]
+    return {"raw": await lunchflow_get(key, "/accounts")}
+
+
 @app.post("/api/bank/disconnect")
 async def bank_disconnect(bank: str = "lunchflow", authorization: Optional[str] = Header(default=None)):
     # Drops the stored Lunch Flow key. The bank links themselves live in Lunch
