@@ -2921,6 +2921,12 @@ function FinanceView({ state, up, accentColor }) {
   const loadAccounts = () => { if (!bank.enabled) return; bank.getAccounts().then(r => setBankAccounts((r && r.accounts) || [])).catch(() => {}); };
   useEffect(() => { loadConns(); loadAccounts(); }, []);
   const connOf = prov => bankConns.find(c => c.provider === prov && c.connected);
+  // Auto-pull Trading 212 holdings once per session as soon as we know it's
+  // connected, so new holdings (e.g. bought next month) appear without a manual sync.
+  const t212AutoSynced = useRef(false);
+  useEffect(() => {
+    if (!t212AutoSynced.current && connOf("t212")) { t212AutoSynced.current = true; doSyncT212(); }
+  }, [bankConns]);
 
   async function doConnectBank() {
     const key = bankKey.trim(); if (!key) return;
@@ -3477,6 +3483,10 @@ function FinanceView({ state, up, accentColor }) {
             items.forEach(it => { const v = (stats.byItem || {})[it.id] || {}; pj += Number(v.projected) || 0; av += Number(v.actual) || 0; });
             const auto = stats.byCat[c.id]?.auto || [];
             const autoSum = stats.byCat[c.id]?.autoSum || 0;
+            // Actual now rolls up this month's real transactions for the category
+            // (falls back to any manually-typed actuals when there are no txns).
+            const spent = stats.byCat[c.id]?.spent || 0;
+            const hasTxnSpend = spent !== av;
             return (
               <div key={c.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
                 <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
@@ -3515,10 +3525,10 @@ function FinanceView({ state, up, accentColor }) {
                 ))}
                 <AddItemRow accentColor={ac} onAdd={name => addItem(c.id, name)} />
                 <div style={{ display: "flex", alignItems: "center", marginTop: 10, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", fontWeight: 600, fontSize: 13 }}>
-                  <div style={{ flex: 1 }}>Subtotal{autoSum > 0 ? <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)", marginLeft: 6 }}>incl. {fmtMoney(autoSum, true)} from tasks/dates</span> : ""}</div>
+                  <div style={{ flex: 1 }}>Subtotal{autoSum > 0 ? <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)", marginLeft: 6 }}>incl. {fmtMoney(autoSum, true)} from tasks/dates</span> : ""}{hasTxnSpend ? <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)", marginLeft: 6 }}>actual from transactions</span> : ""}</div>
                   <div style={{ width: 96, textAlign: "right" }}>{fmtMoney(pj + autoSum)}</div>
-                  <div style={{ width: 96, textAlign: "right" }}>{fmtMoney(av)}</div>
-                  <div style={{ width: 70, textAlign: "right", color: (pj + autoSum - av) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(pj + autoSum - av, true)}</div>
+                  <div style={{ width: 96, textAlign: "right" }}>{fmtMoney(spent)}</div>
+                  <div style={{ width: 70, textAlign: "right", color: (pj + autoSum - spent) >= 0 ? "#639922" : "#E24B4A" }}>{fmtMoney(pj + autoSum - spent, true)}</div>
                   <div style={{ width: 24 }} />
                 </div>
               </div>
@@ -3529,7 +3539,7 @@ function FinanceView({ state, up, accentColor }) {
           {(() => {
             const buffer = Number(state.safetyBuffer) || 0;
             const projBal = stats.incomeProjected - stats.plannedTotal - buffer;
-            const actBal = stats.incomeActual - stats.manualActualTotal;
+            const actBal = stats.incomeActual - stats.spend;
             const groupLabel = { fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--color-text-secondary)", marginBottom: 10 };
             const line = (label, value, opts = {}) => (
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 7, color: opts.muted ? "var(--color-text-secondary)" : "var(--color-text-primary)" }}>
@@ -3554,47 +3564,12 @@ function FinanceView({ state, up, accentColor }) {
 
                 <div style={{ ...groupLabel, marginTop: 20, paddingTop: 16, borderTop: `0.5px solid ${hex2rgba(ac, 0.25)}` }}>Actual so far</div>
                 {line("Income received", fmtMoney(stats.incomeActual), { color: "#1D9E75" })}
-                {line("− Spent so far", fmtMoney(stats.manualActualTotal))}
+                {line("− Spent so far", fmtMoney(stats.spend), { hint: "from your transactions" })}
                 {balRow("Actual balance", actBal)}
               </div>
             );
           })()}
 
-          {/* This month's transactions, listed beneath the projected plan */}
-          {(() => {
-            const payday = state.payday || { type: "monthly", day: 1 };
-            // Spending/transfers by calendar month; income by the month its pay period
-            // funds (so month-end salary shows under the month it covers).
-            const monthTx = (state.transactions || []).filter(t => t.type === "income" ? incomeBudgetMonthKey(t.date, payday) === month : (t.date || "").slice(0, 7) === month).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-            const spent = monthTx.filter(t => t.type !== "income" && t.type !== "transfer").reduce((s, t) => s + (Number(t.amount) || 0), 0);
-            const earnt = monthTx.filter(t => t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0);
-            return (
-              <div style={{ marginTop: 16, background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
-                <div style={{ display: "flex", alignItems: "center", marginBottom: 4, gap: 8, flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, fontSize: 14, fontWeight: 600, minWidth: 140 }}>🧾 Transactions this month</div>
-                  <button onClick={() => setTab("transactions")} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", color: ac, background: "var(--color-background-secondary)", border: "none" }}>Full transactions tab →</button>
-                </div>
-                {monthTx.length > 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>Spent <b style={{ color: "#E24B4A" }}>{fmtMoney(spent)}</b> · Earnt <b style={{ color: "#1D9E75" }}>{fmtMoney(earnt)}</b> · {monthTx.length} transaction{monthTx.length !== 1 ? "s" : ""}</div>}
-                {monthTx.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "6px 0" }}>No transactions logged for {monthShort(month)} yet. They appear here automatically once you import or add them.</div>}
-                {monthTx.map(t => {
-                  const c = catById(t.categoryId);
-                  const income = t.type === "income";
-                  const transfer = t.type === "transfer";
-                  const otherMonth = income && (t.date || "").slice(0, 7) !== month;
-                  return (
-                    <div key={t.id} onClick={() => setTxnModal(t)} title="Edit transaction" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 4px", borderTop: "0.5px solid var(--color-border-tertiary)", cursor: "pointer", opacity: transfer ? 0.7 : 1 }}>
-                      <span style={{ fontSize: 17, width: 24, textAlign: "center" }}>{transfer ? "🔄" : income ? "💰" : (c?.emoji || "❓")}</span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (transfer ? "Transfer" : income ? "Income" : "Transaction")}{transfer && <span style={{ fontSize: 9.5, marginLeft: 6, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", padding: "1px 6px", borderRadius: 9 }}>not counted</span>}{otherMonth && <span title={`Paid ${fmtDate(t.date)} — funds ${monthShort(month)}`} style={{ fontSize: 9.5, marginLeft: 6, background: hex2rgba("#1D9E75", 0.14), color: "#1D9E75", padding: "1px 6px", borderRadius: 9 }}>funds {monthShort(month)}</span>}</div>
-                        <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{fmtDate(t.date)}{!income && !transfer && c ? ` · ${c.name}` : ""}</div>
-                      </div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: transfer ? "var(--color-text-secondary)" : income ? "#1D9E75" : "var(--color-text-primary)" }}>{transfer ? "↔ " : income ? "+" : "−"}{fmtMoney(t.amount)}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
         </div>
       )}
 
@@ -4525,6 +4500,22 @@ function FinanceView({ state, up, accentColor }) {
               </>
             );
           })()}
+
+          {/* All other live connections live here too, so this page is the single
+              place to see everything that's linked. Trading 212 is managed on the
+              Investments tab; this mirrors its status. */}
+          {bank.enabled && (
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14, display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ fontSize: 26 }}>💹</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>Trading 212</div>
+                {connOf("t212")
+                  ? <div style={{ fontSize: 12, color: "#2e8b57", marginTop: 2 }}>✓ Connected{t212Info ? ` · ${fmtMoney(t212Info.total)} · ${(t212Info.holdings || []).length} holding${(t212Info.holdings || []).length === 1 ? "" : "s"}` : ""}</div>
+                  : <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>Not connected — link it for live holdings &amp; prices</div>}
+              </div>
+              <button onClick={() => setTab("investments")} style={{ fontSize: 12.5, padding: "7px 14px", borderRadius: 9, cursor: "pointer", color: ac, background: "var(--color-background-secondary)", border: "none", fontWeight: 500 }}>{connOf("t212") ? "Manage" : "Connect"} →</button>
+            </div>
+          )}
         </div>
       )}
     </div>

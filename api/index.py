@@ -296,19 +296,27 @@ async def bank_accounts(authorization: Optional[str] = Header(default=None)):
                 ccy = _lf_first(node, "currency", "iso_currency_code", "currency_code", default="GBP")
             except (HTTPException, TypeError, ValueError):
                 bal = None
-        # No type in the list either — infer one from the name so the app can pick
-        # the right icon and route the balance to savings/debts/current on import.
+        institution = _lf_first(a, "institution", "institution_name", "bank", "provider", default="")
+        # No type in the list either — infer one from the name + institution so the
+        # app can pick the right icon and route the balance to cards/loans/savings/
+        # current on import. UK card issuers (Capital One, Barclaycard, …) carry no
+        # "credit"/"card" word in their name, so match them by issuer too.
         atype = str(_lf_first(a, "type", "account_type", "subtype", "category", "class", default="")).lower()
         if not atype:
-            n = name.lower()
-            if any(w in n for w in ("credit", "loan", "mortgage", "card")):
+            hay = f"{name} {institution}".lower()
+            CARD_ISSUERS = ("capital one", "barclaycard", "amex", "american express", "vanquis",
+                            "aqua", "marbles", "luma", "fluid", "tymit", "zopa", "newday", "mbna",
+                            "118 118", "ocean", "thinkmoney", "jaja")
+            if any(w in hay for w in ("credit", "card", "mastercard", "visa")) or any(w in hay for w in CARD_ISSUERS):
                 atype = "credit"
-            elif any(w in n for w in ("saving", "saver", "isa", "fund", "emergency")):
+            elif any(w in hay for w in ("loan", "mortgage", "finance", "klarna")):
+                atype = "loan"
+            elif any(w in hay for w in ("saving", "saver", "isa", "fund", "emergency")):
                 atype = "savings"
         out.append({
             "id": aid,
             "name": name,
-            "institution": _lf_first(a, "institution", "institution_name", "bank", "provider", default=""),
+            "institution": institution,
             "type": atype,
             "currency": ccy,
             "balance": bal,
