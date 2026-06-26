@@ -3804,6 +3804,7 @@ function FinanceView({ state, up, accentColor }) {
                     <input type="password" value={t212Key} onChange={e => setT212Key(e.target.value)} placeholder="Trading 212 API key" style={{ flex: 1, fontSize: 13, padding: "8px 11px", boxSizing: "border-box" }} />
                     <button onClick={doConnectT212} disabled={!t212Key.trim() || !!bankBusy} style={{ fontSize: 13, padding: "8px 16px", background: ac, color: "#fff", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>{bankBusy === "t212" ? "…" : "Connect"}</button>
                   </div>
+                  <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 12, maxWidth: 460, marginInline: "auto", lineHeight: 1.55, background: "var(--color-background-secondary)", borderRadius: 8, padding: "9px 12px" }}>ℹ️ Linking Trading 212 <b>inside Lunch Flow</b> only brings in cash movements — it does <b>not</b> fill this page. For your actual holdings, units, gain/loss and diversification, connect Trading 212 <b>directly</b> here with its own read-only API key.</div>
                 </>
               )}
             </div>
