@@ -89,7 +89,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], job: {}, keyDocuments: [], trips: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, financePlanTemplate: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], job: {}, keyDocuments: [], trips: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -1741,10 +1741,22 @@ function subAlreadyTracked(s, state) {
 // Roll up one month's budget + transactions into the numbers every finance view needs.
 // Projected = the plan. Actual = real transactions for a group when present, otherwise the
 // manually-typed Actual column (which the Lloyds link will replace in Phase B).
+// The plan in force for a month: its own saved override if it has one, otherwise
+// the recurring template (so the breakdown plan is used every month automatically).
+// Falls back to the most recent prior month only if no template is set yet.
+function effectivePlan(state, mk) {
+  const plans = state.financePlans || {};
+  if (plans[mk]) return plans[mk];
+  const tmpl = state.financePlanTemplate;
+  if (tmpl && Object.keys(tmpl).length) return tmpl;
+  const prior = Object.keys(plans).filter(k => k < mk).sort();
+  return prior.length ? plans[prior[prior.length - 1]] : {};
+}
+
 function monthStats(state, mk) {
   const cats = state.financeCategories || [];
   const txns = (state.transactions || []).filter(t => (t.date || "").slice(0, 7) === mk);
-  const plan = (state.financePlans || {})[mk] || {};
+  const plan = effectivePlan(state, mk);
   const byItem = plan.byItem || {};
 
   // Real transactions grouped by category (the eventual source of "actual").
@@ -3025,40 +3037,50 @@ function FinanceView({ state, up, accentColor }) {
   function removeItem(catId, itemId) {
     up({ financeCategories: cats.map(c => c.id === catId ? { ...c, items: (c.items || []).filter(i => i.id !== itemId) } : c) });
   }
-  function setItemAmount(itemId, sub, value) {
+  // Write an edit to a single month's plan. The month gets its OWN copy (seeded
+  // from the template the first time it's touched) so editing one month never
+  // affects the months around it. Editing the current or a future month also
+  // updates the recurring template, so changes carry forward; editing a past
+  // month stays isolated to that month.
+  function writePlan(mk, mutate) {
     const plans = { ...(state.financePlans || {}) };
-    const cur = plans[month] || {};
-    const byItem = { ...(cur.byItem || {}) };
-    byItem[itemId] = { ...(byItem[itemId] || {}), [sub]: value };
-    plans[month] = { ...cur, byItem };
-    up({ financePlans: plans });
+    const base = plans[mk] || JSON.parse(JSON.stringify(effectivePlan(state, mk) || {}));
+    const next = mutate(base);
+    plans[mk] = next;
+    const patch = { financePlans: plans };
+    if (mk >= curMonthKey()) patch.financePlanTemplate = JSON.parse(JSON.stringify(next));
+    up(patch);
+  }
+  function setItemAmount(itemId, sub, value) {
+    writePlan(month, cur => {
+      const byItem = { ...(cur.byItem || {}) };
+      byItem[itemId] = { ...(byItem[itemId] || {}), [sub]: value };
+      return { ...cur, byItem };
+    });
   }
   function setIncomeField(field, sub, value) {
-    const plans = { ...(state.financePlans || {}) };
-    const cur = plans[month] || {};
-    plans[month] = { ...cur, [field]: { ...(cur[field] || {}), [sub]: value } };
-    up({ financePlans: plans });
+    writePlan(month, cur => ({ ...cur, [field]: { ...(cur[field] || {}), [sub]: value } }));
   }
   function applyParsed() {
     if (!planText.trim()) return;
     const p = localParsePlan(planText, cats);
-    const plans = { ...(state.financePlans || {}) };
-    const cur = plans[month] || {};
-    const byItem = { ...(cur.byItem || {}) };
-    Object.entries(p.byItem).forEach(([id, v]) => { byItem[id] = { ...(byItem[id] || {}), projected: v }; });
-    const next = { ...cur, byItem };
-    if (p.income != null) next.income = { ...(cur.income || {}), projected: p.income };
-    plans[month] = next;
-    up({ financePlans: plans });
+    writePlan(month, cur => {
+      const byItem = { ...(cur.byItem || {}) };
+      Object.entries(p.byItem).forEach(([id, v]) => { byItem[id] = { ...(byItem[id] || {}), projected: v }; });
+      const next = { ...cur, byItem };
+      if (p.income != null) next.income = { ...(cur.income || {}), projected: p.income };
+      return next;
+    });
     setPlanText("");
     const n = Object.keys(p.byItem).length + (p.income != null ? 1 : 0);
     if (!n) alert("Couldn't pick out any amounts. Try e.g. 'groceries 100, fuel 80, spotify 13, income 2289'.");
   }
-  function copyLastMonth() {
-    const prev = (state.financePlans || {})[shiftMonth(month, -1)];
-    if (!prev) return alert("No plan to copy from last month.");
+  // Drop this month's one-off override so it reverts to the recurring plan.
+  function resetToTemplate() {
+    if (!(state.financePlans || {})[month]) return;
+    if (!confirm("Reset " + monthShort(month) + " back to your recurring plan? Any one-off changes for this month will be cleared.")) return;
     const plans = { ...(state.financePlans || {}) };
-    plans[month] = JSON.parse(JSON.stringify(prev));
+    delete plans[month];
     up({ financePlans: plans });
   }
   function loadSample() {
@@ -3276,7 +3298,15 @@ function FinanceView({ state, up, accentColor }) {
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
             <MonthNav />
-            <button onClick={copyLastMonth} style={{ fontSize: 12, padding: "6px 12px", borderRadius: 8, cursor: "pointer" }}>⧉ Copy last month</button>
+            {(() => {
+              const custom = !!(state.financePlans || {})[month];
+              return (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11.5, color: "var(--color-text-secondary)" }} title="Your plan carries over to every month automatically. Edit a month to make it a one-off; future months keep the recurring plan.">{custom ? "✎ Custom for this month" : "🔁 Recurring plan"}</span>
+                  {custom && <button onClick={resetToTemplate} style={{ fontSize: 12, padding: "6px 12px", borderRadius: 8, cursor: "pointer" }}>↩ Reset to recurring</button>}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Safety buffer — kept at the top so it's visible without scrolling */}
@@ -5537,7 +5567,7 @@ function TripModal({ trip, accentColor, onSave, onClose }) {
   );
 }
 
-const DOC_TABS = [["job", "💼 Job"], ["insurance", "🛡 Insurance"], ["keydocs", "🪪 Key documents"], ["travel", "✈️ Travel & packing"], ["warranties", "🧾 Warranties"], ["risk", "⚠️ Risk register"], ["audit", "🔐 Digital Life Audit"]];
+const DOC_TABS = [["job", "💼 Job"], ["insurance", "🛡 Insurance"], ["keydocs", "🪪 Important documents"], ["travel", "✈️ Travel & packing"], ["warranties", "🧾 Warranties"], ["risk", "⚠️ Risk register"], ["audit", "🔐 Digital Life Audit"]];
 
 function DocsView({ state, up, accentColor, goFinance }) {
   const ac = accentColor;
@@ -5859,7 +5889,7 @@ function DocsView({ state, up, accentColor, goFinance }) {
         const expiringSoon = keyDocuments.filter(d => d.expiryDate && d.status !== "waiting" && daysUntil(d.expiryDate) >= 0 && daysUntil(d.expiryDate) <= 90).length;
         return (
           <div>
-            <SectionHead sub="Passports, licences, GHIC, Blue Light Card and more — track expiry and get a renewal nudge. Keep only what you need, no full numbers.">🪪 Key documents</SectionHead>
+            <SectionHead sub="Passports, licences, GHIC, Blue Light Card and more — track expiry and get a renewal nudge. Keep only what you need, no full numbers.">🪪 Important documents</SectionHead>
             <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
               <button onClick={() => setKeyDocModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Document</button>
             </div>
@@ -6153,6 +6183,19 @@ function App({ user }) {
   // Live background scene (Outlook-style) — drives [data-scene] CSS in index.html.
   useEffect(() => { document.documentElement.dataset.scene = state.scene || "almanac"; }, [state.scene]);
 
+  // One-time: seed the recurring plan template from the user's existing plan, so
+  // the breakdown plan they already set carries forward to every month.
+  useEffect(() => {
+    if (!meta.loaded) return;
+    const tmpl = state.financePlanTemplate;
+    if (tmpl && Object.keys(tmpl).length) return;
+    const plans = state.financePlans || {};
+    const keys = Object.keys(plans).sort();
+    if (!keys.length) return;
+    const src = plans[curMonthKey()] || plans[keys[keys.length - 1]];
+    if (src && Object.keys(src).length) up({ financePlanTemplate: JSON.parse(JSON.stringify(src)) });
+  }, [meta.loaded]);
+
   // Once loaded: snapshot each month's report (so history survives pruning), then
   // drop transactions older than 6 months (Tend keeps a 6-month rolling window).
   useEffect(() => {
@@ -6259,7 +6302,7 @@ function App({ user }) {
   const taskRowProps = { tags: state.tags, groups: state.groups, onToggle: toggleTask, onEdit: setModal, onDelete: deleteTask, onToggleSubtask: toggleSubtask };
 
   return (
-    <div style={{ display: "flex", minHeight: "600px", fontFamily: "var(--font-sans)", background: "transparent" }}>
+    <div className="app-shell" style={{ fontFamily: "var(--font-sans)", background: "transparent" }}>
       <Celebrate />
       <CommandPalette open={palette} onClose={() => setPalette(false)} state={state} up={up} accentColor={ac}
         setView={v => { setView(v); if (narrow) setDrawerOpen(false); }}
@@ -6323,9 +6366,9 @@ function App({ user }) {
       </div>
 
       {/* Main content */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <div className="app-main">
         {/* Topbar */}
-        <div style={{ padding: "15px 28px", background: "var(--glass)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "0.5px solid var(--glass-border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", position: "sticky", top: 0, zIndex: 20 }}>
+        <div className="app-topbar" style={{ background: "var(--glass)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "0.5px solid var(--glass-border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", zIndex: 20 }}>
           {narrow && <button onClick={() => setDrawerOpen(true)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, padding: "0 4px", color: "var(--color-text-secondary)" }}>☰</button>}
           <h1 style={{ margin: 0, fontSize: 17, fontWeight: 500, flex: 1 }}>{VIEW_META[view].icon} {VIEW_META[view].label}</h1>
           <button onClick={() => setPalette(true)} title="Command palette (Ctrl+K)" style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, padding: "5px 10px", borderRadius: 8, color: "var(--color-text-secondary)", letterSpacing: "0.04em" }}>⌘K</button>
@@ -6356,9 +6399,9 @@ function App({ user }) {
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "32px 40px 64px" }}>
+        <div className="app-body">
          {/* keyed on the view so each switch re-triggers the staggered reveal (index.html) */}
-         <div key={view} className="view-enter">
+         <div key={view} className="view-enter app-content">
 
           {/* Central home dashboard */}
           {view === "home" && <HomeView state={state} accentColor={ac} setView={setView} onAddTask={saveTask} allTasks={allTasks} overdueTasks={overdueTasks} userName={displayName} onOpenDates={() => { setView("today"); setTodayMode("dates"); }} />}
