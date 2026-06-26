@@ -1453,6 +1453,17 @@ function payPeriodBounds(payday, anchor, offset) {
     const next = lastOf(start.getFullYear(), start.getMonth() + 1);
     return { from: ymdLocal(start), to: addDaysStr(ymdLocal(next), -1), label: `${fmtDMY(ymdLocal(start))} to ${fmtDMY(ymdLocal(next))}` };
   }
+  if (payday.type === "lastWorkday") {
+    // Paid on the last working day (Mon–Fri) of each month — if month-end is a
+    // weekend, pay lands on the preceding Friday.
+    const lastWork = (y, m) => { const e = new Date(y, m + 1, 0); while (e.getDay() === 0 || e.getDay() === 6) e.setDate(e.getDate() - 1); return e; };
+    const a = new Date(anchor + "T00:00:00");
+    let start = lastWork(a.getFullYear(), a.getMonth());
+    if (a < start) start = lastWork(a.getFullYear(), a.getMonth() - 1);
+    start = lastWork(start.getFullYear(), start.getMonth() + offset);
+    const next = lastWork(start.getFullYear(), start.getMonth() + 1);
+    return { from: ymdLocal(start), to: addDaysStr(ymdLocal(next), -1), label: `${fmtDMY(ymdLocal(start))} to ${fmtDMY(ymdLocal(next))}` };
+  }
   if (payday.type === "lastWeekday") {
     const w = Number(payday.day); // 0=Sun..6=Sat
     const lastOf = (y, m) => { const e = new Date(y, m + 1, 0); while (e.getDay() !== w) e.setDate(e.getDate() - 1); return e; };
@@ -4053,6 +4064,7 @@ function FinanceView({ state, up, accentColor }) {
                   <select value={payday.type} onChange={e => up({ payday: { ...payday, type: e.target.value, day: e.target.value === "monthly" ? 1 : 5 } })} style={{ fontSize: 12.5 }}>
                     <option value="monthly">monthly (on a date)</option>
                     <option value="lastDay">monthly (last day of month)</option>
+                    <option value="lastWorkday">monthly (last working day)</option>
                     <option value="lastWeekday">monthly (last weekday)</option>
                     <option value="weekly">weekly</option>
                   </select>
@@ -4060,6 +4072,7 @@ function FinanceView({ state, up, accentColor }) {
                     <><span style={{ color: "var(--color-text-secondary)" }}>on day</span><input type="number" min="1" max="28" value={payday.day} onChange={e => up({ payday: { ...payday, day: Math.min(28, Math.max(1, parseInt(e.target.value, 10) || 1)) } })} style={{ width: 60, fontSize: 12.5 }} /></>
                   )}
                   {payday.type === "lastDay" && <span style={{ color: "var(--color-text-secondary)" }}>— the last calendar day, whatever weekday it lands on</span>}
+                  {payday.type === "lastWorkday" && <span style={{ color: "var(--color-text-secondary)" }}>— the last weekday (Mon–Fri); weekends roll back to Friday</span>}
                   {(payday.type === "lastWeekday" || payday.type === "weekly") && (
                     <><span style={{ color: "var(--color-text-secondary)" }}>{payday.type === "lastWeekday" ? "last" : "every"}</span>
                     <select value={payday.day} onChange={e => up({ payday: { ...payday, day: parseInt(e.target.value, 10) } })} style={{ fontSize: 12.5 }}>
