@@ -1,4 +1,4 @@
-# Tend — Accounts + Apple Calendar setup
+# TendOS — Accounts + Apple Calendar setup
 
 This adds **login** (so you and your friend each have a private list, accessible
 from any device) and **Apple Calendar sync**. It uses **Supabase** (free) for the
@@ -36,13 +36,17 @@ and use email/password right away.
    };
    ```
    (The anon key is safe to be public — Row-Level Security protects the data.)
-4. **Add the secret key to Vercel** (for the calendar feed):
-   - Vercel dashboard → your project → **Settings → Environment Variables**. Add **two**:
+4. **Add the keys to Vercel** (these power the serverless backend in `api/index.py`
+   — banking, investments and AI):
+   - Vercel dashboard → your project → **Settings → Environment Variables**. Add:
      | Key | Value |
      |---|---|
      | `SUPABASE_URL` | your Project URL (same as above) |
-     | `SUPABASE_SERVICE_ROLE_KEY` | the **service_role secret** key |
-   - (If you've added your Anthropic key, leave it as-is.)
+     | `SUPABASE_ANON_KEY` | the **anon public** key (same as in `config.js`) |
+     | `SUPABASE_SERVICE_ROLE_KEY` | the **service_role secret** key ⚠️ |
+   - For the **live bank + Trading 212** features and the **optional AI**, there are a
+     few more variables (`APP_URL`, `ANTHROPIC_API_KEY`, …) — the full list is in
+     [`PHASE-B.md`](PHASE-B.md). You can skip those for now; the app works without them.
 
 ## Part C — Turn on logins
 
@@ -81,27 +85,30 @@ save to the cloud and sync across every device you log in on.
 
 ---
 
-## Part E — Apple Calendar sync
+## Part E — Apple Calendar export
 
-1. In the app: **Settings → Sync to Apple Calendar**.
-2. **On iPhone:** tap **Subscribe in Apple Calendar** → **Add**. Your dated tasks
-   now appear in the Calendar app and refresh automatically.
-   (⚠️-marked events are hard deadlines.)
-3. **On Mac:** click **Copy link**, then Calendar → **File → New Calendar
-   Subscription** → paste → set auto-refresh to "Every hour".
+In the app: **Settings → Sync to Apple Calendar → Download a one-time `.ics` file**
+(or use **📅 Export .ics** on an individual task). Import that file into Apple
+Calendar (or any calendar app) to add your dated tasks. ⚠️-marked events are hard
+deadlines.
 
-> The calendar link is private to each user — don't share it.
-> Sync is one-way: tasks flow Tend → Apple Calendar. Manage tasks in Tend.
+> **Note:** a live, auto-refreshing **subscription** feed (`webcal://…/api/feed`) is
+> planned but not currently served by the backend, so the "Subscribe in Apple
+> Calendar" link won't refresh on its own yet. The one-time `.ics` export above
+> works today. Sync is one-way: tasks flow TendOS → your calendar; manage tasks in
+> TendOS.
 
 ---
 
 ## How it all fits together
 
 - `config.js` — public Supabase URL + anon key (front-end login/data).
-- `cloud.js` — login + per-user cloud save/load, with offline cache.
+- `cloud.js` — login + per-user cloud save/load (with offline cache), plus the
+  authed backend clients (`TendBank`, `TendAI`).
 - `supabase/schema.sql` — the `user_state` table + Row-Level Security (privacy).
-- `api/feed.py` — serverless feed that turns your tasks into a live `.ics`.
-- Vercel env vars — your **secret** service-role key (calendar) + Anthropic key (AI).
+- `supabase/bank_schema.sql` — the `connections` table for bank/Trading 212 secrets.
+- `api/index.py` — the FastAPI serverless backend (banking, investments, AI).
+- Vercel env vars — your **secret** service-role key + optional Anthropic key (AI).
 
 Your data is private per account: Row-Level Security means even though you share
 the same database, neither of you can read the other's tasks.
