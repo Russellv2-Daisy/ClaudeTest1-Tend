@@ -303,7 +303,27 @@ async def bank_raw(authorization: Optional[str] = Header(default=None)):
     if not rows or not rows[0].get("api_key"):
         return {"raw": None, "note": "no Lunch Flow key stored"}
     key = rows[0]["api_key"]
-    return {"raw": await lunchflow_get(key, "/accounts")}
+    accts = _lf_list(await lunchflow_get(key, "/accounts"), "accounts", "data")
+    aid = _lf_first(accts[0], "id", "account_id", "accountId", "uid", default="") if accts else ""
+    # The list has no balances (GoCardless model). Probe per-account paths to find
+    # where the balance actually lives. Capture status+body without raising.
+    async def probe(path):
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+                r = await c.get(f"{LUNCHFLOW_BASE}{path}",
+                                headers={"x-api-key": key, "Accept": "application/json"})
+            body = r.json() if r.content and "json" in r.headers.get("content-type", "") else r.text[:300]
+            return {"status": r.status_code, "body": body}
+        except Exception as e:
+            return {"error": str(e)[:200]}
+    candidates = [
+        f"/accounts/{aid}",
+        f"/accounts/{aid}/balances",
+        f"/accounts/{aid}/balance",
+        f"/accounts/{aid}/details",
+    ]
+    probes = {p: await probe(p) for p in candidates}
+    return {"first_account_id": aid, "probes": probes}
 
 
 @app.post("/api/bank/disconnect")
