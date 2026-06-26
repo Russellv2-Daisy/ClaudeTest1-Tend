@@ -177,6 +177,7 @@
     // key here (same pattern as Trading 212). No redirect, no widget in Tend.
     connectBank(apiKey) { return backendFetch("/bank/connect", { method: "POST", body: { api_key: apiKey } }); },
     syncTransactions(days) { return backendFetch("/bank/transactions?days=" + (days || 90)); },
+    getAccounts() { return backendFetch("/bank/accounts"); },
     disconnectBank() { return backendFetch("/bank/disconnect", { method: "POST" }); },
 
     // ── Trading 212 ──

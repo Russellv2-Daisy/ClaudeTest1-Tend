@@ -2894,8 +2894,10 @@ function FinanceView({ state, up, accentColor }) {
   const [bankKey, setBankKey] = useState("");     // Lunch Flow API key input
   const [t212Key, setT212Key] = useState("");
   const [t212Info, setT212Info] = useState(null); // last portfolio summary
+  const [bankAccounts, setBankAccounts] = useState([]); // accounts Lunch Flow exposes (with balances)
   const loadConns = () => { if (!bank.enabled) return; bank.listConnections().then(r => setBankConns((r && r.connections) || [])).catch(() => {}); };
-  useEffect(() => { loadConns(); }, []);
+  const loadAccounts = () => { if (!bank.enabled) return; bank.getAccounts().then(r => setBankAccounts((r && r.accounts) || [])).catch(() => {}); };
+  useEffect(() => { loadConns(); loadAccounts(); }, []);
   const connOf = prov => bankConns.find(c => c.provider === prov && c.connected);
 
   async function doConnectBank() {
@@ -2905,9 +2907,43 @@ function FinanceView({ state, up, accentColor }) {
       // Lunch Flow API key (the banks are linked inside Lunch Flow). Validate +
       // store it, then pull transactions straight away.
       await bank.connectBank(key);
-      setBankKey(""); loadConns(); await doSyncBank();
+      setBankKey(""); loadConns(); loadAccounts(); await doSyncBank();
     } catch (e) { setBankErr(e.message || String(e)); }
     setBankBusy("");
+  }
+  // Pull live balances from Lunch Flow into the Accounts / Savings / Debts pages,
+  // matching existing entries by name (so it updates rather than duplicates).
+  function doImportBalances() {
+    const accs = bankAccounts || [];
+    if (!accs.length) { setBankErr("No accounts to import — try “Refresh accounts” first."); return; }
+    const norm = s => (s || "").trim().toLowerCase();
+    const cur = [...(state.currentAccounts || [])];
+    const sav = [...(state.savingsAccounts || [])];
+    const dbt = [...(state.debts || [])];
+    let added = 0, updated = 0;
+    accs.forEach(a => {
+      if (a.balance == null) return;
+      const t = a.type || "";
+      const name = a.name || a.institution || "Account";
+      const isDebt = /credit|loan|debt|card|mortgage/.test(t) || a.balance < 0;
+      const isSav = !isDebt && /sav/.test(t);
+      if (isDebt) {
+        const i = dbt.findIndex(d => norm(d.name) === norm(name));
+        const bal = Math.abs(a.balance);
+        if (i >= 0) { dbt[i] = { ...dbt[i], balance: bal }; updated++; }
+        else { dbt.push({ id: genId(), name, balance: bal, rate: 0, minPayment: 0, source: "lunchflow" }); added++; }
+      } else if (isSav) {
+        const i = sav.findIndex(s => norm(s.name) === norm(name));
+        if (i >= 0) { sav[i] = { ...sav[i], balance: a.balance, institution: a.institution || sav[i].institution, linked: true }; updated++; }
+        else { sav.push({ id: genId(), name, institution: a.institution || "", balance: a.balance, contribution: 0, rate: 0, target: 0, targetDate: "", linked: true, source: "lunchflow" }); added++; }
+      } else {
+        const i = cur.findIndex(c => norm(c.name) === norm(name));
+        if (i >= 0) { cur[i] = { ...cur[i], balance: a.balance, institution: a.institution || cur[i].institution, linked: true }; updated++; }
+        else { cur.push({ id: genId(), name, institution: a.institution || "", balance: a.balance, linked: true, source: "lunchflow" }); added++; }
+      }
+    });
+    up({ currentAccounts: cur, savingsAccounts: sav, debts: dbt });
+    setBankErr(`Balances imported — ${added} added, ${updated} updated. See the Savings & Debts tab.`);
   }
   async function doSyncBank() {
     setBankErr(""); setBankBusy("sync");
@@ -4303,6 +4339,32 @@ function FinanceView({ state, up, accentColor }) {
                   <div style={{ textAlign: "center", marginTop: 6 }}>
                     <button onClick={doSyncBank} disabled={!!bankBusy} style={{ fontSize: 13, padding: "9px 20px", background: "var(--color-background-secondary)", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>{bankBusy === "sync" ? "Syncing…" : "🔄 Sync transactions now"}</button>
                     <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>New transactions are auto-categorised and de-duplicated. Last 90 days. To add another bank, link it inside Lunch Flow — it'll appear here automatically.</div>
+                  </div>
+
+                  {/* Accounts Lunch Flow can actually see, with live balances */}
+                  <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginTop: 14 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                      <div style={{ flex: 1, fontSize: 14, fontWeight: 600, minWidth: 150 }}>🏦 Accounts Lunch Flow can see</div>
+                      <button onClick={loadAccounts} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", color: ac, background: "var(--color-background-secondary)", border: "none" }}>↻ Refresh</button>
+                    </div>
+                    {bankAccounts.length === 0 ? (
+                      <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 6 }}>No accounts returned yet. Tap Refresh, or check the account is linked inside Lunch Flow.</div>
+                    ) : (
+                      <>
+                        {bankAccounts.map((a, i) => (
+                          <div key={a.id || i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 2px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                            <span style={{ fontSize: 16, width: 22, textAlign: "center" }}>{/sav/.test(a.type) ? "🐖" : /credit|loan|card|mortgage/.test(a.type) ? "💳" : "🏦"}</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.name}</div>
+                              <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{[a.institution, a.type].filter(Boolean).join(" · ") || "account"}</div>
+                            </div>
+                            <div style={{ fontSize: 13, fontWeight: 600 }}>{a.balance == null ? "—" : fmtMoney(a.balance)}</div>
+                          </div>
+                        ))}
+                        <button onClick={doImportBalances} style={{ width: "100%", fontSize: 13, padding: "9px 14px", marginTop: 12, background: ac, color: "#fff", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>⬇ Import balances into my accounts</button>
+                        <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 8, lineHeight: 1.5 }}>Fills your <b>Savings &amp; Debts</b> page from these balances (matched by name, so it updates rather than duplicates). Only accounts your bank shares over Open Banking show here — some products (e.g. Lloyds Monthly/regular savers, ISAs, fixed-term) aren’t exposed and need adding manually.</div>
+                      </>
+                    )}
                   </div>
                 </>
               ) : (

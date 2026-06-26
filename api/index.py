@@ -264,6 +264,35 @@ async def bank_transactions(days: int = 90, authorization: Optional[str] = Heade
     return {"transactions": out}
 
 
+@app.get("/api/bank/accounts")
+async def bank_accounts(authorization: Optional[str] = Header(default=None)):
+    # The accounts Lunch Flow exposes for the linked banks, with balances. Lets the
+    # app show which accounts are actually visible over Open Banking (some bank
+    # savings products aren't shared) and populate balances into the accounts pages.
+    uid = await current_user(authorization)
+    rows = await db_get({"user_id": f"eq.{uid}", "provider": "eq.lunchflow"})
+    if not rows or not rows[0].get("api_key"):
+        return {"accounts": []}
+    key = rows[0]["api_key"]
+    out = []
+    for a in _lf_list(await lunchflow_get(key, "/accounts"), "accounts", "data"):
+        bal = _lf_first(a, "balance", "current_balance", "currentBalance", "cleared_balance",
+                        "available", "available_balance", "amount", "value", default=None)
+        try:
+            bal = round(float(bal), 2) if bal is not None else None
+        except (TypeError, ValueError):
+            bal = None
+        out.append({
+            "id": _lf_first(a, "id", "account_id", "accountId", "uid", default=""),
+            "name": _lf_first(a, "name", "display_name", "nickname", "account_name", default="Account"),
+            "institution": _lf_first(a, "institution", "institution_name", "bank", "provider", default=""),
+            "type": str(_lf_first(a, "type", "account_type", "subtype", "category", "class", default="")).lower(),
+            "currency": _lf_first(a, "currency", "iso_currency_code", "currency_code", default="GBP"),
+            "balance": bal,
+        })
+    return {"accounts": out}
+
+
 @app.post("/api/bank/disconnect")
 async def bank_disconnect(bank: str = "lunchflow", authorization: Optional[str] = Header(default=None)):
     # Drops the stored Lunch Flow key. The bank links themselves live in Lunch
