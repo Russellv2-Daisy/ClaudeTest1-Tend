@@ -1,7 +1,7 @@
 {
-  "name": "Tend — your tasks, tended",
-  "short_name": "Tend",
-  "description": "A personal task manager: calendar, projects, important dates, and rainy-day tasks.",
+  "name": "TendOS — your life, tended",
+  "short_name": "TendOS",
+  "description": "Your personal life OS: tasks, calendar, finance, people, documents and important dates.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

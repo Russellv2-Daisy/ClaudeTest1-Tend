@@ -5,7 +5,11 @@
       <stop offset="1" stop-color="#6f77dd"/>
     </linearGradient>
   </defs>
-  <rect width="512" height="512" rx="112" fill="url(#g)"/>
-  <path d="M150 264l64 64 150-150" fill="none" stroke="#fff" stroke-width="42"
-        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="512" height="512" rx="120" fill="url(#g)"/>
+  <!-- Monogram "T": crossbar + stem -->
+  <rect x="150" y="156" width="212" height="48" rx="24" fill="#fff"/>
+  <rect x="232" y="156" width="48" height="208" rx="24" fill="#fff"/>
+  <!-- Leaf sprouting from the crossbar — the "Tend" growth motif -->
+  <path d="M300 156 C300 110 344 92 392 96 C390 146 352 168 312 164 Z" fill="#fff"/>
+  <path d="M318 150 C338 138 360 130 380 128" fill="none" stroke="#6f77dd" stroke-width="7" stroke-linecap="round"/>
 </svg>

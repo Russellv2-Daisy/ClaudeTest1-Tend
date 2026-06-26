@@ -44,6 +44,13 @@
   // One-time purge of the old shared cache that could leak between accounts.
   try { localStorage.removeItem(OLD_GLOBAL_KEY); } catch {}
 
+  // Device-local display preferences (theme / mode / scene). Kept in their OWN key
+  // — NOT under CACHE_PREFIX — so they survive sign-out (cacheClearAll) and are
+  // re-applied at boot, instead of resetting to defaults on every login.
+  const PREFS_KEY = "tend_prefs";
+  function prefsGet() { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch { return {}; } }
+  function prefsSet(p) { try { localStorage.setItem(PREFS_KEY, JSON.stringify(p || {})); } catch {} }
+
   const TendCloud = {
     isConfigured: configured,
     client: sb,
@@ -141,6 +148,30 @@
     },
 
     cacheGet,
+    prefsGet,
+    prefsSet,
+
+    // ── Document storage (Supabase Storage, "documents" bucket) ──
+    // Files live at <uid>/<id>_<filename> so RLS can scope each user to their own
+    // folder. Needs the bucket + policies set up once (see DOCUMENTS-SETUP.md).
+    async uploadDoc(file, id) {
+      if (!sb || !this._user) throw new Error("Not signed in");
+      const safe = (file.name || "file").replace(/[^\w.\-]+/g, "_");
+      const path = this._user.id + "/" + id + "_" + safe;
+      const { error } = await sb.storage.from("documents").upload(path, file, { upsert: true, contentType: file.type || undefined });
+      if (error) throw error;
+      return path;
+    },
+    async docUrl(path) {
+      if (!sb) throw new Error("Storage unavailable");
+      const { data, error } = await sb.storage.from("documents").createSignedUrl(path, 3600);
+      if (error) throw error;
+      return data.signedUrl;
+    },
+    async deleteDoc(path) {
+      if (!sb || !path) return;
+      try { await sb.storage.from("documents").remove([path]); } catch (e) { console.warn("deleteDoc", e); }
+    },
   };
 
   window.TendCloud = TendCloud;

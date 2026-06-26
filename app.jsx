@@ -89,16 +89,19 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, financePlanTemplate: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], job: {}, keyDocuments: [], trips: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, financePlanTemplate: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], job: {}, keyDocuments: [], files: [], trips: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
 // so the app still opens if briefly offline.
 function useAppState(user) {
   const uid = user && user.id;
+  // Device-local display prefs (theme/mode/scene) fill in over INIT so the chosen
+  // look is never lost to defaults; cloud data still wins when it has a value.
+  const prefs = () => (window.TendCloud && window.TendCloud.prefsGet && window.TendCloud.prefsGet()) || {};
   const seed = () => {
     const c = uid && window.TendCloud && window.TendCloud.cacheGet(uid);
-    return c && c.data ? { ...INIT, ...c.data } : INIT;
+    return c && c.data ? { ...INIT, ...prefs(), ...c.data } : { ...INIT, ...prefs() };
   };
   const [state, setState] = useState(seed);
   const [loaded, setLoaded] = useState(false);
@@ -115,7 +118,7 @@ function useAppState(user) {
     setLoaded(false);
     window.TendCloud.load().then((res) => {
       if (!alive || !res) { setLoaded(true); return; }
-      setState({ ...INIT, ...(res.data || {}) });
+      setState({ ...INIT, ...prefs(), ...(res.data || {}) });
       setCalendarToken(res.calendarToken || "");
       setLoaded(true);
     });
@@ -1116,6 +1119,22 @@ function QuickAdd({ ctx, accentColor, defaults, onAdd }) {
   );
 }
 
+// ── Brand ─────────────────────────────────────────────────────────────────────
+// TendOS app mark: a rounded-square "operating system" icon with a monogram "T"
+// and a leaf (the growth motif). Mirrors icon.svg so UI and PWA icon match.
+function BrandMark({ size = 28 }) {
+  const gid = "bmg" + size;
+  return (
+    <svg width={size} height={size} viewBox="0 0 512 512" style={{ display: "block", flexShrink: 0 }} aria-hidden="true">
+      <defs><linearGradient id={gid} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#8f88e6" /><stop offset="1" stopColor="#6f77dd" /></linearGradient></defs>
+      <rect width="512" height="512" rx="120" fill={`url(#${gid})`} />
+      <rect x="150" y="156" width="212" height="48" rx="24" fill="#fff" />
+      <rect x="232" y="156" width="48" height="208" rx="24" fill="#fff" />
+      <path d="M300 156 C300 110 344 92 392 96 C390 146 352 168 312 164 Z" fill="#fff" />
+    </svg>
+  );
+}
+
 // ── Login screen ──────────────────────────────────────────────────────────────
 
 function LoginScreen() {
@@ -1150,10 +1169,10 @@ function LoginScreen() {
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, background: "var(--color-background-tertiary)" }}>
       <div style={{ width: "100%", maxWidth: 380, background: "var(--color-background-primary)", borderRadius: 18, padding: 28, boxShadow: "0 10px 40px rgba(0,0,0,0.10)" }}>
         <div style={{ textAlign: "center", marginBottom: 22 }}>
-          <div style={{ fontSize: 40, marginBottom: 6 }}>🌱</div>
-          <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>Tend</div>
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}><BrandMark size={52} /></div>
+          <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>TendOS</div>
           <div style={{ fontSize: 14, color: "var(--color-text-secondary)", marginTop: 4 }}>
-            Sign in to your task manager
+            Sign in to your life OS
           </div>
         </div>
 
@@ -1207,8 +1226,8 @@ function SetupNeeded() {
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center" }}>
       <div style={{ maxWidth: 460 }}>
-        <div style={{ fontSize: 40, marginBottom: 10 }}>🌱</div>
-        <h2 style={{ margin: "0 0 8px" }}>Tend — almost ready</h2>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}><BrandMark size={48} /></div>
+        <h2 style={{ margin: "0 0 8px" }}>TendOS — almost ready</h2>
         <p style={{ color: "var(--color-text-secondary)", fontSize: 15, lineHeight: 1.5 }}>
           Accounts aren't connected yet. Add your Supabase URL and anon key in
           <code style={{ background: "var(--color-background-tertiary)", padding: "2px 6px", borderRadius: 6, margin: "0 4px" }}>config.js</code>
@@ -1632,29 +1651,6 @@ function investmentTotals(list) {
   return { value, cost, gain: value - cost, gainPct: cost > 0 ? (value - cost) / cost * 100 : 0 };
 }
 
-// ── Digital Life Audit ───────────────────────────────────────────────────────
-const AUDIT_SECTIONS = [
-  { id: "security", icon: "🔐", title: "Security", items: [
-    { id: "sec_2fa_email", label: "Two-factor auth on your email" },
-    { id: "sec_2fa_key", label: "Two-factor auth on banking & key accounts" },
-    { id: "sec_pwmgr", label: "Using a password manager" },
-    { id: "sec_unique", label: "No reused passwords on important accounts" },
-    { id: "sec_hibp", label: "Checked haveibeenpwned.com for breaches" },
-    { id: "sec_recovery", label: "Recovery email / phone up to date" },
-    { id: "sec_lock", label: "Devices lock with PIN or biometrics" },
-    { id: "sec_updates", label: "Phone & computer software up to date" },
-  ] },
-  { id: "hygiene", icon: "🧹", title: "Data hygiene", items: [
-    { id: "hyg_unused", label: "Closed or deleted unused accounts" },
-    { id: "hyg_apps", label: "Reviewed third-party app permissions (Google/Apple/Facebook logins)" },
-    { id: "hyg_backup", label: "Photos & key documents backed up" },
-    { id: "hyg_inbox", label: "Cleared old emails / downloads" },
-    { id: "hyg_privacy", label: "Reviewed privacy settings on social media" },
-    { id: "hyg_spam", label: "Unsubscribed from junk newsletters" },
-  ] },
-];
-const AUDIT_STATUS_COLOR = { good: "#1D9E75", warn: "#BA7517", bad: "#E24B4A" };
-
 // Total monthly subscription spend (manual + auto-detected, de-duplicated).
 function auditSubsMonthly(state) {
   const manual = state.subscriptions || [];
@@ -1896,6 +1892,28 @@ function monthStats(state, mk) {
   const spend = cats.reduce((s, c) => s + byCat[c.id].spent, 0) + uncategorisedSpend;
 
   return { txns, plan, byItem, byCat, uncategorisedSpend, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, jobNet, baseIncome, hasTxnIncome, salaryReceived, expectedSalary: baseIncome, bonusIncome, spend, plannedTotal, manualActualTotal, variablePlanned, subsTotal, savingsCommitments, expensesTotal, savingsContrib, debtPayments, commitments, reimbursementIncome, workExpenseSpend, salaryIncome: Math.max(0, incomeActual - reimbursementIncome) };
+}
+
+// Where the money actually went in a category this month: real spend transactions
+// grouped by shop/merchant (description), biggest first. catId "__uncat__" returns
+// spend whose category doesn't match any current group. Aligned with the category
+// each transaction is assigned in the Transactions tab.
+function merchantBreakdown(state, mk, catId) {
+  const catIds = new Set((state.financeCategories || []).map(c => c.id));
+  const map = {};
+  (state.transactions || []).forEach(t => {
+    if (t.type === "transfer" || t.type === "income") return;
+    if ((t.date || "").slice(0, 7) !== mk) return;
+    const tc = t.categoryId || "";
+    const match = catId === "__uncat__" ? !catIds.has(tc) : tc === catId;
+    if (!match) return;
+    const name = (t.description || "").trim() || "Unknown";
+    const key = name.toLowerCase();
+    if (!map[key]) map[key] = { name, amount: 0, count: 0 };
+    map[key].amount += Number(t.amount) || 0;
+    map[key].count += 1;
+  });
+  return Object.values(map).sort((a, b) => b.amount - a.amount);
 }
 
 // Days in a given month key ("2026-06" → 30).
@@ -2241,6 +2259,25 @@ function parseBankCSV(text, cats) {
     out.push({ id: genId(), date, description: desc, amount: Math.round(amount * 100) / 100, type, categoryId: type === "spend" ? guessCat(desc) : "", source: "csv" });
   }
   return out;
+}
+
+// "Where it went" — a category's real spending grouped by shop/merchant.
+function MerchantList({ shops, title }) {
+  if (!shops || !shops.length) return null;
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "0.5px dashed var(--color-border-tertiary)" }}>
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-secondary)", marginBottom: 6 }}>{title || "Where it went"}</div>
+      {shops.map((s, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+            <span style={{ flexShrink: 0 }}>🏬</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}{s.count > 1 ? <span style={{ color: "var(--color-text-secondary)" }}> ·×{s.count}</span> : null}</span>
+          </span>
+          <span style={{ fontWeight: 500, flexShrink: 0, marginLeft: 8 }}>{fmtMoney(s.amount)}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function StatCard({ label, value, color, sub }) {
@@ -3381,6 +3418,21 @@ function FinanceView({ state, up, accentColor }) {
                 <StatCard label="Balance" value={fmtMoney(net)} color={net >= 0 ? "#639922" : "#E24B4A"} sub={`projected ${fmtMoney(stats.incomeProjected - stats.plannedTotal, true)}`} />
               </div>
 
+              {/* Planning power: emergency-fund cover + savings rate (moved here from
+                  the old Digital Life Audit page). */}
+              {(() => {
+                const fh = financialHealth(state);
+                const ef = fh.indicators.find(i => i.label === "Emergency fund") || {};
+                const sr = fh.indicators.find(i => i.label === "Savings rate") || {};
+                const colOf = s => s === "good" ? "#1D9E75" : s === "bad" ? "#E24B4A" : "#BA7517";
+                return (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 16 }}>
+                    <StatCard label="🚨 Emergency fund" value={ef.value || "—"} color={colOf(ef.status)} sub="months of spending covered (aim 3–6)" />
+                    <StatCard label="📈 Savings rate" value={sr.value || "—"} color={colOf(sr.status)} sub="of income saved each month (aim 20%+)" />
+                  </div>
+                );
+              })()}
+
               <div style={{ display: "grid", gridTemplateColumns: donutSegs.length ? "1fr 200px" : "1fr", gap: 14 }}>
                 <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
                   <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 14 }}>Spending vs plan by category</div>
@@ -3575,6 +3627,7 @@ function FinanceView({ state, up, accentColor }) {
                   </div>
                 ))}
                 <AddItemRow accentColor={ac} onAdd={name => addItem(c.id, name)} />
+                <MerchantList shops={merchantBreakdown(state, month, c.id)} />
                 <div style={{ display: "flex", alignItems: "center", marginTop: 10, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", fontWeight: 600, fontSize: 13 }}>
                   <div style={{ flex: 1 }}>Subtotal{autoSum > 0 ? <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)", marginLeft: 6 }}>incl. {fmtMoney(autoSum, true)} from tasks/dates</span> : ""}{hasTxnSpend ? <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)", marginLeft: 6 }}>actual from transactions</span> : ""}</div>
                   <div style={{ width: 96, textAlign: "right" }}>{fmtMoney(pj + autoSum)}</div>
@@ -3599,6 +3652,7 @@ function FinanceView({ state, up, accentColor }) {
                 <div style={{ width: 70 }} />
                 <div style={{ width: 24 }} />
               </div>
+              <MerchantList shops={merchantBreakdown(state, month, "__uncat__")} />
             </div>
           )}
 
@@ -4589,141 +4643,6 @@ function FinanceView({ state, up, accentColor }) {
   );
 }
 
-// ── Digital Life Audit: the view ─────────────────────────────────────────────
-
-function AuditDot({ status }) {
-  return <span style={{ width: 9, height: 9, borderRadius: "50%", background: AUDIT_STATUS_COLOR[status] || "var(--color-text-secondary)", flexShrink: 0, display: "inline-block" }} />;
-}
-function CheckRow({ checked, label, accentColor, onToggle, onDelete }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0" }}>
-      <button onClick={onToggle} aria-pressed={checked} style={{ width: 20, height: 20, borderRadius: 6, flexShrink: 0, cursor: "pointer", border: `1.5px solid ${checked ? accentColor : "var(--color-border-tertiary)"}`, background: checked ? accentColor : "transparent", color: "#fff", fontSize: 12, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>{checked ? "✓" : ""}</button>
-      <span style={{ flex: 1, fontSize: 13.5, color: checked ? "var(--color-text-secondary)" : "var(--color-text-primary)", textDecoration: checked ? "line-through" : "none" }}>{label}</span>
-      {onDelete && <button onClick={onDelete} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "var(--color-text-secondary)" }}>×</button>}
-    </div>
-  );
-}
-
-function AuditView({ state, up, accentColor, goFinance }) {
-  const ac = accentColor;
-  const audit = state.audit || {};
-  const freq = Number(audit.frequencyDays) || 90;
-  const checks = audit.checks || {};
-  const custom = audit.customItems || {};
-  const last = audit.lastCompleted || "";
-  const daysSince = last ? Math.round((new Date(new Date().toDateString()) - new Date(last + "T00:00:00")) / 86400000) : null;
-  const daysLeft = last ? freq - daysSince : null;
-  let statusTxt, statusColor;
-  if (!last) { statusTxt = "Never reviewed — run your first audit"; statusColor = ac; }
-  else if (daysLeft > 0) { statusTxt = `Up to date · next due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`; statusColor = "#1D9E75"; }
-  else if (daysLeft === 0) { statusTxt = "Review due today"; statusColor = "#BA7517"; }
-  else { statusTxt = `Overdue by ${-daysLeft} day${-daysLeft !== 1 ? "s" : ""}`; statusColor = "#E24B4A"; }
-
-  const sections = AUDIT_SECTIONS.map(s => ({ ...s, items: [...s.items, ...(custom[s.id] || [])] }));
-  const allItems = sections.flatMap(s => s.items);
-  const doneCount = allItems.filter(it => checks[it.id]).length;
-  const pct = allItems.length ? Math.round(doneCount / allItems.length * 100) : 0;
-
-  const toggle = id => up({ audit: { ...audit, checks: { ...checks, [id]: !checks[id] } } });
-  const addCustom = (sec, label) => { const id = "cust_" + genId(); up({ audit: { ...audit, customItems: { ...custom, [sec]: [...(custom[sec] || []), { id, label }] } } }); };
-  const delCustom = (sec, id) => { const c = { ...checks }; delete c[id]; up({ audit: { ...audit, checks: c, customItems: { ...custom, [sec]: (custom[sec] || []).filter(i => i.id !== id) } } }); };
-  const setFreq = v => up({ audit: { ...audit, frequencyDays: Number(v) || 90 } });
-  const complete = () => { const today = todayStr(); up({ audit: { ...audit, lastCompleted: today, history: [...(audit.history || []), today], checks: {}, subsReviewed: {} } }); };
-
-  const fh = financialHealth(state);
-  const manual = state.subscriptions || [];
-  const allSubs = [
-    ...manual.map(m => ({ name: m.name, amount: Number(m.amount) || 0 })),
-    ...detectSubscriptions(state).filter(a => !manual.some(m => (m.name || "").toLowerCase() === a.name.toLowerCase())).map(a => ({ name: a.name, amount: a.amount })),
-  ].filter(s => s.name).sort((a, b) => b.amount - a.amount);
-  const subsReviewed = audit.subsReviewed || {};
-  const toggleSub = name => up({ audit: { ...audit, subsReviewed: { ...subsReviewed, [name]: !subsReviewed[name] } } });
-
-  const card = { background: "var(--color-background-primary)", borderRadius: 20, padding: 22, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 18 };
-  const sectionTitle = (icon, title, right) => (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-      <span style={{ fontSize: 16 }}>{icon}</span>
-      <span style={{ fontSize: 15, fontWeight: 600, flex: 1 }}>{title}</span>
-      {right}
-    </div>
-  );
-
-  return (
-    <div style={{ maxWidth: 880 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 4px" }}>🛡️ Digital Life Audit</h1>
-      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "0 0 18px" }}>A periodic review of your accounts, subscriptions, security, data hygiene and financial health.</p>
-
-      {/* Status / cadence */}
-      <div style={{ ...card, background: hex2rgba(statusColor, 0.08), borderColor: hex2rgba(statusColor, 0.3) }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <div style={{ fontSize: 15, fontWeight: 600, color: statusColor }}>{statusTxt}</div>
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{last ? `Last reviewed ${fmtDate(last)} (${daysSince} day${daysSince !== 1 ? "s" : ""} ago)` : "Tick off the checks below, then mark your audit complete."}</div>
-          </div>
-          <button onClick={complete} style={{ fontSize: 13, padding: "9px 18px", background: ac, color: "#fff", border: "none", borderRadius: 10, cursor: "pointer", fontWeight: 500 }}>✓ Mark audit complete</button>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
-          <div style={{ flex: 1, height: 8, background: "var(--color-background-secondary)", borderRadius: 5, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${pct}%`, background: statusColor, borderRadius: 5, transition: "width 0.4s" }} />
-          </div>
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>{doneCount}/{allItems.length} checks · {pct}%</div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 12.5, color: "var(--color-text-secondary)" }}>
-          <span>Review every</span>
-          <select value={freq} onChange={e => setFreq(e.target.value)} style={{ fontSize: 12.5, padding: "4px 6px" }}>
-            <option value={30}>month</option>
-            <option value={90}>3 months</option>
-            <option value={180}>6 months</option>
-            <option value={365}>year</option>
-          </select>
-        </div>
-      </div>
-
-      {/* Financial health */}
-      <div style={card}>
-        {sectionTitle("🏦", "Financial health")}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10 }}>
-          {fh.indicators.map(ind => (
-            <div key={ind.label} style={{ display: "flex", gap: 10, padding: "10px 12px", background: "var(--color-background-secondary)", borderRadius: 10 }}>
-              <div style={{ paddingTop: 5 }}><AuditDot status={ind.status} /></div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>{ind.label}</span>
-                  <span style={{ fontSize: 14, fontWeight: 600 }}>{ind.value}</span>
-                </div>
-                <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 2 }}>{ind.note}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-        <button onClick={goFinance} style={{ marginTop: 12, fontSize: 12.5, padding: "6px 14px", borderRadius: 8, cursor: "pointer", color: ac }}>Open Finance →</button>
-      </div>
-
-      {/* Subscriptions review */}
-      <div style={card}>
-        {sectionTitle("🔁", "Subscriptions review", <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>{fmtMoney(auditSubsMonthly(state), true)}/mo</span>)}
-        {allSubs.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "6px 0" }}>No subscriptions found yet. Add them in Finance → Subscriptions, or import a bank CSV, and they'll appear here to review.</div>}
-        {allSubs.map(s => (
-          <CheckRow key={s.name} checked={!!subsReviewed[s.name]} accentColor={ac} onToggle={() => toggleSub(s.name)}
-            label={<span style={{ display: "inline-flex", width: "100%", justifyContent: "space-between", gap: 8 }}><span>{s.name}</span><span style={{ color: "var(--color-text-secondary)" }}>{fmtMoney(s.amount, true)}/mo</span></span>} />
-        ))}
-        {allSubs.length > 0 && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 8 }}>Tick each one you've confirmed you still want. Cancel the rest in Finance → Subscriptions.</div>}
-      </div>
-
-      {/* Checklists */}
-      {sections.map(sec => (
-        <div key={sec.id} style={card}>
-          {sectionTitle(sec.icon, sec.title, <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>{sec.items.filter(i => checks[i.id]).length}/{sec.items.length}</span>)}
-          {sec.items.map(it => (
-            <CheckRow key={it.id} checked={!!checks[it.id]} label={it.label} accentColor={ac} onToggle={() => toggle(it.id)} onDelete={it.id.startsWith("cust_") ? () => delCustom(sec.id, it.id) : null} />
-          ))}
-          <AddItemRow accentColor={ac} onAdd={label => addCustom(sec.id, label)} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ── People / Personas: helpers ───────────────────────────────────────────────
 
 // Next upcoming occurrence (YYYY-MM-DD) of a yearly date, given "YYYY-MM-DD" or "MM-DD".
@@ -5677,7 +5596,121 @@ function TripModal({ trip, accentColor, onSave, onClose }) {
   );
 }
 
-const DOC_TABS = [["job", "💼 Job"], ["insurance", "🛡 Insurance"], ["keydocs", "🪪 Important documents"], ["travel", "✈️ Travel & packing"], ["warranties", "🧾 Warranties"], ["audit", "🔐 Digital Life Audit"]];
+// ── Files (uploaded documents stored in Supabase Storage) ────────────────────
+const FILE_KINDS = ["Bill", "Statement", "Contract", "Receipt", "ID / Certificate", "Letter", "Manual", "Tax", "Medical", "Other"];
+function fileIcon(name, mime) {
+  const ext = (name || "").split(".").pop().toLowerCase();
+  if (/pdf/.test(mime) || ext === "pdf") return "📕";
+  if (/word|document/.test(mime) || ["doc", "docx", "odt", "rtf"].includes(ext)) return "📘";
+  if (/sheet|excel/.test(mime) || ["xls", "xlsx", "csv", "ods"].includes(ext)) return "📗";
+  if (/image/.test(mime) || ["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"].includes(ext)) return "🖼";
+  if (/zip|compress/.test(mime) || ["zip", "rar", "7z"].includes(ext)) return "🗜";
+  return "📄";
+}
+function fmtBytes(n) { n = Number(n) || 0; if (n < 1024) return n + " B"; if (n < 1048576) return (n / 1024).toFixed(0) + " KB"; return (n / 1048576).toFixed(1) + " MB"; }
+function guessFileKind(name) { const n = (name || "").toLowerCase(); if (/statement/.test(n)) return "Statement"; if (/invoice|bill/.test(n)) return "Bill"; if (/receipt/.test(n)) return "Receipt"; if (/contract|agreement|tenancy/.test(n)) return "Contract"; if (/p60|p45|tax|hmrc/.test(n)) return "Tax"; if (/manual|guide/.test(n)) return "Manual"; return "Other"; }
+
+function FileDocModal({ file, accentColor, onSave, onClose }) {
+  const [f, setF] = useState({ ...file });
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const ac = accentColor;
+  const inp = { width: "100%", boxSizing: "border-box" };
+  return (
+    <Modal onClose={onClose} width={420}>
+      <ModalHeader title="Edit file" onClose={onClose} />
+      <Field label="Name"><input value={f.name || ""} onChange={e => set("name", e.target.value)} style={inp} autoFocus /></Field>
+      <Field label="What is it?">
+        <select value={f.kind || "Other"} onChange={e => set("kind", e.target.value)} style={inp}>
+          {FILE_KINDS.map(k => <option key={k} value={k}>{k}</option>)}
+        </select>
+      </Field>
+      <Field label="Notes (optional)"><textarea value={f.label || ""} onChange={e => set("label", e.target.value)} placeholder="e.g. 2025 car insurance schedule" style={{ ...inp, minHeight: 60, resize: "vertical" }} /></Field>
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
+        <button onClick={() => f.name && f.name.trim() && onSave({ ...f, name: f.name.trim() })} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+function FilesTab({ state, up, accentColor }) {
+  const ac = accentColor;
+  const files = state.files || [];
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [drag, setDrag] = useState(false);
+  const [editFile, setEditFile] = useState(null);
+  const inputRef = useRef(null);
+  const cloud = window.TendCloud;
+  const storageReady = !!(cloud && cloud.uploadDoc && cloud.client);
+
+  async function handleFiles(fileList) {
+    const arr = [...(fileList || [])];
+    if (!arr.length) return;
+    if (!storageReady) { setErr("Cloud storage isn't available yet — see DOCUMENTS-SETUP.md to create the “documents” bucket."); return; }
+    setErr(""); setBusy(true);
+    const added = [];
+    for (const file of arr) {
+      try {
+        const id = genId();
+        const path = await cloud.uploadDoc(file, id);
+        added.push({ id, name: file.name, label: "", kind: guessFileKind(file.name), path, size: file.size, mime: file.type || "", uploadedAt: todayStr() });
+      } catch (e) {
+        const m = (e && e.message) || String(e);
+        setErr(/bucket not found/i.test(m)
+          ? "Cloud storage isn’t set up yet — create the “documents” bucket in Supabase (see DOCUMENTS-SETUP.md), then try again."
+          : "Upload failed for " + file.name + ": " + m);
+      }
+    }
+    if (added.length) up({ files: [...added, ...files] });
+    setBusy(false);
+  }
+  async function openFile(f) { try { const url = await cloud.docUrl(f.path); window.open(url, "_blank", "noopener"); } catch (e) { setErr("Couldn’t open " + f.name + ": " + (e.message || e)); } }
+  async function removeFile(f) { if (!confirm(`Delete "${f.name}"? This removes the file from storage.`)) return; await cloud.deleteDoc(f.path); up({ files: files.filter(x => x.id !== f.id) }); }
+  function saveEdit(f) { up({ files: files.map(x => x.id === f.id ? f : x) }); setEditFile(null); }
+  const onDrop = e => { e.preventDefault(); setDrag(false); handleFiles(e.dataTransfer.files); };
+
+  return (
+    <div>
+      {editFile && <FileDocModal file={editFile} accentColor={ac} onSave={saveEdit} onClose={() => setEditFile(null)} />}
+      <SectionHead sub="Drag PDFs, Word docs, statements — anything useful — straight from your email or desktop. Files are stored privately in your account and sync across your devices.">📁 Your files</SectionHead>
+      <div
+        onDragOver={e => { e.preventDefault(); setDrag(true); }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={onDrop}
+        onClick={() => inputRef.current && inputRef.current.click()}
+        style={{ border: `2px dashed ${drag ? ac : "var(--color-border-secondary)"}`, background: drag ? hex2rgba(ac, 0.06) : "var(--color-background-primary)", borderRadius: 16, padding: "34px 20px", textAlign: "center", cursor: "pointer", transition: "all 0.15s", marginBottom: 16 }}>
+        <div style={{ fontSize: 34, marginBottom: 8 }}>⬆️</div>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{busy ? "Uploading…" : "Drop files here, or click to browse"}</div>
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>PDF, Word, Excel, images and more</div>
+        <input ref={inputRef} type="file" multiple style={{ display: "none" }} onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} />
+      </div>
+      {err && <div style={{ fontSize: 12.5, color: "#E24B4A", marginBottom: 12 }}>{err}</div>}
+      {!storageReady && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>⚠️ Cloud storage isn’t set up yet — see <b>DOCUMENTS-SETUP.md</b> to create the “documents” bucket.</div>}
+
+      {files.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--color-text-secondary)", textAlign: "center", padding: "10px 0" }}>No files yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {files.map(f => (
+            <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "var(--color-background-primary)", borderRadius: 12, padding: "12px 14px", border: "0.5px solid var(--color-border-tertiary)" }}>
+              <span style={{ fontSize: 24, flexShrink: 0 }}>{fileIcon(f.name, f.mime)}</span>
+              <div style={{ flex: 1, minWidth: 0, cursor: "pointer" }} onClick={() => openFile(f)}>
+                <div style={{ fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
+                <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)" }}>{f.kind || "Other"}{f.label ? ` · ${f.label}` : ""} · {fmtBytes(f.size)} · {fmtShort(f.uploadedAt)}</div>
+              </div>
+              <button onClick={() => openFile(f)} title="Open" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>↗</button>
+              <button onClick={() => setEditFile(f)} title="Edit name & details" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
+              <button onClick={() => removeFile(f)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const DOC_TABS = [["job", "💼 Job"], ["insurance", "🛡 Insurance"], ["keydocs", "🪪 Important documents"], ["files", "📁 Files"], ["travel", "✈️ Travel & packing"], ["warranties", "🧾 Warranties"]];
 
 function DocsView({ state, up, accentColor, goFinance }) {
   const ac = accentColor;
@@ -5785,7 +5818,7 @@ function DocsView({ state, up, accentColor, goFinance }) {
       {keyDocModal !== null && <KeyDocModal doc={keyDocModal === "new" ? null : keyDocModal} accentColor={ac} onSave={saveKeyDoc} onClose={() => setKeyDocModal(null)} />}
       {tripModal !== null && <TripModal trip={tripModal === "new" ? null : tripModal} accentColor={ac} onSave={saveTrip} onClose={() => setTripModal(null)} />}
 
-      <PageHeader title="🗂 Documents & Policies" sub="A central place to store and manage the essentials — your job, travel, policies, important documents, warranties and your digital life audit." />
+      <PageHeader title="🗂 Documents & Policies" sub="A central place to store and manage the essentials — your job, travel, policies, important documents, uploaded files and warranties." />
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
         {DOC_TABS.map(([id, label]) => (
@@ -6041,6 +6074,9 @@ function DocsView({ state, up, accentColor, goFinance }) {
         );
       })()}
 
+      {/* ── Files (uploaded documents) ── */}
+      {tab === "files" && <FilesTab state={state} up={up} accentColor={ac} />}
+
       {/* ── Travel & packing ── */}
       {tab === "travel" && (() => {
         // Upcoming trips first (soonest at top), then past trips.
@@ -6152,8 +6188,6 @@ function DocsView({ state, up, accentColor, goFinance }) {
         );
       })()}
 
-      {/* ── Digital Life Audit ── */}
-      {tab === "audit" && <AuditView state={state} up={up} accentColor={ac} goFinance={goFinance} />}
     </div>
   );
 }
@@ -6212,6 +6246,14 @@ function App({ user }) {
 
   // Live background scene (Outlook-style) — drives [data-scene] CSS in index.html.
   useEffect(() => { document.documentElement.dataset.scene = state.scene || "almanac"; }, [state.scene]);
+
+  // Persist display prefs to a device-local key (survives sign-out) so theme/mode/
+  // scene stay put across logins instead of flashing back to defaults.
+  useEffect(() => {
+    if (window.TendCloud && window.TendCloud.prefsSet) {
+      window.TendCloud.prefsSet({ theme: state.theme, mode: state.mode, scene: state.scene });
+    }
+  }, [state.theme, state.mode, state.scene]);
 
   // One-time: seed the recurring plan template from the user's existing plan, so
   // the breakdown plan they already set carries forward to every month.
@@ -6370,7 +6412,7 @@ function App({ user }) {
         ? { position: "fixed", top: 0, left: 0, bottom: 0, width: 230, background: "var(--glass)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRight: "0.5px solid var(--glass-border)", display: "flex", flexDirection: "column", zIndex: 1100, transform: drawerOpen ? "translateX(0)" : "translateX(-100%)", transition: "transform 0.22s", boxShadow: drawerOpen ? "2px 0 28px rgba(0,0,0,0.35)" : "none" }
         : { width: collapsed ? 56 : 210, background: "var(--glass)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRight: "0.5px solid var(--glass-border)", display: "flex", flexDirection: "column", flexShrink: 0, transition: "width 0.2s" }}>
         <div style={{ padding: sidebarCollapsed ? "14px 10px" : "16px 14px", display: "flex", alignItems: "center", justifyContent: sidebarCollapsed ? "center" : "space-between", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-          {!sidebarCollapsed && <span style={{ fontWeight: 600, fontSize: 16, color: ac, letterSpacing: "-0.01em" }}>Tend</span>}
+          {!sidebarCollapsed && <span style={{ display: "flex", alignItems: "center", gap: 8 }}><BrandMark size={22} /><span style={{ fontWeight: 600, fontSize: 16, color: ac, letterSpacing: "-0.01em" }}>TendOS</span></span>}
           <button onClick={() => narrow ? setDrawerOpen(false) : setCollapsed(!collapsed)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 17, color: "var(--color-text-secondary)", padding: 2 }}>{narrow ? "✕" : "☰"}</button>
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: "8px 6px" }}>

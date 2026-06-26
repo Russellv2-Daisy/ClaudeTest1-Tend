@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="apple-mobile-web-app-title" content="Tend" />
+  <meta name="apple-mobile-web-app-title" content="TendOS" />
   <meta name="theme-color" content="#ffffff" />
+  <!-- Apply saved light/dark + scene before React mounts, so the chosen theme never
+       flashes back to defaults on load (see tend_prefs in cloud.js). -->
+  <script>try{var p=JSON.parse(localStorage.getItem('tend_prefs')||'{}');var r=document.documentElement;if(p.mode==='light'||p.mode==='dark')r.dataset.mode=p.mode;r.dataset.scene=p.scene||'almanac';}catch(e){}</script>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon.svg" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
@@ -15,7 +18,7 @@
   <!-- Almanac type system: Newsreader (literary serif display), Hanken Grotesk
        (warm humanist UI), Space Mono (ledger figures + eyebrow labels). -->
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,500&family=Space+Mono:wght@400;700&display=swap" />
-  <title>Tend — your tasks, tended</title>
+  <title>TendOS — your life, tended</title>
   <style>
     /* ───────────────────────────────────────────────────────────────────────
        Tend — "Modern Almanac" aesthetic. Warm paper & ink, an editorial serif
@@ -418,7 +421,7 @@
   </style>
 </head>
 <body>
-  <div id="root"><div class="boot-msg">Loading Tend…</div></div>
+  <div id="root"><div class="boot-msg">Loading TendOS…</div></div>
 
   <script src="vendor/react.production.min.js"></script>
   <script src="vendor/react-dom.production.min.js"></script>
