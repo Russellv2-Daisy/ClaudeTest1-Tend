@@ -89,7 +89,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, financePlanTemplate: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], risks: [], job: {}, keyDocuments: [], trips: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, financePlanTemplate: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], job: {}, keyDocuments: [], trips: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -5317,47 +5317,6 @@ function WarrantyModal({ warranty, accentColor, onSave, onClose }) {
   );
 }
 
-const RISK_CATEGORIES = ["Financial", "Health", "Home & property", "Career / income", "Family", "Legal", "Digital / cyber", "Other"];
-const RISK_STATUS = [["open", "Open"], ["monitoring", "Monitoring"], ["mitigated", "Mitigated"], ["closed", "Closed"]];
-function riskScore(r) { return (Number(r.likelihood) || 0) * (Number(r.impact) || 0); }
-function riskLevel(score) { return score >= 15 ? { label: "Critical", color: "#E24B4A" } : score >= 8 ? { label: "High", color: "#D85A30" } : score >= 4 ? { label: "Medium", color: "#BA7517" } : { label: "Low", color: "#1D9E75" }; }
-const LIKELIHOOD_LABELS = ["", "Rare", "Unlikely", "Possible", "Likely", "Almost certain"];
-const IMPACT_LABELS = ["", "Negligible", "Minor", "Moderate", "Major", "Severe"];
-
-function RiskModal({ risk, accentColor, onSave, onClose }) {
-  const blank = { title: "", category: "Financial", likelihood: 3, impact: 3, description: "", mitigation: "", crisisPlan: "", owner: "", status: "open" };
-  const [r, setR] = useState({ ...blank, ...(risk || {}) });
-  const up = (k, v) => setR(x => ({ ...x, [k]: v }));
-  const ac = accentColor; const inp = { width: "100%", boxSizing: "border-box" };
-  const lvl = riskLevel(riskScore(r));
-  return (
-    <Modal onClose={onClose} width={560}>
-      <ModalHeader title={risk?.id ? "Edit risk" : "New risk"} onClose={onClose} />
-      <Field label="Risk"><input placeholder="e.g. Loss of main income" value={r.title} onChange={e => up("title", e.target.value)} style={inp} autoFocus /></Field>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Category"><select value={r.category} onChange={e => up("category", e.target.value)} style={inp}>{RISK_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select></Field>
-        <Field label="Status"><select value={r.status} onChange={e => up("status", e.target.value)} style={inp}>{RISK_STATUS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Likelihood"><select value={r.likelihood} onChange={e => up("likelihood", Number(e.target.value))} style={inp}>{[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} · {LIKELIHOOD_LABELS[n]}</option>)}</select></Field>
-        <Field label="Impact"><select value={r.impact} onChange={e => up("impact", Number(e.target.value))} style={inp}>{[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} · {IMPACT_LABELS[n]}</option>)}</select></Field>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, margin: "2px 0 4px" }}>
-        <span style={{ color: "var(--color-text-secondary)" }}>Risk rating</span>
-        <span style={{ background: hex2rgba(lvl.color, 0.15), color: lvl.color, fontWeight: 600, padding: "3px 10px", borderRadius: 20 }}>{lvl.label} · {riskScore(r)}</span>
-      </div>
-      <Field label="Description — what could happen?"><textarea placeholder="Describe the risk and its triggers" value={r.description} onChange={e => up("description", e.target.value)} rows={2} style={{ ...inp, resize: "vertical" }} /></Field>
-      <Field label="Mitigation — how do you reduce it?"><textarea placeholder="Steps to lower the likelihood or impact (e.g. emergency fund, insurance)" value={r.mitigation} onChange={e => up("mitigation", e.target.value)} rows={2} style={{ ...inp, resize: "vertical" }} /></Field>
-      <Field label="🚨 Crisis management plan — what to do if it happens"><textarea placeholder="Step-by-step response if this risk kicks off: who to call, what to access, first actions" value={r.crisisPlan} onChange={e => up("crisisPlan", e.target.value)} rows={3} style={{ ...inp, resize: "vertical" }} /></Field>
-      <Field label="Owner (optional)"><input placeholder="Who's responsible" value={r.owner} onChange={e => up("owner", e.target.value)} style={inp} /></Field>
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
-        <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (r.title.trim()) onSave({ ...r, id: risk?.id || genId(), title: r.title.trim() }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{risk?.id ? "Save" : "Add"}</button>
-      </div>
-    </Modal>
-  );
-}
-
 // UK tax year helpers (runs 6 Apr → 5 Apr). FY end = next 5 April.
 function genTaxYears(n) { const now = new Date(); let endYear = now.getFullYear() + (now.getMonth() > 3 || (now.getMonth() === 3 && now.getDate() >= 6) ? 1 : 0); const out = []; for (let i = 0; i < (n || 8); i++) { const s = endYear - 1 - i; out.push(`${s}/${String((s + 1) % 100).padStart(2, "0")}`); } return out; }
 function fyEndDate() { const now = new Date(); const y = now.getFullYear() + (now.getMonth() > 3 || (now.getMonth() === 3 && now.getDate() > 5) ? 1 : 0); return `${y}-04-05`; }
@@ -5567,7 +5526,7 @@ function TripModal({ trip, accentColor, onSave, onClose }) {
   );
 }
 
-const DOC_TABS = [["job", "💼 Job"], ["insurance", "🛡 Insurance"], ["keydocs", "🪪 Important documents"], ["travel", "✈️ Travel & packing"], ["warranties", "🧾 Warranties"], ["risk", "⚠️ Risk register"], ["audit", "🔐 Digital Life Audit"]];
+const DOC_TABS = [["job", "💼 Job"], ["insurance", "🛡 Insurance"], ["keydocs", "🪪 Important documents"], ["travel", "✈️ Travel & packing"], ["warranties", "🧾 Warranties"], ["audit", "🔐 Digital Life Audit"]];
 
 function DocsView({ state, up, accentColor, goFinance }) {
   const ac = accentColor;
@@ -5617,13 +5576,6 @@ function DocsView({ state, up, accentColor, goFinance }) {
     setWarModal(null);
   }
   function deleteWarranty(id) { if (confirm("Delete this warranty?")) up({ warranties: warranties.filter(w => w.id !== id), tasks: (state.tasks || []).filter(t => t.warrantyId !== id) }); }
-
-  // ── Risk register ──
-  const [riskModal, setRiskModal] = useState(null);
-  const [riskDetail, setRiskDetail] = useState(null);
-  const risks = state.risks || [];
-  function saveRisk(r) { up({ risks: risks.some(x => x.id === r.id) ? risks.map(x => x.id === r.id ? r : x) : [...risks, r] }); setRiskModal(null); }
-  function deleteRisk(id) { if (confirm("Delete this risk?")) { up({ risks: risks.filter(r => r.id !== id) }); setRiskDetail(null); } }
 
   // Shared dedup reminder adder — never stacks duplicates (avoids reminder loops).
   function addReminder(task) { const tasks = state.tasks || []; if (tasks.some(t => t.id === task.id && !t.done)) { alert(`A reminder for "${task.title}" is already on your tasks.`); return; } up({ tasks: [task, ...tasks.filter(t => t.id !== task.id)] }); alert("Added to your tasks."); }
@@ -5678,12 +5630,11 @@ function DocsView({ state, up, accentColor, goFinance }) {
     <div style={{ maxWidth: 880 }}>
       {insModal !== null && <InsuranceModal policy={insModal === "new" ? null : insModal} cats={cats} accentColor={ac} onSave={saveInsurance} onClose={() => setInsModal(null)} />}
       {warModal !== null && <WarrantyModal warranty={warModal === "new" ? null : warModal} accentColor={ac} onSave={saveWarranty} onClose={() => setWarModal(null)} />}
-      {riskModal !== null && <RiskModal risk={riskModal === "new" ? null : riskModal} accentColor={ac} onSave={saveRisk} onClose={() => setRiskModal(null)} />}
       {payDocModal && <PayDocModal kind={payDocModal.kind} doc={payDocModal.doc} accentColor={ac} onSave={payDocModal.kind === "p60" ? saveP60 : savePayslip} onClose={() => setPayDocModal(null)} />}
       {keyDocModal !== null && <KeyDocModal doc={keyDocModal === "new" ? null : keyDocModal} accentColor={ac} onSave={saveKeyDoc} onClose={() => setKeyDocModal(null)} />}
       {tripModal !== null && <TripModal trip={tripModal === "new" ? null : tripModal} accentColor={ac} onSave={saveTrip} onClose={() => setTripModal(null)} />}
 
-      <PageHeader title="🗂 Documents & Policies" sub="A central place to store and manage the essentials — your job, travel, policies, key documents, warranties, risks and your digital life audit." />
+      <PageHeader title="🗂 Documents & Policies" sub="A central place to store and manage the essentials — your job, travel, policies, important documents, warranties and your digital life audit." />
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
         {DOC_TABS.map(([id, label]) => (
@@ -6046,78 +5997,6 @@ function DocsView({ state, up, accentColor, goFinance }) {
                 })}
               </>
             )}
-          </div>
-        );
-      })()}
-
-      {/* ── Risk register ── */}
-      {tab === "risk" && (() => {
-        if (riskDetail) {
-          const r = risks.find(x => x.id === riskDetail);
-          if (!r) { setRiskDetail(null); return null; }
-          const lvl = riskLevel(riskScore(r));
-          const Block = ({ icon, title, body, empty }) => (
-            <div style={{ ...card }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{icon} {title}</div>
-              <div style={{ fontSize: 13, color: body ? "var(--color-text-primary)" : "var(--color-text-secondary)", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{body || empty}</div>
-            </div>
-          );
-          return (
-            <div>
-              <button onClick={() => setRiskDetail(null)} style={{ fontSize: 12.5, padding: "5px 12px", borderRadius: 8, cursor: "pointer", marginBottom: 14, color: ac }}>← Back to register</button>
-              <div style={{ ...card, background: hex2rgba(lvl.color, 0.07), borderColor: hex2rgba(lvl.color, 0.3) }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, minWidth: 200 }}>
-                    <div style={{ fontSize: 18, fontWeight: 700 }}>{r.title}</div>
-                    <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 3 }}>{r.category} · {(RISK_STATUS.find(s => s[0] === r.status) || [, "Open"])[1]}{r.owner ? ` · owner ${r.owner}` : ""}</div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <span style={{ background: hex2rgba(lvl.color, 0.15), color: lvl.color, fontWeight: 700, padding: "4px 12px", borderRadius: 20, fontSize: 13 }}>{lvl.label} · {riskScore(r)}</span>
-                    <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 4 }}>likelihood {r.likelihood} × impact {r.impact}</div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-                  <button onClick={() => setRiskModal(r)} style={{ fontSize: 12.5, padding: "6px 14px", borderRadius: 8, cursor: "pointer" }}>✏️ Edit</button>
-                  <button onClick={() => deleteRisk(r.id)} style={{ fontSize: 12.5, padding: "6px 14px", borderRadius: 8, cursor: "pointer", color: "#E24B4A" }}>🗑 Delete</button>
-                </div>
-              </div>
-              <Block icon="📋" title="What could happen" body={r.description} empty="No description added yet." />
-              <Block icon="🛡" title="Mitigation — reducing the risk" body={r.mitigation} empty="No mitigation plan yet." />
-              <Block icon="🚨" title="Crisis management plan" body={r.crisisPlan} empty="No crisis plan yet — add the steps you'd take if this risk kicks off." />
-            </div>
-          );
-        }
-        const sorted = [...risks].sort((a, b) => riskScore(b) - riskScore(a));
-        return (
-          <div>
-            <SectionHead sub="Log what could go wrong, rate it, and plan how you'd respond if it happens.">⚠️ Risk register</SectionHead>
-            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
-              <button onClick={() => setRiskModal("new")} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>+ Risk</button>
-            </div>
-            {risks.length === 0 && (
-              <div style={{ textAlign: "center", padding: 50, color: "var(--color-text-secondary)" }}>
-                <div style={{ fontSize: 38, marginBottom: 12 }}>⚠️</div>
-                <div style={{ fontSize: 15, marginBottom: 6 }}>No risks logged yet</div>
-                <div style={{ fontSize: 13, marginBottom: 18 }}>Think job loss, illness, a boiler failure — note it, rate it, and write a plan.</div>
-                <button onClick={() => setRiskModal("new")} style={{ fontSize: 13, padding: "8px 18px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer" }}>+ Add a risk</button>
-              </div>
-            )}
-            {sorted.map(r => {
-              const lvl = riskLevel(riskScore(r));
-              return (
-                <div key={r.id} onClick={() => setRiskDetail(r.id)} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: "13px 16px", border: "0.5px solid var(--color-border-tertiary)", marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ width: 44, height: 44, borderRadius: 10, background: hex2rgba(lvl.color, 0.13), color: lvl.color, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <span style={{ fontSize: 16, fontWeight: 700, lineHeight: 1 }}>{riskScore(r)}</span>
-                    <span style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>{lvl.label}</span>
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>{r.title}</div>
-                    <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>{r.category} · L{r.likelihood}×I{r.impact} · {(RISK_STATUS.find(s => s[0] === r.status) || [, "Open"])[1]}{r.crisisPlan ? " · 🚨 plan ready" : ""}</div>
-                  </div>
-                  <span style={{ color: "var(--color-text-secondary)", fontSize: 16 }}>›</span>
-                </div>
-              );
-            })}
           </div>
         );
       })()}
@@ -6592,7 +6471,7 @@ function App({ user }) {
           {/* Finance */}
           {view === "finance" && <FinanceView state={state} up={up} accentColor={ac} />}
 
-          {/* Documents & Policies (Insurance, Warranties, Risk register, Digital Life Audit) */}
+          {/* Documents & Policies (Insurance, Warranties, Digital Life Audit) */}
           {view === "docs" && <DocsView state={state} up={up} accentColor={ac} goFinance={() => setView("finance")} />}
 
           {/* Settings */}
