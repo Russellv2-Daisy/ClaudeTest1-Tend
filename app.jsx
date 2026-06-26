@@ -2914,6 +2914,7 @@ function FinanceView({ state, up, accentColor }) {
   const [bankErr, setBankErr] = useState("");
   const [bankKey, setBankKey] = useState("");     // Lunch Flow API key input
   const [t212Key, setT212Key] = useState("");
+  const [t212Secret, setT212Secret] = useState("");
   const [t212Info, setT212Info] = useState(null); // last portfolio summary
   const [bankAccounts, setBankAccounts] = useState([]); // accounts Lunch Flow exposes (with balances)
   const loadConns = () => { if (!bank.enabled) return; bank.listConnections().then(r => setBankConns((r && r.connections) || [])).catch(() => {}); };
@@ -2984,9 +2985,9 @@ function FinanceView({ state, up, accentColor }) {
     loadConns(); setBankBusy("");
   }
   async function doConnectT212() {
-    const key = t212Key.trim(); if (!key) return;
+    const key = t212Key.trim(), secret = t212Secret.trim(); if (!key || !secret) return;
     setBankErr(""); setBankBusy("t212");
-    try { await bank.connectT212(key); setT212Key(""); loadConns(); await doSyncT212(); }
+    try { await bank.connectT212(key, secret); setT212Key(""); setT212Secret(""); loadConns(); await doSyncT212(); }
     catch (e) { setBankErr(e.message || String(e)); setBankBusy(""); }
   }
   async function doSyncT212() {
@@ -3907,10 +3908,11 @@ function FinanceView({ state, up, accentColor }) {
                 </>
               ) : (
                 <>
-                  <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 14, maxWidth: 460, marginInline: "auto" }}>Paste a <b>read-only</b> API key from Trading 212 (Settings → API). It’s stored server-side only and can never trade or move money.</div>
-                  <div style={{ display: "flex", gap: 8, maxWidth: 420, margin: "0 auto" }}>
-                    <input type="password" value={t212Key} onChange={e => setT212Key(e.target.value)} placeholder="Trading 212 API key" style={{ flex: 1, fontSize: 13, padding: "8px 11px", boxSizing: "border-box" }} />
-                    <button onClick={doConnectT212} disabled={!t212Key.trim() || !!bankBusy} style={{ fontSize: 13, padding: "8px 16px", background: ac, color: "#fff", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>{bankBusy === "t212" ? "…" : "Connect"}</button>
+                  <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 14, maxWidth: 460, marginInline: "auto" }}>In Trading 212 → <b>Settings → API (Beta)</b>, generate a key with <b>read</b> permissions. It gives you an <b>API Key ID</b> and a <b>Secret Key</b> — paste both below. They’re stored server-side only and can never trade or move money.</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 420, margin: "0 auto" }}>
+                    <input value={t212Key} onChange={e => setT212Key(e.target.value)} placeholder="API Key ID" style={{ fontSize: 13, padding: "8px 11px", boxSizing: "border-box" }} />
+                    <input type="password" value={t212Secret} onChange={e => setT212Secret(e.target.value)} placeholder="Secret Key" style={{ fontSize: 13, padding: "8px 11px", boxSizing: "border-box" }} />
+                    <button onClick={doConnectT212} disabled={!t212Key.trim() || !t212Secret.trim() || !!bankBusy} style={{ fontSize: 13, padding: "9px 16px", background: ac, color: "#fff", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>{bankBusy === "t212" ? "Connecting…" : "Connect Trading 212"}</button>
                   </div>
                   <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 12, maxWidth: 460, marginInline: "auto", lineHeight: 1.55, background: "var(--color-background-secondary)", borderRadius: 8, padding: "9px 12px" }}>ℹ️ Linking Trading 212 <b>inside Lunch Flow</b> only brings in cash movements — it does <b>not</b> fill this page. For your actual holdings, units, gain/loss and diversification, connect Trading 212 <b>directly</b> here with its own read-only API key.</div>
                 </>

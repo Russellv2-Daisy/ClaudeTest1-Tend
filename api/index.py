@@ -21,6 +21,7 @@ Vercel serves the ASGI `app` below; the vercel.json rewrite sends every
 /api/* request here. Routes are therefore defined WITH the /api prefix.
 """
 import os
+import base64
 import traceback
 import datetime as dt
 from typing import Optional
@@ -180,15 +181,20 @@ def _lf_first(d, *keys, default=None):
 
 
 # ── Trading 212 ───────────────────────────────────────────────────────────────
-async def t212_get(api_key: str, path: str):
+# T212's Public API authenticates with HTTP Basic auth: API Key ID as the user,
+# Secret Key as the password, Base64("id:secret") in the Authorization header.
+async def t212_get(key_id: str, secret: str, path: str):
+    token = base64.b64encode(f"{key_id}:{secret}".encode()).decode()
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get(f"{T212_BASE}{path}", headers={"Authorization": api_key})
+        r = await c.get(f"{T212_BASE}{path}", headers={"Authorization": f"Basic {token}"})
     if r.status_code == 401:
-        raise HTTPException(status_code=400, detail="Invalid Trading 212 API key")
+        raise HTTPException(status_code=400, detail="Invalid Trading 212 API key or secret")
+    if r.status_code == 403:
+        raise HTTPException(status_code=400, detail="Trading 212 key is missing the required read permission (enable Account data + Portfolio)")
     if r.status_code == 429:
         raise HTTPException(status_code=429, detail="Trading 212 rate limit — try again shortly")
     if r.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"Trading 212 {path} → {r.status_code}")
+        raise HTTPException(status_code=502, detail=f"Trading 212 {path} → {r.status_code}: {r.text[:160]}")
     return r.json() if r.content else {}
 
 
@@ -322,11 +328,14 @@ async def bank_disconnect(bank: str = "lunchflow", authorization: Optional[str] 
 @app.post("/api/t212/connect")
 async def t212_connect(body: dict, authorization: Optional[str] = Header(default=None)):
     uid = await current_user(authorization)
-    api_key = (body or {}).get("api_key", "").strip()
-    if not api_key:
-        raise HTTPException(status_code=400, detail="Missing api_key")
-    await t212_get(api_key, "/equity/account/info")  # validates the key
-    await db_upsert(uid, "t212", {"display_name": "Trading 212", "api_key": api_key})
+    key_id = (body or {}).get("api_key", "").strip()
+    secret = (body or {}).get("api_secret", "").strip()
+    if not key_id or not secret:
+        raise HTTPException(status_code=400, detail="Missing API key ID or secret")
+    await t212_get(key_id, secret, "/equity/account/summary")  # validates the pair
+    # Key id in api_key; secret kept in the server-only meta jsonb (RLS denies browser).
+    await db_upsert(uid, "t212", {"display_name": "Trading 212", "api_key": key_id,
+                                  "meta": {"api_secret": secret}})
     return {"ok": True}
 
 
@@ -336,21 +345,28 @@ async def t212_portfolio(authorization: Optional[str] = Header(default=None)):
     rows = await db_get({"user_id": f"eq.{uid}", "provider": "eq.t212"})
     if not rows or not rows[0].get("api_key"):
         raise HTTPException(status_code=404, detail="Trading 212 not connected")
-    key = rows[0]["api_key"]
-    cash = await t212_get(key, "/equity/account/cash")
-    positions = await t212_get(key, "/equity/portfolio")
+    key_id = rows[0]["api_key"]
+    secret = (rows[0].get("meta") or {}).get("api_secret", "")
+    summary = await t212_get(key_id, secret, "/equity/account/summary")
+    positions = await t212_get(key_id, secret, "/equity/positions")
     holdings = []
     for p in (positions or []):
+        inst = p.get("instrument") or {}
+        wallet = p.get("walletImpact") or {}
         qty = float(p.get("quantity", 0) or 0)
         price = float(p.get("currentPrice", 0) or 0)
-        holdings.append({"ticker": p.get("ticker", ""), "units": qty, "price": price,
-                         "avgCost": float(p.get("averagePrice", 0) or 0),
-                         "value": round(qty * price, 2), "ppl": round(float(p.get("ppl", 0) or 0), 2),
+        holdings.append({"ticker": inst.get("ticker", "") or inst.get("name", ""),
+                         "name": inst.get("name", ""), "units": qty, "price": price,
+                         "avgCost": float(p.get("averagePricePaid", 0) or 0),
+                         "value": round(float(wallet.get("currentValue", qty * price) or 0), 2),
+                         "ppl": round(float(wallet.get("unrealizedProfitLoss", 0) or 0), 2),
                          "source": "t212"})
-    return {"cash": round(float((cash or {}).get("free", 0) or 0), 2),
-            "invested": round(float((cash or {}).get("invested", 0) or 0), 2),
-            "result": round(float((cash or {}).get("result", 0) or 0), 2),
-            "total": round(float((cash or {}).get("total", 0) or 0), 2),
+    cash = (summary or {}).get("cash") or {}
+    inv = (summary or {}).get("investments") or {}
+    return {"cash": round(float(cash.get("availableToTrade", 0) or 0), 2),
+            "invested": round(float(inv.get("totalCost", 0) or 0), 2),
+            "result": round(float(inv.get("unrealizedProfitLoss", 0) or 0), 2),
+            "total": round(float((summary or {}).get("totalValue", 0) or 0), 2),
             "holdings": holdings}
 
 

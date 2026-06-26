@@ -181,7 +181,7 @@
     disconnectBank() { return backendFetch("/bank/disconnect", { method: "POST" }); },
 
     // ── Trading 212 ──
-    connectT212(apiKey) { return backendFetch("/t212/connect", { method: "POST", body: { api_key: apiKey } }); },
+    connectT212(apiKey, apiSecret) { return backendFetch("/t212/connect", { method: "POST", body: { api_key: apiKey, api_secret: apiSecret } }); },
     getPortfolio() { return backendFetch("/t212/portfolio"); },
     disconnectT212() { return backendFetch("/t212/disconnect", { method: "POST" }); },
   };
