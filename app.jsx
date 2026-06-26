@@ -1464,6 +1464,28 @@ function payPeriodBounds(payday, anchor, offset) {
   const from = ymdLocal(start), to = ymdLocal(endD);
   return { from, to, label: `${fmtDMY(from)} to ${fmtDMY(ymdLocal(next))}` };
 }
+// Which calendar "budget month" an income transaction funds. People paid at
+// month-end get pay that covers the *following* month, so income is attributed to
+// the pay period it belongs to (the month covering most of that period), not the
+// raw transaction date. Spending always stays on its own calendar month.
+function incomeBudgetMonthKey(dateStr, payday) {
+  if (!dateStr) return "";
+  payday = payday || { type: "monthly", day: 1 };
+  const configured = payday.type !== "monthly" || (Number(payday.day) || 1) > 1;
+  if (configured) {
+    // Attribute to the month that covers most of the pay period containing the date.
+    const p = payPeriodBounds(payday, dateStr, 0);
+    const span = Math.max(0, Math.round((new Date(p.to) - new Date(p.from)) / 86400000));
+    return addDaysStr(p.from, Math.floor(span / 2)).slice(0, 7);
+  }
+  // No payday configured: treat pay landing in the last 4 days of a month as the
+  // next month's money (the salary that funds the coming month).
+  const d = new Date(dateStr + "T00:00:00");
+  const dim = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  if (d.getDate() > dim - 4) return ymdLocal(new Date(d.getFullYear(), d.getMonth() + 1, 1)).slice(0, 7);
+  return dateStr.slice(0, 7);
+}
+
 // One month's report snapshot (persisted so it survives the 6-month txn prune).
 // Current net worth (assets − debts) from today's balances. Used for the home
 // snapshot and as a fallback when a month has no saved net-worth snapshot.
@@ -1707,11 +1729,17 @@ function monthStats(state, mk) {
   // Real transactions grouped by category (the eventual source of "actual").
   // Work expenses (reimbursable spends) and reimbursement income are tracked
   // separately so they don't distort salary or category spend.
+  // Income is attributed to the month its pay period funds (month-end pay → next
+  // month), so a salary landing on the 29th counts toward the month it covers —
+  // not the calendar month it's dated in. Spending stays on its own calendar month.
+  const payday = state.payday || { type: "monthly", day: 1 };
+  const incomeTxns = (state.transactions || []).filter(t => t.type === "income" && incomeBudgetMonthKey(t.date, payday) === mk);
+
   const txnByCat = {}; let txnIncome = 0, reimbursementIncome = 0, workExpenseSpend = 0;
+  incomeTxns.forEach(t => { const amt = Number(t.amount) || 0; txnIncome += amt; if (t.reimbursement) reimbursementIncome += amt; });
   txns.forEach(t => {
     const amt = Number(t.amount) || 0;
-    if (t.type === "transfer") return; // money moved between your own accounts — neither spend nor income
-    if (t.type === "income") { txnIncome += amt; if (t.reimbursement) reimbursementIncome += amt; return; }
+    if (t.type === "transfer" || t.type === "income") return; // transfers & income handled separately
     if (t.workExpense) workExpenseSpend += amt;
     txnByCat[t.categoryId] = (txnByCat[t.categoryId] || 0) + amt;
   });
@@ -1796,7 +1824,7 @@ function monthStats(state, mk) {
   const incomeActual = hasTxnIncome ? txnIncome : incomeManualActual;
   // Transactions notice the salary landing: anything over the expected base take-home
   // is treated as additional (bonus / overtime / back-pay) income for the month.
-  const salaryReceived = detectSalaryReceived(txns, state);
+  const salaryReceived = detectSalaryReceived(incomeTxns, state);
   const bonusIncome = (salaryReceived > 0 && baseIncome > 0) ? Math.max(0, salaryReceived - baseIncome) : 0;
   const spend = cats.reduce((s, c) => s + byCat[c.id].spent, 0);
 
@@ -3372,7 +3400,10 @@ function FinanceView({ state, up, accentColor }) {
 
           {/* This month's transactions, listed beneath the projected plan */}
           {(() => {
-            const monthTx = (state.transactions || []).filter(t => (t.date || "").slice(0, 7) === month).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+            const payday = state.payday || { type: "monthly", day: 1 };
+            // Spending/transfers by calendar month; income by the month its pay period
+            // funds (so month-end salary shows under the month it covers).
+            const monthTx = (state.transactions || []).filter(t => t.type === "income" ? incomeBudgetMonthKey(t.date, payday) === month : (t.date || "").slice(0, 7) === month).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
             const spent = monthTx.filter(t => t.type !== "income" && t.type !== "transfer").reduce((s, t) => s + (Number(t.amount) || 0), 0);
             const earnt = monthTx.filter(t => t.type === "income").reduce((s, t) => s + (Number(t.amount) || 0), 0);
             return (
@@ -3387,11 +3418,12 @@ function FinanceView({ state, up, accentColor }) {
                   const c = catById(t.categoryId);
                   const income = t.type === "income";
                   const transfer = t.type === "transfer";
+                  const otherMonth = income && (t.date || "").slice(0, 7) !== month;
                   return (
                     <div key={t.id} onClick={() => setTxnModal(t)} title="Edit transaction" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 4px", borderTop: "0.5px solid var(--color-border-tertiary)", cursor: "pointer", opacity: transfer ? 0.7 : 1 }}>
                       <span style={{ fontSize: 17, width: 24, textAlign: "center" }}>{transfer ? "🔄" : income ? "💰" : (c?.emoji || "❓")}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (transfer ? "Transfer" : income ? "Income" : "Transaction")}{transfer && <span style={{ fontSize: 9.5, marginLeft: 6, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", padding: "1px 6px", borderRadius: 9 }}>not counted</span>}</div>
+                        <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.description || (transfer ? "Transfer" : income ? "Income" : "Transaction")}{transfer && <span style={{ fontSize: 9.5, marginLeft: 6, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", padding: "1px 6px", borderRadius: 9 }}>not counted</span>}{otherMonth && <span title={`Paid ${fmtDate(t.date)} — funds ${monthShort(month)}`} style={{ fontSize: 9.5, marginLeft: 6, background: hex2rgba("#1D9E75", 0.14), color: "#1D9E75", padding: "1px 6px", borderRadius: 9 }}>funds {monthShort(month)}</span>}</div>
                         <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{fmtDate(t.date)}{!income && !transfer && c ? ` · ${c.name}` : ""}</div>
                       </div>
                       <div style={{ fontSize: 13, fontWeight: 600, color: transfer ? "var(--color-text-secondary)" : income ? "#1D9E75" : "var(--color-text-primary)" }}>{transfer ? "↔ " : income ? "+" : "−"}{fmtMoney(t.amount)}</div>
