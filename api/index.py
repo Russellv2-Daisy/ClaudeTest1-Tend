@@ -276,54 +276,38 @@ async def bank_accounts(authorization: Optional[str] = Header(default=None)):
     key = rows[0]["api_key"]
     out = []
     for a in _lf_list(await lunchflow_get(key, "/accounts"), "accounts", "data"):
-        bal = _lf_first(a, "balance", "current_balance", "currentBalance", "cleared_balance",
-                        "available", "available_balance", "amount", "value", default=None)
-        try:
-            bal = round(float(bal), 2) if bal is not None else None
-        except (TypeError, ValueError):
-            bal = None
+        aid = _lf_first(a, "id", "account_id", "accountId", "uid", default="")
+        name = _lf_first(a, "name", "display_name", "nickname", "account_name", default="Account")
+        # The /accounts list carries no balances — fetch each from the per-account
+        # balance endpoint, which returns {"balance": {"amount": N, "currency": ...}}.
+        bal, ccy = None, "GBP"
+        if aid != "":
+            try:
+                b = (await lunchflow_get(key, f"/accounts/{aid}/balance")) or {}
+                node = b.get("balance") if isinstance(b.get("balance"), dict) else b
+                amt = _lf_first(node, "amount", "value", "balance", default=None)
+                bal = round(float(amt), 2) if amt is not None else None
+                ccy = _lf_first(node, "currency", "iso_currency_code", "currency_code", default="GBP")
+            except (HTTPException, TypeError, ValueError):
+                bal = None
+        # No type in the list either — infer one from the name so the app can pick
+        # the right icon and route the balance to savings/debts/current on import.
+        atype = str(_lf_first(a, "type", "account_type", "subtype", "category", "class", default="")).lower()
+        if not atype:
+            n = name.lower()
+            if any(w in n for w in ("credit", "loan", "mortgage", "card")):
+                atype = "credit"
+            elif any(w in n for w in ("saving", "saver", "isa", "fund", "emergency")):
+                atype = "savings"
         out.append({
-            "id": _lf_first(a, "id", "account_id", "accountId", "uid", default=""),
-            "name": _lf_first(a, "name", "display_name", "nickname", "account_name", default="Account"),
+            "id": aid,
+            "name": name,
             "institution": _lf_first(a, "institution", "institution_name", "bank", "provider", default=""),
-            "type": str(_lf_first(a, "type", "account_type", "subtype", "category", "class", default="")).lower(),
-            "currency": _lf_first(a, "currency", "iso_currency_code", "currency_code", default="GBP"),
+            "type": atype,
+            "currency": ccy,
             "balance": bal,
         })
     return {"accounts": out}
-
-
-@app.get("/api/bank/raw")
-async def bank_raw(authorization: Optional[str] = Header(default=None)):
-    # TEMPORARY DEBUG. Returns the raw, unparsed JSON Lunch Flow gives us for
-    # /accounts so we can see exactly where the balance lives and fix the parser.
-    # Read-only and scoped to the user; remove once balances are mapped correctly.
-    uid = await current_user(authorization)
-    rows = await db_get({"user_id": f"eq.{uid}", "provider": "eq.lunchflow"})
-    if not rows or not rows[0].get("api_key"):
-        return {"raw": None, "note": "no Lunch Flow key stored"}
-    key = rows[0]["api_key"]
-    accts = _lf_list(await lunchflow_get(key, "/accounts"), "accounts", "data")
-    aid = _lf_first(accts[0], "id", "account_id", "accountId", "uid", default="") if accts else ""
-    # The list has no balances (GoCardless model). Probe per-account paths to find
-    # where the balance actually lives. Capture status+body without raising.
-    async def probe(path):
-        try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
-                r = await c.get(f"{LUNCHFLOW_BASE}{path}",
-                                headers={"x-api-key": key, "Accept": "application/json"})
-            body = r.json() if r.content and "json" in r.headers.get("content-type", "") else r.text[:300]
-            return {"status": r.status_code, "body": body}
-        except Exception as e:
-            return {"error": str(e)[:200]}
-    candidates = [
-        f"/accounts/{aid}",
-        f"/accounts/{aid}/balances",
-        f"/accounts/{aid}/balance",
-        f"/accounts/{aid}/details",
-    ]
-    probes = {p: await probe(p) for p in candidates}
-    return {"first_account_id": aid, "probes": probes}
 
 
 @app.post("/api/bank/disconnect")

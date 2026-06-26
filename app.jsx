@@ -2907,8 +2907,6 @@ function FinanceView({ state, up, accentColor }) {
   const [t212Key, setT212Key] = useState("");
   const [t212Info, setT212Info] = useState(null); // last portfolio summary
   const [bankAccounts, setBankAccounts] = useState([]); // accounts Lunch Flow exposes (with balances)
-  const [bankRaw, setBankRaw] = useState(""); // TEMP debug: raw Lunch Flow /accounts JSON
-  const loadRawAccounts = () => { setBankRaw("Loading…"); bank.getRawAccounts().then(r => setBankRaw(JSON.stringify((r && r.raw) ?? r, null, 2))).catch(e => setBankRaw("Error: " + (e.message || String(e)))); };
   const loadConns = () => { if (!bank.enabled) return; bank.listConnections().then(r => setBankConns((r && r.connections) || [])).catch(() => {}); };
   const loadAccounts = () => { if (!bank.enabled) return; bank.getAccounts().then(r => setBankAccounts((r && r.accounts) || [])).catch(() => {}); };
   useEffect(() => { loadConns(); loadAccounts(); }, []);
@@ -4379,11 +4377,7 @@ function FinanceView({ state, up, accentColor }) {
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
                       <div style={{ flex: 1, fontSize: 14, fontWeight: 600, minWidth: 150 }}>🏦 Accounts Lunch Flow can see</div>
                       <button onClick={loadAccounts} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", color: ac, background: "var(--color-background-secondary)", border: "none" }}>↻ Refresh</button>
-                      <button onClick={loadRawAccounts} title="Show the raw data Lunch Flow returns (for debugging balances)" style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, cursor: "pointer", color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", border: "none" }}>🐞 Debug</button>
                     </div>
-                    {bankRaw && (
-                      <textarea readOnly value={bankRaw} onFocus={e => e.target.select()} style={{ width: "100%", height: 180, marginBottom: 12, fontFamily: "monospace", fontSize: 11, lineHeight: 1.5, padding: 10, borderRadius: 10, border: "0.5px solid var(--color-border-tertiary)", background: "var(--color-background-secondary)", color: "var(--color-text-primary)", resize: "vertical" }} />
-                    )}
                     {bankAccounts.length === 0 ? (
                       <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 6 }}>No accounts returned yet. Tap Refresh, or check the account is linked inside Lunch Flow.</div>
                     ) : (
