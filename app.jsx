@@ -1492,6 +1492,9 @@ function payPeriodBounds(payday, anchor, offset) {
 function incomeBudgetMonthKey(dateStr, payday) {
   if (!dateStr) return "";
   payday = payday || { type: "monthly", day: 1 };
+  // KNOWN EDGE (F7): a monthly payday on day 1 reads as "unconfigured" and falls to the
+  // last-4-days heuristic below. Acceptable since day-1 pay funds its own calendar month;
+  // documented so it isn't mistaken for a bug. Set a non-1 day to force exact attribution.
   const configured = payday.type !== "monthly" || (Number(payday.day) || 1) > 1;
   if (configured) {
     // Attribute to the month that covers most of the pay period containing the date.
@@ -1560,8 +1563,9 @@ function pensionForecast(p) {
     annualIncome4: pot * 0.04, annualIncome4Real: potReal * 0.04, series,
   };
 }
-// Full new UK State Pension (2024/25): £221.20/week ≈ £11,502/yr. Editable per person.
-const STATE_PENSION_WEEKLY = 221.20;
+// Full new UK State Pension (2025/26): £230.25/week ≈ £11,973/yr (4.1% triple-lock
+// uprating from 2024/25's £221.20). Editable per person; update each April. (F4)
+const STATE_PENSION_WEEKLY = 230.25;
 // The working list of pensions — new array, or migrate the legacy single pension in.
 function pensionList(state) {
   const list = state.pensions;
@@ -1612,16 +1616,21 @@ function potLastsYears(pot, annualDraw, growthPct) {
 
 // ── Investments ──────────────────────────────────────────────────────────────
 // Roll a list of holdings into portfolio value, cost basis and gain.
+// Prefer a broker-supplied market value (e.g. Trading 212's own currency-correct
+// figure) over recomputing units×price, which can be wrong for non-GBP holdings.
+// Manual holdings have no `value`, so they fall back to units×price. (F3)
+function holdingValue(h) {
+  if (h && h.value != null && h.value !== "") return Number(h.value) || 0;
+  return (Number(h.units) || 0) * (Number(h.price) || 0);
+}
 function investmentTotals(list) {
   let value = 0, cost = 0;
   (list || []).forEach(h => {
-    const u = Number(h.units) || 0;
-    value += u * (Number(h.price) || 0);
-    cost += u * (Number(h.avgCost) || 0);
+    value += holdingValue(h);
+    cost += (Number(h.units) || 0) * (Number(h.avgCost) || 0);
   });
   return { value, cost, gain: value - cost, gainPct: cost > 0 ? (value - cost) / cost * 100 : 0 };
 }
-function holdingValue(h) { return (Number(h.units) || 0) * (Number(h.price) || 0); }
 
 // ── Digital Life Audit ───────────────────────────────────────────────────────
 const AUDIT_SECTIONS = [
@@ -1671,7 +1680,10 @@ function financialHealth(state) {
   // Emergency fund: prefer accounts explicitly flagged as emergency funds; else all savings.
   const efAccts = savAccts.filter(a => a.type === "emergency");
   const efPot = efAccts.length ? efAccts.reduce((s, a) => s + (Number(a.balance) || 0), 0) : savings;
-  const efMonths = monthlySpend > 0 ? efPot / monthlySpend : null;
+  // Cover must divide by a *typical* full month (the plan), not the current
+  // partial-month actual, or early in the month efMonths balloons. (D1)
+  const typicalMonthlySpend = stats.plannedTotal || stats.spend || 0;
+  const efMonths = typicalMonthlySpend > 0 ? efPot / typicalMonthlySpend : null;
   const savingsRate = income > 0 ? contrib / income * 100 : null;
   const subs = auditSubsMonthly(state);
   const subsPct = income > 0 ? subs / income * 100 : null;
@@ -1716,14 +1728,22 @@ function rangeStats(state, from, to) {
 // Kept deliberately gentle — we match on the multi-word core, not single tokens,
 // so a common word like "lloyds" alone can never cause a false match.
 function _normName(s) { return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim(); }
+// Generic banking words that must never carry a match on their own, so "card"/"loan"
+// can't link two unrelated entries. A distinctive brand word (e.g. "aviva") still can.
+const _GENERIC_FIN_WORDS = new Set(["bank", "card", "cards", "loan", "loans", "saving", "savings", "account", "accounts", "insurance", "direct", "debit", "credit", "mortgage", "payment", "payments", "monthly", "annual", "premium", "club"]);
 function _nameOverlap(a, b) {
   a = _normName(a); b = _normName(b);
   if (a.length < 5 || b.length < 5) return false;
   if (a === b) return true;
-  // Only auto-match when the shorter name is multi-word AND fully inside the other
-  // (e.g. "lloyds bank insurance" contains "lloyds bank"). Single words don't match.
   const [short, long] = a.length <= b.length ? [a, b] : [b, a];
-  return short.includes(" ") && long.includes(short);
+  // Multi-word shorter name: match when fully inside the other
+  // (e.g. "lloyds bank insurance" contains "lloyds bank").
+  if (short.includes(" ")) return long.includes(short);
+  // Single-word shorter name (e.g. "aviva"): match only as a WHOLE word in the longer
+  // name, and never on a generic banking word — so "aviva" links "aviva insurance" but
+  // a stray "card"/"loan" can't cause a false match. (F5)
+  if (_GENERIC_FIN_WORDS.has(short)) return false;
+  return new RegExp("(^| )" + short.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "( |$)").test(long);
 }
 // A subscription / direct debit is "already tracked" (so must NOT be added to the
 // plan again) if the user marked it notInPlan, or its name matches an insurance
@@ -1829,6 +1849,14 @@ function monthStats(state, mk) {
     plannedTotal += planned; manualActualTotal += manualActual; variablePlanned += itemsPlanned;
   });
 
+  // Real spending that maps to no current category — bank imports the keyword matcher
+  // couldn't place (categoryId ""), or transactions pointing at a since-deleted group.
+  // Captured here so it's added to actual spend instead of silently vanishing (which
+  // would understate spend and overstate "saved"). (F1/F2)
+  const catIdSet = new Set(cats.map(c => c.id));
+  let uncategorisedSpend = 0;
+  Object.keys(txnByCat).forEach(k => { if (!catIdSet.has(k)) uncategorisedSpend += txnByCat[k]; });
+
   // Untagged subscriptions/direct debits add as a flat total; tagged ones are already
   // folded into their budget category above, so they're counted there.
   const subsTotal = subsUncategorised;
@@ -1859,10 +1887,15 @@ function monthStats(state, mk) {
   // this month (bonus, overtime, refunds, side income) is shown as one "additional"
   // row so the breakdown rows reconcile exactly to the actual total.
   const salaryReceived = detectSalaryReceived(incomeTxns, state);
-  const bonusIncome = hasTxnIncome ? Math.max(0, incomeActual - salaryReceived) : 0;
-  const spend = cats.reduce((s, c) => s + byCat[c.id].spent, 0);
+  // Additional income = real income beyond the salary credit, with expense
+  // reimbursements removed so they aren't mislabelled as extra earnings. (F6)
+  const bonusIncome = hasTxnIncome ? Math.max(0, incomeActual - reimbursementIncome - salaryReceived) : 0;
+  // Actual spend = categorised totals + anything uncategorised. This now matches the
+  // "all non-income/transfer txns" definition used by cashflowParts and the range
+  // report, so the budget page, cash-flow forecast and reports agree. (F1/F2)
+  const spend = cats.reduce((s, c) => s + byCat[c.id].spent, 0) + uncategorisedSpend;
 
-  return { txns, plan, byItem, byCat, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, jobNet, baseIncome, hasTxnIncome, salaryReceived, expectedSalary: baseIncome, bonusIncome, spend, plannedTotal, manualActualTotal, variablePlanned, subsTotal, savingsCommitments, expensesTotal, savingsContrib, debtPayments, commitments, reimbursementIncome, workExpenseSpend, salaryIncome: Math.max(0, incomeActual - reimbursementIncome) };
+  return { txns, plan, byItem, byCat, uncategorisedSpend, incomeProjected, incomeManualActual, incomeActual, income: incomeActual, jobNet, baseIncome, hasTxnIncome, salaryReceived, expectedSalary: baseIncome, bonusIncome, spend, plannedTotal, manualActualTotal, variablePlanned, subsTotal, savingsCommitments, expensesTotal, savingsContrib, debtPayments, commitments, reimbursementIncome, workExpenseSpend, salaryIncome: Math.max(0, incomeActual - reimbursementIncome) };
 }
 
 // Days in a given month key ("2026-06" → 30).
@@ -2166,6 +2199,10 @@ function looksLikeTransfer(desc) {
 // Merge transactions pulled from a live bank into the existing list, de-duping
 // against bank rows already imported (same date+amount+description+bank) and
 // auto-categorising spends. Returns the new list and how many were added.
+// KNOWN EDGE (F8): the dedup set only spans source==="bank" rows, so the same real
+// transaction imported once via CSV (source "csv") and once via live sync won't dedup
+// across the two sources. Each source is internally consistent; cross-source overlap is
+// left to the user since CSV and live ranges rarely overlap.
 function mergeBankTxns(existing, incoming, cats) {
   const list = (existing || []).slice();
   const key = t => [t.date, t.amount, (t.description || "").toLowerCase(), t.bank || ""].join("|");
@@ -2952,6 +2989,9 @@ function FinanceView({ state, up, accentColor }) {
     // account whose type changed (e.g. Capital One first imported as a current account,
     // now recognised as a credit card) MOVES instead of lingering as a duplicate. Only
     // touches linked/imported rows — manual entries the user typed are left alone.
+    // KNOWN TRADE-OFF (F9): matching is by normalised name only, so a manual entry that
+    // happens to share a name with a linked account is intentionally preserved (and would
+    // both count toward net worth). Deliberate, to never delete user-typed data on import.
     const dropFrom = (arr, name) => arr.filter(x => !(norm(x.name) === norm(name) && (x.source === "lunchflow" || x.linked)));
     let added = 0, updated = 0;
     accs.forEach(a => {
@@ -3014,6 +3054,7 @@ function FinanceView({ state, up, accentColor }) {
       const live = (p.holdings || []).map(h => ({
         id: genId(), name: (h.ticker || "").split("_")[0] || h.ticker, ticker: h.ticker,
         account: "Trading 212", units: h.units, avgCost: h.avgCost, price: h.price,
+        value: h.value, // T212's own currency-correct market value (F3)
         contribution: 0, source: "t212",
       }));
       up({ investments: [...kept, ...live] });
@@ -3268,6 +3309,8 @@ function FinanceView({ state, up, accentColor }) {
 
   const net = stats.income - stats.spend;
   const donutSegs = cats.map(c => ({ value: stats.byCat[c.id]?.spent || 0, color: c.color, label: c.name })).filter(s => s.value > 0);
+  // Surface uncategorised spend as its own slice so the donut sums to actual spend. (F1)
+  if ((stats.uncategorisedSpend || 0) > 0) donutSegs.push({ value: stats.uncategorisedSpend, color: "var(--color-text-tertiary)", label: "Uncategorised" });
 
   return (
     <div style={{ maxWidth: 880 }}>
@@ -3542,6 +3585,22 @@ function FinanceView({ state, up, accentColor }) {
               </div>
             );
           })}
+
+          {/* Uncategorised: real spend that maps to no group (e.g. bank imports the
+              matcher couldn't place). Read-only — categorise from Transactions. (F1) */}
+          {(stats.uncategorisedSpend || 0) > 0 && (
+            <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px dashed var(--color-border-secondary)", marginBottom: 14 }}>
+              <div style={{ display: "flex", alignItems: "center" }}>
+                <div style={{ flex: 1, fontSize: 14, fontWeight: 600, color: "var(--color-text-secondary)" }}>❓ Uncategorised
+                  <span style={{ fontWeight: 400, fontSize: 11, color: "var(--color-text-secondary)", marginLeft: 8 }}>set a category in Transactions to file these</span>
+                </div>
+                <div style={{ width: 96 }} />
+                <div style={{ width: 96, textAlign: "right", fontWeight: 600 }}>{fmtMoney(stats.uncategorisedSpend)}</div>
+                <div style={{ width: 70 }} />
+                <div style={{ width: 24 }} />
+              </div>
+            </div>
+          )}
 
           {/* Totals + balance — read top-to-bottom as income minus what leaves it */}
           {(() => {
@@ -4674,9 +4733,14 @@ function nextOccurrence(dateStr) {
   const [mm, dd] = mmdd.split("-").map(Number);
   if (!mm || !dd) return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  let occ = new Date(today.getFullYear(), mm - 1, dd);
-  if (occ < today) occ = new Date(today.getFullYear() + 1, mm - 1, dd);
-  return occ.getFullYear() + "-" + String(mm).padStart(2, "0") + "-" + String(dd).padStart(2, "0");
+  // Clamp the day to the target month's length so a 29-Feb birthday lands on 28 Feb
+  // in non-leap years instead of silently rolling into March, and build the result
+  // from the resolved Date so the returned string is always a real date that the
+  // display and the scheduled tasks agree on. (P1)
+  const occFor = y => { const dim = new Date(y, mm, 0).getDate(); return new Date(y, mm - 1, Math.min(dd, dim)); };
+  let occ = occFor(today.getFullYear());
+  if (occ < today) occ = occFor(today.getFullYear() + 1);
+  return ymdLocal(occ);
 }
 function dateMinusDays(dateStr, days) {
   const d = new Date(dateStr + "T00:00:00"); d.setDate(d.getDate() - (days || 0));
@@ -4731,10 +4795,18 @@ function buildPersonAuto(person) {
   out.tasks.push({ ...base, id: "tb_" + person.id, personId: person.id, auto: "birthday", title: `🎂 Wish ${name} a happy birthday`, deadline: occ, scheduledDate: occ, repeat: "yearly" });
   // Present + lead reminders are optional — some people you just wish, no gift.
   if (person.autoPresent !== false) {
-    const leads = (person.reminderLeads && person.reminderLeads.length) ? person.reminderLeads.slice() : [person.reminderLeadDays || 14];
-    const maxLead = Math.max(...leads);
+    const rawLeads = (person.reminderLeads && person.reminderLeads.length) ? person.reminderLeads : [person.reminderLeadDays || 14];
+    // Coerce to valid, non-negative numbers and de-duplicate: stops a bad value from
+    // poisoning maxLead (NaN) and stops equal leads colliding on the task id below. (P3/P4)
+    const leads = [...new Set(rawLeads.map(L => Number(L)).filter(L => Number.isFinite(L) && L >= 0))];
+    const maxLead = leads.length ? Math.max(...leads) : 0;
     out.tasks.push({ ...base, id: "tp_" + person.id, personId: person.id, auto: "birthday", title: `🎁 Get ${name} a present`, deadline: occ, scheduledDate: dateMinusDays(occ, maxLead), repeat: "none", cost: person.typicalBudget || "", costCategory: "g_gifts" });
-    leads.forEach(L => out.tasks.push({ ...base, id: `tr_${person.id}_${L}`, personId: person.id, auto: "reminder", title: `🔔 ${name}'s birthday in ${L} days`, priority: "low", deadline: dateMinusDays(occ, L), scheduledDate: dateMinusDays(occ, L), repeat: "none" }));
+    const today = todayStr();
+    leads.forEach(L => {
+      const when = dateMinusDays(occ, L);
+      if (when < today) return; // don't create an already-overdue reminder when the birthday is nearer than the lead (P2)
+      out.tasks.push({ ...base, id: `tr_${person.id}_${L}`, personId: person.id, auto: "reminder", title: `🔔 ${name}'s birthday in ${L} days`, priority: "low", deadline: when, scheduledDate: when, repeat: "none" });
+    });
     if (person.reminderDate) out.tasks.push({ ...base, id: `trc_${person.id}`, personId: person.id, auto: "reminder", title: `🔔 Reminder: ${name}'s birthday`, priority: "low", deadline: person.reminderDate, scheduledDate: person.reminderDate, repeat: "none" });
   }
   return out;
@@ -5361,7 +5433,7 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
 
 const WARRANTY_CATEGORIES = ["Electronics", "Appliance", "Vehicle", "Furniture", "Tools", "Jewellery", "Other"];
 const WARRANTY_ICON = { Electronics: "📱", Appliance: "🧺", Vehicle: "🚗", Furniture: "🛋", Tools: "🔧", Jewellery: "💍", Other: "🧾" };
-function warrantyExpiry(w) { if (!w || !w.purchaseDate || !w.coverMonths) return ""; const d = new Date(w.purchaseDate + "T00:00:00"); d.setMonth(d.getMonth() + Number(w.coverMonths)); return ymdLocal(d); }
+function warrantyExpiry(w) { if (!w || !w.purchaseDate || !w.coverMonths) return ""; const d = new Date(w.purchaseDate + "T00:00:00"); const day = d.getDate(); d.setMonth(d.getMonth() + Number(w.coverMonths)); if (d.getDate() !== day) d.setDate(0); /* clamp month-overflow (e.g. 31 Jan + 1mo) to month-end (D2) */ return ymdLocal(d); }
 
 function WarrantyModal({ warranty, accentColor, onSave, onClose }) {
   const blank = { item: "", category: "Electronics", provider: "", purchaseDate: "", coverMonths: 12, cost: "", reference: "", notes: "", remind: true };
