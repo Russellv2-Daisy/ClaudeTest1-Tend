@@ -1796,6 +1796,54 @@ function financialHealth(state) {
   return { netWorth, indicators };
 }
 
+// Cross-check every finance account for the data-integrity problems that make totals
+// (the home "In the bank", net worth) disagree with what you see per-account — chiefly
+// DUPLICATE rows (the same account typed manually AND imported from the bank, the F9
+// trade-off in doImportBalances), and the same name landing in more than one bucket.
+// Pure: returns a list of issues, each carrying the offending items so the UI can fix them.
+function financeAudit(state) {
+  const issues = [];
+  const buckets = [
+    ["currentAccounts", "current account", state.currentAccounts || []],
+    ["savingsAccounts", "savings account", state.savingsAccounts || []],
+    ["debts", "debt / card", state.debts || []],
+  ];
+  // 1) Duplicates *within* a bucket — same normalised name appears more than once.
+  buckets.forEach(([key, label, list]) => {
+    const byName = {};
+    list.forEach(a => { const n = _normName(a.name); if (n.length < 3) return; (byName[n] = byName[n] || []).push(a); });
+    Object.values(byName).forEach(group => {
+      if (group.length > 1) {
+        const sum = group.reduce((s, a) => s + (Number(a.balance) || 0), 0);
+        const hasLinked = group.some(a => a.linked || a.source);
+        const hasManual = group.some(a => !(a.linked || a.source));
+        issues.push({
+          kind: "dupe", severity: "high",
+          title: `Duplicate ${label}: “${group[0].name}”`,
+          detail: `${group.length} entries with the same name, totalling ${fmtMoney(sum, true)}${hasLinked && hasManual ? " — one you typed plus one imported from your bank" : ""}. It's being counted ${group.length}× in your totals.`,
+          items: group.map(a => ({ bucket: key, a })),
+        });
+      }
+    });
+  });
+  // 2) Same name across *different* buckets (e.g. once as current, once as savings).
+  const seen = {};
+  buckets.forEach(([key, label, list]) => list.forEach(a => {
+    const n = _normName(a.name); if (n.length < 3) return;
+    (seen[n] = seen[n] || []).push({ key, label, a });
+  }));
+  Object.values(seen).forEach(refs => {
+    const keys = Array.from(new Set(refs.map(r => r.key)));
+    if (keys.length > 1) issues.push({
+      kind: "cross", severity: "med",
+      title: `“${refs[0].a.name}” appears in ${keys.length} sections`,
+      detail: `Tracked as ${Array.from(new Set(refs.map(r => r.label))).join(" and ")} — net worth may count it in more than one place.`,
+      items: refs.map(r => ({ bucket: r.key, a: r.a })),
+    });
+  });
+  return issues;
+}
+
 // Sum spend/income/by-category over an inclusive date range [from, to] (YYYY-MM-DD).
 function rangeStats(state, from, to) {
   const cats = state.financeCategories || [];
@@ -3278,34 +3326,39 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
     // account whose type changed (e.g. Capital One first imported as a current account,
     // now recognised as a credit card) MOVES instead of lingering as a duplicate. Only
     // touches linked/imported rows — manual entries the user typed are left alone.
-    // KNOWN TRADE-OFF (F9): matching is by normalised name only, so a manual entry that
-    // happens to share a name with a linked account is intentionally preserved (and would
-    // both count toward net worth). Deliberate, to never delete user-typed data on import.
-    const dropFrom = (arr, name) => arr.filter(x => !(norm(x.name) === norm(name) && (x.source === "lunchflow" || x.linked)));
+    // Matching prefers the bank's STABLE account id (extId) so a re-import whose name
+    // changed updates the same row instead of duplicating it (the old name-only match was
+    // the F9 trade-off that produced duplicates). Name is the fallback for older rows and
+    // for matching a manual entry the user typed before linking.
+    const extId = a => (a && (a.id || a.accountId || a.account_id)) || "";
+    const sameAcct = (x, a) => (extId(a) && x.extId && x.extId === extId(a)) || norm(x.name) === norm(a._name);
+    const dropFrom = (arr, a) => arr.filter(x => !(sameAcct(x, a) && (x.source === "lunchflow" || x.linked)));
     let added = 0, updated = 0;
     accs.forEach(a => {
       if (a.balance == null) return;
       const t = a.type || "";
       const name = a.name || a.institution || "Account";
+      a._name = name; // for sameAcct's name fallback
+      const eid = extId(a);
       const isDebt = /credit|loan|debt|card|mortgage/.test(t) || a.balance < 0;
       const isSav = !isDebt && /sav/.test(t);
       if (isDebt) {
-        cur = dropFrom(cur, name); sav = dropFrom(sav, name);
-        const i = dbt.findIndex(d => norm(d.name) === norm(name));
+        cur = dropFrom(cur, a); sav = dropFrom(sav, a);
+        const i = dbt.findIndex(d => sameAcct(d, a));
         const bal = Math.abs(a.balance);
         const kind = /credit|card/.test(t) ? "card" : "loan";
-        if (i >= 0) { dbt[i] = { ...dbt[i], balance: bal, kind: dbt[i].kind || kind, linked: true }; updated++; }
-        else { dbt.push({ id: genId(), name, balance: bal, rate: 0, minPayment: 0, kind, linked: true, source: "lunchflow" }); added++; }
+        if (i >= 0) { dbt[i] = { ...dbt[i], balance: bal, kind: dbt[i].kind || kind, linked: true, extId: eid || dbt[i].extId }; updated++; }
+        else { dbt.push({ id: genId(), extId: eid, name, balance: bal, rate: 0, minPayment: 0, kind, linked: true, source: "lunchflow" }); added++; }
       } else if (isSav) {
-        cur = dropFrom(cur, name); dbt = dropFrom(dbt, name);
-        const i = sav.findIndex(s => norm(s.name) === norm(name));
-        if (i >= 0) { sav[i] = { ...sav[i], balance: a.balance, institution: a.institution || sav[i].institution, linked: true }; updated++; }
-        else { sav.push({ id: genId(), name, institution: a.institution || "", balance: a.balance, contribution: 0, rate: 0, target: 0, targetDate: "", linked: true, source: "lunchflow" }); added++; }
+        cur = dropFrom(cur, a); dbt = dropFrom(dbt, a);
+        const i = sav.findIndex(s => sameAcct(s, a));
+        if (i >= 0) { sav[i] = { ...sav[i], balance: a.balance, institution: a.institution || sav[i].institution, linked: true, extId: eid || sav[i].extId }; updated++; }
+        else { sav.push({ id: genId(), extId: eid, name, institution: a.institution || "", balance: a.balance, contribution: 0, rate: 0, target: 0, targetDate: "", linked: true, source: "lunchflow" }); added++; }
       } else {
-        sav = dropFrom(sav, name); dbt = dropFrom(dbt, name);
-        const i = cur.findIndex(c => norm(c.name) === norm(name));
-        if (i >= 0) { cur[i] = { ...cur[i], balance: a.balance, institution: a.institution || cur[i].institution, linked: true }; updated++; }
-        else { cur.push({ id: genId(), name, institution: a.institution || "", balance: a.balance, linked: true, source: "lunchflow" }); added++; }
+        sav = dropFrom(sav, a); dbt = dropFrom(dbt, a);
+        const i = cur.findIndex(c => sameAcct(c, a));
+        if (i >= 0) { cur[i] = { ...cur[i], balance: a.balance, institution: a.institution || cur[i].institution, linked: true, extId: eid || cur[i].extId }; updated++; }
+        else { cur.push({ id: genId(), extId: eid, name, institution: a.institution || "", balance: a.balance, linked: true, source: "lunchflow" }); added++; }
       }
     });
     up({ currentAccounts: cur, savingsAccounts: sav, debts: dbt });
@@ -3524,6 +3577,8 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
     </div>
   );
   const LinkedBadge = () => <span style={{ fontSize: 10, background: hex2rgba(ac, 0.14), color: ac, padding: "1px 7px", borderRadius: 10, fontWeight: 500 }}>🔗 Connected via API</span>;
+  // Remove an account/debt by id from whichever bucket the data-check flagged it in.
+  function removeFromBucket(bucket, id) { up({ [bucket]: (state[bucket] || []).filter(x => x.id !== id) }); }
   // One credit-card / debt card, shared by the Credit-cards and Debts-&-loans groups.
   const renderDebtCard = (d, idx, list, emoji) => {
     const isCard = debtKind(d) === "card";
@@ -3964,8 +4019,32 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
         const totalBal = savings.reduce((s, a) => s + (Number(a.balance) || 0), 0);
         const totalContrib = savings.reduce((s, a) => s + (Number(a.contribution) || 0), 0);
         const proj = [0, 6, 12, 18, 24].map(m => ({ label: m === 0 ? "Now" : "+" + m + "m", value: savings.reduce((s, a) => s + projectBalance(a.balance, a.contribution, a.rate, m), 0), color: "#1D9E75" }));
+        const auditIssues = financeAudit(state);
         return (
           <div>
+            {/* Data check — flags duplicate / cross-counted accounts that make the home
+                "In the bank" total disagree with what you see per-account. */}
+            {auditIssues.length > 0 && (
+              <div style={{ background: hex2rgba("#E24B4A", 0.06), border: "1px solid " + hex2rgba("#E24B4A", 0.3), borderRadius: 12, padding: 16, marginBottom: 18 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>⚠️ Data check — {auditIssues.length} issue{auditIssues.length === 1 ? "" : "s"} found</div>
+                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>These make your totals (home “In the bank”, net worth) count an account more than once. Remove the row you don’t want — keep the 🔗 linked one if you want it to auto-update.</div>
+                {auditIssues.map((iss, i) => (
+                  <div key={i} style={{ background: "var(--color-background-primary)", borderRadius: 10, padding: "12px 14px", marginBottom: 8, border: "0.5px solid var(--color-border-tertiary)" }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{iss.title}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2, lineHeight: 1.5 }}>{iss.detail}</div>
+                    <div style={{ marginTop: 8 }}>
+                      {iss.items.map(({ bucket, a }, j) => (
+                        <div key={a.id || j} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "6px 0", borderTop: j ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}{a.institution ? <span style={{ color: "var(--color-text-secondary)" }}> · {a.institution}</span> : ""}{(a.linked || a.source) && <span style={{ fontSize: 10, marginLeft: 6, background: hex2rgba(ac, 0.14), color: ac, padding: "1px 6px", borderRadius: 8 }}>🔗 linked</span>}</span>
+                          <span style={{ fontWeight: 600 }}>{fmtMoney(a.balance, true)}</span>
+                          <button onClick={() => { if (confirm(`Remove “${a.name}” (${fmtMoney(a.balance, true)})? This won't touch your bank — just removes this row from Tend.`)) removeFromBucket(bucket, a.id); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "#E24B4A", padding: "2px 6px", fontWeight: 500 }}>Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             {/* Current / Debit accounts — top */}
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
@@ -5585,6 +5664,15 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
           <Snap label="Net worth" value={<CountMoney amount={nw} />} color={nw >= 0 ? "#1D9E75" : "#E24B4A"} />
           <Snap label="Safe to spend" value={<CountMoney amount={safe} />} color={safe >= 0 ? "#639922" : "#E24B4A"} />
         </div>
+        {(() => {
+          const issues = financeAudit(state);
+          if (!issues.length) return null;
+          return (
+            <button onClick={() => setView("finance")} style={{ display: "block", width: "100%", textAlign: "left", marginTop: 10, background: hex2rgba("#E24B4A", 0.08), border: "1px solid " + hex2rgba("#E24B4A", 0.28), borderRadius: 10, padding: "9px 12px", fontSize: 12, color: "var(--color-text-primary)", cursor: "pointer" }}>
+              ⚠️ {issues.length} possible duplicate{issues.length === 1 ? "" : "s"} may be inflating these totals — review in <b>Finance → Banking</b> →
+            </button>
+          );
+        })()}
         {(() => {
           const inv = investmentTotals(state.investments).value, pen = pensionPotsTotal(state);
           const segs = [

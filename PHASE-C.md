@@ -66,6 +66,19 @@ Status key: ✅ done · 🟡 partial / needs deploy verification · ⬜ planned
 - Verify after deploy: open `…/api/feed?token=<yours>` → downloads `tend.ics`; subscribe in
   Apple Calendar via the webcal link in Settings.
 
+### C7 · Finance reconciliation / data check (✅ done)
+- **Root cause of "home says £353 but my debit shows £171":** duplicate account rows. The
+  importer matched only by name (the F9 trade-off), so a manual entry + a bank-linked entry
+  (or a re-import whose name changed) both counted toward the totals.
+- Added `financeAudit(state)` (pure): flags duplicate rows within a bucket and the same name
+  across buckets, returning the offending items. Surfaced as a **⚠️ Data check** card at the
+  top of Banking (per-row **Remove**, keeps the data safe — only removes the Tend row) and a
+  one-line pointer on the Home money snapshot.
+- **Prevention:** `doImportBalances` now matches on the bank's **stable account id**
+  (`extId`) first, name as fallback, so re-imports update the same row instead of duplicating.
+- Verified live: two "Lloyds Current" rows (£171 + £182 = £353) → flagged → Remove → home
+  "In the bank" corrects to £171.
+
 ---
 
 ## Phase D — full logic check + security review (⬜ — may merge with B)
