@@ -28,14 +28,16 @@ Status key: ✅ done · 🟡 partial / needs deploy verification · ⬜ planned
 - **Recommendations engine** (`creditInsights`) — personalised from real Tend data:
   utilisation (overall + per-maxed-card), most-expensive APR, plus evergreen UK levers
   (never miss a payment, electoral roll, space out applications, keep oldest account).
-- ⬜ **Live soft-search pull**: no free first-party UK CRA API exists for individuals.
-  Options, best→worst: (a) ClearScore / Credit Karma have no public API — would need
-  account-aggregation scraping (fragile, ToS risk); (b) Equifax/TransUnion/Experian
-  commercial APIs require a business agreement + FCA considerations; (c) keep manual entry
-  (current) and optionally let the AI parse a credit-report PDF upload to auto-fill the
-  score + factors. **Recommended interim: PDF/manual; revisit commercial API only if Tend
-  is ever more than personal.** Stored shape is API-ready: `state.credit = { provider,
-  history: [{month, score}] }`.
+- ✅ **AI report import (the practical "auto" route):** `POST /api/credit` (owner-gated)
+  takes pasted report text **or** a PDF (sent to Claude as a document block) and returns
+  `{provider, score, previousScore, factors[]}` — clamped/validated server-side so a bad
+  parse can't write junk. `CreditScorePanel` → ✦ Import from report applies it: logs the
+  score (and previousScore to last month, so the delta + trend are instant) and shows a
+  "What your report says" factor grid (good/fair/poor). `state.credit = { provider,
+  history:[{month,score}], factors[], factorsAt }`.
+- ⬜ **Live soft-search pull:** no free first-party UK CRA API exists for individuals
+  (ClearScore/Credit Karma have no public API; CRA commercial APIs need a business + FCA
+  agreement). The AI import above is the deliberate interim — no third party pulls the file.
 
 ### C3 · Investments auto-population (✅ done)
 - Holdings now render as **auto-populated info squares** (grid): name/ticker, market value,

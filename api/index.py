@@ -488,6 +488,68 @@ async def ask(body: dict, authorization: Optional[str] = Header(default=None)):
     return {"ai": True, "reply": reply}
 
 
+@app.post("/api/credit")
+async def credit_extract(body: dict, authorization: Optional[str] = Header(default=None)):
+    # Pull a credit score + factors out of a pasted report or an uploaded PDF, so the
+    # user doesn't type them in. Owner-gated like the other AI routes; reads only what
+    # the report actually says (never invents numbers). Front-end falls back to manual
+    # entry on any error.
+    await require_ai_user(authorization)
+    body = body or {}
+    text = (body.get("text") or "").strip()
+    pdf_b64 = (body.get("pdf") or "").strip()
+    if not text and not pdf_b64:
+        raise HTTPException(status_code=400, detail="Paste your credit report text or attach a PDF")
+    instr = (
+        "TASK: Extract the user's credit score from the report provided. Return ONLY a JSON "
+        "object, no prose:\n"
+        '{ "provider": "Experian"|"Equifax"|"TransUnion"|"" (the CRA the score is from; best guess),\n'
+        '  "score": integer (their CURRENT score) | null,\n'
+        '  "previousScore": integer (last period\'s score, if shown) | null,\n'
+        '  "factors": [ { "name": string, "status": "good"|"fair"|"poor", "note": short string } ] }\n'
+        "Use ONLY numbers/labels that actually appear in the report — never invent. Score scales: "
+        "Experian 0-999, Equifax 0-1000, TransUnion 0-710. Keep factors to the few the report names "
+        "(e.g. payment history, credit utilisation, age of accounts, recent searches, electoral roll). "
+        "If a value isn't present, use null or omit it."
+    )
+    if pdf_b64:
+        content = [
+            {"type": "document", "source": {"type": "base64",
+                                            "media_type": "application/pdf", "data": pdf_b64}},
+            {"type": "text", "text": "Here is my credit report PDF. Extract the JSON as instructed."},
+        ]
+    else:
+        content = f"Credit report text:\n\n{text[:12000]}"
+    reply = await claude([{"role": "user", "content": content}],
+                         extra_system=instr, max_tokens=700, temperature=0)
+    parsed = _json_from(reply)
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="Couldn't read a score from that — try pasting the text instead")
+    # Coerce + sanity-clamp so a bad parse can't write junk into the user's record.
+    out = {"provider": "", "score": None, "previousScore": None, "factors": []}
+    prov = str(parsed.get("provider") or "").strip().title()
+    if prov in ("Experian", "Equifax", "Transunion"):
+        out["provider"] = "TransUnion" if prov == "Transunion" else prov
+    for k in ("score", "previousScore"):
+        try:
+            v = int(parsed.get(k))
+            if 0 <= v <= 1000:
+                out[k] = v
+        except (TypeError, ValueError):
+            pass
+    facs = parsed.get("factors")
+    if isinstance(facs, list):
+        for f in facs[:8]:
+            if isinstance(f, dict) and f.get("name"):
+                st = str(f.get("status") or "").lower()
+                out["factors"].append({
+                    "name": str(f.get("name"))[:60],
+                    "status": st if st in ("good", "fair", "poor") else "fair",
+                    "note": str(f.get("note") or "")[:140],
+                })
+    return {"ai": True, **out}
+
+
 @app.get("/api/connections")
 async def connections(authorization: Optional[str] = Header(default=None)):
     uid = await current_user(authorization)

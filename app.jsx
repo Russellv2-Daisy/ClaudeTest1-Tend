@@ -3339,6 +3339,42 @@ function CreditScorePanel({ state, up, accentColor }) {
     const rest = (credit.history || []).filter(h => h.month !== m);
     up({ credit: { ...credit, provider, history: [...rest, { month: m, score: v }] } });
   }
+  // AI import: paste your credit report (or attach the PDF) and let Claude fill in the
+  // score + factors. Owner-gated server-side; falls back to manual entry on any error.
+  const aiOn = !!(window.TendAI && window.TendAI.enabled);
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importErr, setImportErr] = useState("");
+  async function runImport(pdfBase64) {
+    if (!pdfBase64 && !importText.trim()) { setImportErr("Paste your report text, or choose a PDF."); return; }
+    setImportErr(""); setImportBusy(true);
+    try {
+      const r = await window.TendAI.creditExtract(pdfBase64 ? { pdf: pdfBase64 } : { text: importText.trim() });
+      const p = CREDIT_PROVIDERS[r.provider] ? r.provider : provider;
+      let hist = p === provider ? (credit.history || []).slice() : []; // provider change = new scale
+      const m = curMonthKey();
+      if (r.previousScore != null) { const pm = shiftMonth(m, -1); hist = hist.filter(h => h.month !== pm && h.month !== m); hist.push({ month: pm, score: r.previousScore }); }
+      else hist = hist.filter(h => h.month !== m);
+      if (r.score != null) hist.push({ month: m, score: r.score });
+      hist.sort((a, b) => (a.month < b.month ? -1 : 1));
+      up({ credit: { ...credit, provider: p, history: hist, factors: r.factors || [], factorsAt: new Date().toISOString() } });
+      setShowImport(false); setImportText("");
+      if (r.score == null) setImportErr(r.factors && r.factors.length ? "Read your factors, but couldn't find a score — add it manually above." : "Couldn't read a score — try pasting the text instead.");
+    } catch (e) {
+      setImportErr((e && e.message) || "Import failed — paste the text instead, or add your score manually.");
+    }
+    setImportBusy(false);
+  }
+  function onPdf(e) {
+    const file = e.target.files && e.target.files[0]; e.target.value = "";
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { setImportErr("That PDF is over 8MB — paste the text instead."); return; }
+    const reader = new FileReader();
+    reader.onload = () => runImport(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => setImportErr("Couldn't read that file.");
+    reader.readAsDataURL(file);
+  }
   const band = current != null ? creditBand(provider, current) : null;
   const pct = current != null ? Math.max(0, Math.min(1, current / prov.max)) : 0;
   const R = 80, CX = 100, CY = 100, circ = Math.PI * R; // semicircle gauge
@@ -3382,8 +3418,21 @@ function CreditScorePanel({ state, up, accentColor }) {
           <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>{current != null ? "Update this month's score:" : "Enter your latest score:"}</span>
           <input type="number" value={input} onChange={e => setInput(e.target.value)} placeholder={`0–${prov.max}`} style={{ width: 110, fontSize: 13, padding: "7px 10px" }} />
           <button onClick={logScore} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>Save</button>
+          {aiOn && <button onClick={() => { setShowImport(s => !s); setImportErr(""); }} style={{ fontSize: 13, padding: "7px 14px", background: "var(--color-background-secondary)", color: "var(--color-text-primary)", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>✦ Import from report</button>}
           <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>Check it free in your {provider} app or ClearScore/Credit Karma.</span>
         </div>
+        {showImport && (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+            <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginBottom: 8, lineHeight: 1.55 }}>Paste the text from your credit report (or attach the PDF) and Claude will fill in your score and factors. It only uses what the report actually says.</div>
+            <textarea value={importText} onChange={e => setImportText(e.target.value)} placeholder="Paste your credit report text here — score, rating, and the factors it lists…" rows={5} style={{ width: "100%", boxSizing: "border-box", fontSize: 13, padding: "9px 11px", resize: "vertical" }} />
+            {importErr && <div style={{ fontSize: 12, color: "#E24B4A", marginTop: 8 }}>{importErr}</div>}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+              <button onClick={() => runImport(null)} disabled={importBusy} style={{ fontSize: 13, padding: "8px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: importBusy ? "default" : "pointer", fontWeight: 500, opacity: importBusy ? 0.6 : 1 }}>{importBusy ? "Reading…" : "✦ Extract with Claude"}</button>
+              <label style={{ fontSize: 13, padding: "8px 14px", background: "var(--color-background-secondary)", borderRadius: 9, cursor: importBusy ? "default" : "pointer", fontWeight: 500 }}>📄 Attach PDF<input type="file" accept="application/pdf" onChange={onPdf} disabled={importBusy} style={{ display: "none" }} /></label>
+              <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>🔒 Sent securely; never stored.</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Trend */}
@@ -3397,6 +3446,33 @@ function CreditScorePanel({ state, up, accentColor }) {
           📈 Log your score each month and a trend line builds here so you can see your progress.
         </div>
       )}
+
+      {/* Factors lifted from your imported report */}
+      {(credit.factors || []).length > 0 && (() => {
+        const fcol = { good: "#1D9E75", fair: "#BA7517", poor: "#E24B4A" };
+        return (
+          <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>What your report says</div>
+              <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>✦ from your imported report{credit.factorsAt ? ` · ${fmtDate(credit.factorsAt.slice(0, 10))}` : ""}</div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10 }}>
+              {credit.factors.map((f, i) => (
+                <div key={i} style={{ display: "flex", gap: 10, padding: "10px 12px", background: "var(--color-background-secondary)", borderRadius: 10 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: fcol[f.status] || fcol.fair, marginTop: 5, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 600 }}>{f.name}</span>
+                      <span style={{ fontSize: 9.5, fontWeight: 600, color: fcol[f.status] || fcol.fair, background: hex2rgba(fcol[f.status] || fcol.fair, 0.13), padding: "1px 7px", borderRadius: 10, textTransform: "capitalize" }}>{f.status}</span>
+                    </div>
+                    {f.note && <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 2, lineHeight: 1.45 }}>{f.note}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Utilisation snapshot (real data) */}
       {ins.cardCount > 0 && (
@@ -3428,9 +3504,9 @@ function CreditScorePanel({ state, up, accentColor }) {
         })}
       </div>
 
-      {/* Future: automatic soft-search pull */}
+      {/* How updates work */}
       <div style={{ background: hex2rgba(ac, 0.06), border: `1px solid ${hex2rgba(ac, 0.22)}`, borderRadius: 12, padding: "13px 15px", fontSize: 12, lineHeight: 1.6, color: "var(--color-text-secondary)" }}>
-        🔭 <b style={{ color: "var(--color-text-primary)" }}>Coming next:</b> automatic score updates. A soft-search pull (via a provider like ClearScore, Credit Karma or the CRA APIs) will fill this in for you each month with no impact on your score — until then, logging it by hand keeps your trend and recommendations live.
+        🔭 <b style={{ color: "var(--color-text-primary)" }}>Keeping this updated:</b> {aiOn ? "use ✦ Import from report to let Claude read your latest ClearScore/Experian/Credit Karma report (paste or PDF) and fill in your score + factors — or log the number by hand." : "log your score by hand each month."} There's no free first-party UK CRA API for individuals, so this stays in your control — no third party ever pulls your file without you.
       </div>
     </div>
   );

@@ -227,6 +227,7 @@
     parse(text, context) { return backendFetch("/parse", { method: "POST", body: { text, context } }); },
     gifts(person, occasion, budget) { return backendFetch("/gifts", { method: "POST", body: { person, occasion, budget } }); },
     ask(prompt, context) { return backendFetch("/ask", { method: "POST", body: { prompt, context } }); },
+    creditExtract(payload) { return backendFetch("/credit", { method: "POST", body: payload }); },
   };
   window.TendAI = TendAI;
 })();
