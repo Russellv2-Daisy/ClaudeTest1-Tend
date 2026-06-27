@@ -5577,6 +5577,22 @@ function PeopleView({ state, up, accentColor, onAddTask }) {
 }
 
 // Task insights (now a tab inside the Tasks hub).
+// Forward-looking workload: how many open tasks fall on each of the next `days` days,
+// counted once per task on its effective date (deadline, else scheduled date). Drives
+// the "week/fortnight ahead" bar charts on Home and the Tasks insights.
+function taskWorkload(tasks, days, accent) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const out = [];
+  for (let i = 0; i < days; i++) {
+    const dt = new Date(today); dt.setDate(today.getDate() + i);
+    const ds = ymdLocal(dt);
+    const value = (tasks || []).filter(t => !t.done && (t.deadline || t.scheduledDate) === ds).length;
+    const label = i === 0 ? "Today" : dt.toLocaleDateString("en-GB", { weekday: "short" });
+    out.push({ ds, label, value, color: accent });
+  }
+  return out;
+}
+
 function TasksInsights({ state, allTasks, overdueTasks, accentColor, onGoFinance }) {
   const ac = accentColor;
   const total = allTasks.length;
@@ -5592,12 +5608,38 @@ function TasksInsights({ state, allTasks, overdueTasks, accentColor, onGoFinance
           </div>
         ))}
       </div>
-      <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 10 }}>Overall progress</div>
-        <div style={{ height: 14, background: "var(--color-background-secondary)", borderRadius: 7, overflow: "hidden" }}>
-          <div style={{ height: "100%", width: `${pct}%`, background: ac, borderRadius: 7, transition: "width 0.5s" }} />
+      {/* The week ahead — forward-looking workload by day. */}
+      {(() => {
+        const wl = taskWorkload(allTasks, 7, ac);
+        const totalAhead = wl.reduce((s, d) => s + d.value, 0);
+        if (!totalAhead) return null;
+        const busiest = wl.reduce((m, d) => d.value > m.value ? d : m, wl[0]);
+        return (
+          <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>📅 The week ahead</div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--color-text-secondary)" }}>{totalAhead} scheduled · busiest {busiest.label} ({busiest.value})</div>
+            </div>
+            <BarsChart data={wl} height={120} />
+          </div>
+        );
+      })()}
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 12, display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap" }}>
+        {(() => {
+          const segs = [
+            { label: "Done", value: done, color: "#639922" },
+            { label: "Pending", value: total - done - overdueTasks.length, color: "#EF9F27" },
+            { label: "Overdue", value: overdueTasks.length, color: "#E24B4A" },
+          ].filter(s => s.value > 0);
+          return segs.length ? <Donut segments={segs} size={118} thickness={18} center={<div><div style={{ fontSize: 18, fontWeight: 700, color: ac }}>{pct}%</div><div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-secondary)" }}>complete</div></div>} /> : null;
+        })()}
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 10 }}>Overall progress</div>
+          <div style={{ height: 14, background: "var(--color-background-secondary)", borderRadius: 7, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${pct}%`, background: ac, borderRadius: 7, transition: "width 0.5s" }} />
+          </div>
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6 }}>{pct}% complete · {done} of {total} tasks done</div>
         </div>
-        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6 }}>{pct}% complete · {done} of {total} tasks done</div>
       </div>
 
       {/* Consistency heatmap — a "year in pixels" of completed tasks (last 26 weeks). */}
@@ -5956,6 +5998,21 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
           <div style={{ fontSize: 14, fontWeight: 600 }}>☀️ Today &amp; upcoming</div>
           <button onClick={() => setView("today")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, cursor: "pointer", color: ac }}>Open Tasks →</button>
         </div>
+        {/* Week-ahead workload — at-a-glance how busy the next 7 days are. */}
+        {(() => {
+          const wl = taskWorkload(open, 7, ac);
+          if (!wl.some(d => d.value > 0)) return null;
+          const busiest = wl.reduce((m, d) => d.value > m.value ? d : m, wl[0]);
+          return (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+                <span style={{ fontSize: 11.5, color: "var(--color-text-secondary)" }}>Week ahead</span>
+                <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{wl.reduce((s, d) => s + d.value, 0)} task{wl.reduce((s, d) => s + d.value, 0) !== 1 ? "s" : ""} · busiest {busiest.label}</span>
+              </div>
+              <BarsChart data={wl} height={84} />
+            </div>
+          );
+        })()}
         {todays.length === 0 && upcoming.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Nothing scheduled — you're all clear ✨</div>}
         {todays.map(t => <div key={t.id} style={{ display: "flex", gap: 8, fontSize: 13.5, padding: "5px 0" }}><span>○</span><span style={{ flex: 1 }}>{t.title}</span><span style={{ fontSize: 11, color: ac }}>today</span></div>)}
         {upcoming.map(t => <div key={t.id} style={{ display: "flex", gap: 8, fontSize: 13.5, padding: "5px 0", color: "var(--color-text-secondary)" }}><span>○</span><span style={{ flex: 1 }}>{t.title}</span><span style={{ fontSize: 11 }}>{fmtShort(t.deadline || t.scheduledDate)}</span></div>)}
