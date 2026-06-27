@@ -29,7 +29,7 @@ from typing import Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.requests import Request
 
 APP_URL = os.environ.get("APP_URL", "http://localhost:4178").rstrip("/")
@@ -666,3 +666,104 @@ async def t212_disconnect(authorization: Optional[str] = Header(default=None)):
     uid = await current_user(authorization)
     await db_delete(uid, "t212")
     return {"ok": True}
+
+
+# ── Apple / Google calendar subscription feed ─────────────────────────────────
+# The Settings screen shows webcal://<site>/api/feed?token=<calendar_token>. Apple
+# Calendar / Google Calendar fetch it on a schedule and show your Tend deadlines and
+# important dates as a read-only subscribed calendar. Auth is by the unguessable
+# per-user token (the standard model for calendar feeds) — no login round-trip, and
+# it can only ever read this one user's task titles + dates.
+def _ics_escape(s):
+    return (str(s or "").replace("\\", "\\\\").replace(";", "\\;")
+            .replace(",", "\\,").replace("\r", "").replace("\n", "\\n"))
+
+
+def _ics_fold(line):
+    # RFC 5545: lines must be <=75 octets; fold longer ones with CRLF + a space.
+    out = ""
+    cur = ""
+    for ch in line:
+        if len((cur + ch).encode("utf-8")) > 73:
+            out += cur + "\r\n "
+            cur = ch
+        else:
+            cur += ch
+    return out + cur
+
+
+async def _state_by_token(token: str):
+    params = {"calendar_token": f"eq.{token}", "select": "user_id,data", "limit": "1"}
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.get(f"{SUPABASE_URL}/rest/v1/user_state", headers=_svc(), params=params)
+    _db_ok(r, "read")
+    rows = r.json() if r.content else []
+    return rows[0] if rows else None
+
+
+@app.get("/api/feed")
+async def calendar_feed(token: str = ""):
+    token = (token or "").strip()
+    if len(token) < 16:
+        raise HTTPException(status_code=400, detail="Missing or invalid calendar token")
+    row = await _state_by_token(token)
+    if not row:
+        raise HTTPException(status_code=404, detail="Unknown calendar token")
+    data = row.get("data") or {}
+    now = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Tend//Calendar//EN",
+             "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "X-WR-CALNAME:Tend",
+             "X-WR-CALDESC:Your Tend tasks and important dates",
+             "X-PUBLISHED-TTL:PT6H", "REFRESH-INTERVAL;VALUE=DURATION:PT6H"]
+
+    def add_event(uid, date_str, summary, desc="", rrule=""):
+        d = (date_str or "").strip()[:10].replace("-", "")
+        if len(d) != 8 or not d.isdigit():
+            return
+        try:
+            start = dt.datetime.strptime(d, "%Y%m%d").date()
+        except ValueError:
+            return
+        end = (start + dt.timedelta(days=1)).strftime("%Y%m%d")  # all-day: DTEND exclusive
+        ev = ["BEGIN:VEVENT", f"UID:{uid}@tend", f"DTSTAMP:{now}",
+              f"DTSTART;VALUE=DATE:{d}", f"DTEND;VALUE=DATE:{end}",
+              f"SUMMARY:{_ics_escape(summary)}"]
+        if rrule:
+            ev.append(rrule)
+        if desc:
+            ev.append(f"DESCRIPTION:{_ics_escape(desc)}")
+        ev.append("END:VEVENT")
+        lines.extend(ev)
+
+    for t in (data.get("tasks") or []):
+        if not isinstance(t, dict) or t.get("done"):
+            continue
+        date_str = t.get("deadline") or t.get("scheduledDate")
+        if not date_str:
+            continue
+        rrule = "RRULE:FREQ=YEARLY" if t.get("repeat") == "yearly" else ""
+        add_event(f"task-{t.get('id', '')}", date_str, t.get("title") or "Task",
+                  t.get("notes") or "", rrule)
+
+    for it in (data.get("importantDates") or []):
+        if not isinstance(it, dict):
+            continue
+        date_str = it.get("date")
+        if not date_str:
+            continue
+        if len(str(date_str).strip()) == 5:  # MM-DD → anchor to this year; RRULE repeats it
+            date_str = f"{dt.date.today().year}-{str(date_str).strip()}"
+        try:
+            rm = int(it.get("repeatMonths") or 12)
+        except (TypeError, ValueError):
+            rm = 12
+        rrule = ("RRULE:FREQ=YEARLY" if rm == 12 else
+                 f"RRULE:FREQ=MONTHLY;INTERVAL={rm}" if rm > 0 else "")
+        add_event(f"date-{it.get('id', '')}", date_str, it.get("title") or "Important date",
+                  it.get("notes") or "", rrule)
+
+    lines.append("END:VCALENDAR")
+    body = "\r\n".join(_ics_fold(ln) for ln in lines) + "\r\n"
+    return Response(content=body, media_type="text/calendar; charset=utf-8",
+                    headers={"Content-Disposition": "inline; filename=tend.ics",
+                             "Cache-Control": "public, max-age=3600"})

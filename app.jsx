@@ -700,7 +700,7 @@ function CalendarView({ tasks, importantDates, accentColor, onAddTask, onEditDat
 
 // ── Settings View ─────────────────────────────────────────────────────────────
 
-function SettingsView({ state, up, accentColor, user, calendarToken }) {
+function SettingsView({ state, up, accentColor, user, calendarToken, onGoConnect }) {
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState(TAG_COLORS[0]);
   const [copied, setCopied] = useState(false);
@@ -753,6 +753,18 @@ function SettingsView({ state, up, accentColor, user, calendarToken }) {
         <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>Your name</h3>
         <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--color-text-secondary)" }}>Used to greet you on the Home dashboard.</p>
         <input type="text" placeholder={metaName || "e.g. Josh"} value={state.name || ""} onChange={e => up({ name: e.target.value })} style={{ width: "100%", padding: "10px 12px", fontSize: 14, boxSizing: "border-box" }} />
+      </div>
+
+      {/* Bank & connections — the bank / Trading 212 / AI hub moved here from Finance. */}
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>🏦 Bank &amp; connections</h3>
+        <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.55 }}>Link your bank (Open Banking via Lunch Flow), Trading 212 and Tend's Claude AI — all read-only. Import live balances and transactions from one place.</p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+          {["🏦 Open Banking", "💹 Trading 212", "✦ Claude AI"].map(t => (
+            <span key={t} style={{ fontSize: 11.5, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", padding: "4px 10px", borderRadius: 20 }}>{t}</span>
+          ))}
+        </div>
+        <button onClick={() => onGoConnect && onGoConnect()} style={{ fontSize: 13, padding: "9px 18px", background: accentColor, color: "#fff", border: "none", borderRadius: 10, fontWeight: 500, cursor: "pointer" }}>Open bank &amp; connections →</button>
       </div>
 
       <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
@@ -1412,6 +1424,94 @@ function debtPlan(d) {
   return { hasTerm: true, paid, term, baseLeft, payMonths, monthsToEnd, extra, extendMonths, higherMonths,
     monthly: sched.monthly, remainingPayable: sched.monthly * payMonths, interestLeft: sched.interest };
 }
+// ── Credit-card maths — matches how UK issuers (Capital One, Barclaycard, etc.) bill ──
+// A UK "representative APR" is the *effective* annual rate (it already includes monthly
+// compounding), so the true monthly periodic rate is the 12th root of (1+APR), NOT APR/12.
+// Dividing the APR by 12 overstates the interest: 34.9% APR is 2.52%/mo compounded, not
+// 2.91%. That mismatch is why the old figure "didn't seem right". Issuers charge interest
+// on the average daily balance; at statement scale balance × monthly-rate is equivalent.
+function cardMonthlyRate(aprPct) {
+  const apr = Number(aprPct) || 0;
+  if (apr <= 0) return 0;
+  return Math.pow(1 + apr / 100, 1 / 12) - 1;
+}
+function cardMonthlyInterest(balance, aprPct) {
+  return Math.max(0, Number(balance) || 0) * cardMonthlyRate(aprPct);
+}
+// Capital One UK minimum payment: the greater of £25 or 1% of the balance plus that
+// month's interest and fees; if the balance is under £25 you clear it in full. This is
+// the FCA-standard "1% + interest, £25 floor" rule most UK cards now follow.
+function cardMinPayment(balance, aprPct) {
+  const bal = Number(balance) || 0;
+  if (bal <= 0) return 0;
+  if (bal <= 25) return bal;
+  return Math.min(bal, Math.max(25, bal * 0.01 + cardMonthlyInterest(bal, aprPct)));
+}
+// Simulate clearing a card. `fixed` = pay this much every month; null = pay the declining
+// percentage-based minimum (what UK statements must illustrate). Returns months to clear
+// and total interest, or Infinity if the payment never overtakes the interest.
+function cardPayoff(balance, aprPct, fixed) {
+  let bal = Number(balance) || 0;
+  if (bal <= 0) return { months: 0, interest: 0, total: 0 };
+  const r = cardMonthlyRate(aprPct);
+  let months = 0, interest = 0;
+  while (bal > 0.005 && months < 1200) {
+    const i = bal * r; interest += i; bal += i;
+    const pay = fixed != null ? fixed : cardMinPayment(bal, aprPct);
+    if (pay <= i + 0.001) return { months: Infinity, interest: Infinity, total: Infinity };
+    bal -= Math.min(pay, bal); months++;
+  }
+  return { months: months >= 1200 ? Infinity : months, interest, total: (Number(balance) || 0) + interest };
+}
+// Human "3 yrs 4 mo" style duration from a month count.
+function fmtMonths(m) {
+  if (!isFinite(m)) return "never (payment too low)";
+  if (m <= 0) return "0 months";
+  const y = Math.floor(m / 12), mo = m % 12;
+  return [y ? `${y} yr${y > 1 ? "s" : ""}` : "", mo ? `${mo} mo` : ""].filter(Boolean).join(" ") || "1 mo";
+}
+// ── Credit score ─────────────────────────────────────────────────────────────
+// The three UK CRAs each use their own scale + band boundaries (these are the real
+// published thresholds). Tend stores a manually-entered score now; a soft-search API
+// pull (Phase C) can populate it automatically later without changing this UI.
+const CREDIT_PROVIDERS = {
+  Experian:    { max: 999,  bands: [["Very poor", 0, "#E24B4A"], ["Poor", 561, "#D85A30"], ["Fair", 721, "#BA7517"], ["Good", 881, "#639922"], ["Excellent", 961, "#1D9E75"]] },
+  Equifax:     { max: 1000, bands: [["Poor", 0, "#E24B4A"], ["Fair", 439, "#D85A30"], ["Good", 531, "#BA7517"], ["Very good", 671, "#639922"], ["Excellent", 811, "#1D9E75"]] },
+  TransUnion:  { max: 710,  bands: [["Very poor", 0, "#E24B4A"], ["Poor", 551, "#D85A30"], ["Fair", 566, "#BA7517"], ["Good", 604, "#639922"], ["Excellent", 628, "#1D9E75"]] },
+};
+function creditBand(provider, score) {
+  const p = CREDIT_PROVIDERS[provider] || CREDIT_PROVIDERS.Experian;
+  return p.bands.slice().reverse().find(b => score >= b[1]) || p.bands[0];
+}
+// Personalised, data-driven recommendations built from the user's real Tend data
+// (card utilisation, APRs, account mix) plus the evergreen UK best-practice levers.
+function creditInsights(state) {
+  const debts = state.debts || [];
+  const cards = debts.filter(d => d.kind === "card");
+  const totalBal = cards.reduce((s, d) => s + (Number(d.balance) || 0), 0);
+  const totalLimit = cards.reduce((s, d) => s + (Number(d.limit) || 0), 0);
+  const util = totalLimit > 0 ? totalBal / totalLimit * 100 : null;
+  const recs = [];
+  if (util != null) {
+    if (util > 50) recs.push({ icon: "📉", title: "Cut your credit utilisation", impact: "high",
+      detail: `You're using ${Math.round(util)}% of your total card limit (${fmtMoney(totalBal, true)} of ${fmtMoney(totalLimit, true)}). Above 50% drags your score hard. Aim under 30%, ideally under 10% — paying down about ${fmtMoney(Math.max(0, totalBal - totalLimit * 0.3), true)} gets you under 30%.` });
+    else if (util > 30) recs.push({ icon: "📉", title: "Nudge utilisation below 30%", impact: "medium",
+      detail: `You're at ${Math.round(util)}% of your limit. Getting under 30% (ideally 10%) is one of the fastest score wins — pay down about ${fmtMoney(Math.max(0, totalBal - totalLimit * 0.3), true)}, or ask for a limit increase.` });
+    else recs.push({ icon: "✅", title: "Utilisation looks healthy", impact: "low",
+      detail: `${Math.round(util)}% of your limit — comfortably under the 30% lenders like to see. Keep it here.` });
+  } else if (cards.length) {
+    recs.push({ icon: "✏️", title: "Add your credit limits", impact: "medium",
+      detail: "Set each card's credit limit (edit the card on the Debts page) so Tend can track utilisation — the biggest score lever after payment history." });
+  }
+  cards.forEach(c => { const l = Number(c.limit) || 0, b = Number(c.balance) || 0; if (l > 0 && b / l > 0.9) recs.push({ icon: "🚨", title: `${c.name} is nearly maxed`, impact: "high", detail: `${c.name} is at ${Math.round(b / l * 100)}% of its limit. A single card over 90% hurts even when overall use is low — prioritise paying this one down.` }); });
+  const hi = cards.slice().filter(c => (Number(c.balance) || 0) > 0).sort((a, b) => (Number(b.rate) || 0) - (Number(a.rate) || 0))[0];
+  if (hi && Number(hi.rate) > 0) recs.push({ icon: "💸", title: "Clear your most expensive debt first", impact: "medium", detail: `${hi.name} charges ${Number(hi.rate)}% APR. Paying high-interest balances down saves interest and lowers utilisation at once — see the Payoff order on the Debts page.` });
+  recs.push({ icon: "📅", title: "Never miss a payment", impact: "high", detail: "Payment history is the single biggest factor. Set every card and loan to at least the minimum by Direct Debit so a slip can't dent your score. Track your bills on the Subscriptions & DDs page." });
+  recs.push({ icon: "🗳", title: "Register on the electoral roll", impact: "medium", detail: "Being on the electoral register at your current address confirms your identity to lenders — a quick, free boost. Register at gov.uk/register-to-vote." });
+  recs.push({ icon: "🔍", title: "Space out credit applications", impact: "medium", detail: "Each hard search shows for ~12 months and clusters look risky. Use eligibility (soft-search) checkers before applying, and don't apply for several things close together." });
+  recs.push({ icon: "📆", title: "Keep your oldest account open", impact: "low", detail: "Length of history helps. Don't close your oldest card once it's cleared — keeping it open lengthens your average account age and adds available limit (lowering utilisation)." });
+  return { util, totalBal, totalLimit, cardCount: cards.length, debtCount: debts.length, recs };
+}
 // Monthly contribution needed to reach target in `months`.
 function requiredMonthly(balance, annualRatePct, target, months) {
   balance = Number(balance) || 0; target = Number(target) || 0; months = Number(months) || 0;
@@ -1855,7 +1955,7 @@ function monthStats(state, mk) {
 
   // Auto commitments pulled from the Savings & Debts / Pension tabs (made there first).
   const savingsContrib = (state.savingsAccounts || []).reduce((s, a) => s + (Number(a.contribution) || 0), 0);
-  const debtPayments = (state.debts || []).reduce((s, d) => { const pl = debtPlan(d); return s + (pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0)); }, 0);
+  const debtPayments = (state.debts || []).reduce((s, d) => { const pl = debtPlan(d); return s + (pl.hasTerm ? pl.monthly : (Number(d.minPayment) || (d.kind === "card" ? cardMinPayment(d.balance, d.rate) : 0))); }, 0);
   // Pension is taken straight from your pay (never reaches the account), so it's already
   // reflected in the take-home base income above — it must NOT be a budget outgoing too,
   // or it would be double-counted.
@@ -1922,7 +2022,7 @@ function recurringFixed(state) {
   const out = [];
   (state.subscriptions || []).forEach(s => { const a = Number(s.amount) || 0; if (a > 0) out.push({ label: s.name, amount: a, kw: s.name, kind: s.kind === "directDebit" ? "directDebit" : "subscription" }); });
   (state.savingsAccounts || []).forEach(a => { const c = Number(a.contribution) || 0; if (c > 0) out.push({ label: a.name, amount: c, kw: a.name, kind: "savings" }); });
-  (state.debts || []).forEach(d => { const pl = debtPlan(d); const a = pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0); if (a > 0) out.push({ label: d.name, amount: a, kw: d.name, kind: "debt" }); });
+  (state.debts || []).forEach(d => { const pl = debtPlan(d); const a = pl.hasTerm ? pl.monthly : (Number(d.minPayment) || (d.kind === "card" ? cardMinPayment(d.balance, d.rate) : 0)); if (a > 0) out.push({ label: d.name, amount: a, kw: d.name, kind: "debt" }); });
   (state.insurance || []).forEach(p => { const a = insMonthly(p); if (a > 0) out.push({ label: p.type, amount: a, kw: p.provider || p.type, kind: "insurance" }); });
   return out;
 }
@@ -2159,8 +2259,9 @@ const FINANCE_TABS = [
   { id: "trends", icon: "📈", label: "Reports & Trends" },
   { id: "transactions", icon: "💳", label: "Transactions" },
   { id: "credit", icon: "📊", label: "Credit score" },
-  { id: "categories", icon: "🏷", label: "Categories" },
-  { id: "connect", icon: "🏦", label: "Connect bank" }
+  { id: "categories", icon: "🏷", label: "Categories" }
+  // "Connect bank" now lives under Settings → Bank & connections (deep-links to the
+  // tab === "connect" panel below), so it's intentionally not a Finance tab anymore.
 ];
 
 // Detect likely recurring payments from transactions: same (normalised) description
@@ -2285,6 +2386,16 @@ function StatCard({ label, value, color, sub }) {
   );
 }
 
+// Tiny label/value pair for the auto-populated holding info squares.
+function Mini({ label, value }) {
+  return (
+    <div>
+      <div style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--color-text-secondary)" }}>{label}</div>
+      <div style={{ fontSize: 12.5, fontWeight: 500 }}>{value}</div>
+    </div>
+  );
+}
+
 // A right-aligned £ amount input cell, sized to line up with the budget table columns.
 function MoneyCell({ value, onChange }) {
   return (
@@ -2324,7 +2435,7 @@ function CurrentAccountModal({ account, accentColor, onSave, onClose }) {
         <Field label="Current balance (£)"><input type="number" step="0.01" placeholder="0.00" value={a.balance} onChange={e => up("balance", e.target.value)} style={inp} /></Field>
       </div>
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--color-text-secondary)", cursor: "pointer" }}>
-        <input type="checkbox" checked={!!a.linked} onChange={e => up("linked", e.target.checked)} /> Link this to my bank (auto-updates from the balances you import in the Connect bank tab)
+        <input type="checkbox" checked={!!a.linked} onChange={e => up("linked", e.target.checked)} /> Link this to my bank (auto-updates from the balances you import in Settings → Bank &amp; connections)
       </label>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
@@ -2766,7 +2877,7 @@ function CashFlowForecast({ state, accentColor }) {
 }
 
 function DebtModal({ debt, accentColor, onSave, onClose }) {
-  const blank = { name: "", balance: "", rate: "", minPayment: "", termMonths: "", monthsPaid: "", adjustments: [], kind: "loan" };
+  const blank = { name: "", balance: "", rate: "", minPayment: "", termMonths: "", monthsPaid: "", limit: "", adjustments: [], kind: "loan" };
   const [d, setD] = useState({ ...blank, ...(debt || {}) });
   const up = (k, v) => setD(x => ({ ...x, [k]: v }));
   const ac = accentColor;
@@ -2795,10 +2906,23 @@ function DebtModal({ debt, accentColor, onSave, onClose }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Balance owed now (£)"><input type="number" step="0.01" placeholder="0.00" value={d.balance} onChange={e => up("balance", e.target.value)} style={inp} /></Field>
         <Field label="Interest (% APR)"><input type="number" step="0.01" placeholder="e.g. 22.9" value={d.rate} onChange={e => up("rate", e.target.value)} style={inp} /></Field>
-        <Field label="Original term (months)"><input type="number" step="1" placeholder="e.g. 36" value={d.termMonths} onChange={e => up("termMonths", e.target.value)} style={inp} /></Field>
-        <Field label="Months already paid"><input type="number" step="1" placeholder="e.g. 12" value={d.monthsPaid} onChange={e => up("monthsPaid", e.target.value)} style={inp} /></Field>
+        {isCard ? (
+          <Field label="Credit limit (£)"><input type="number" step="1" placeholder="e.g. 1500" value={d.limit} onChange={e => up("limit", e.target.value)} style={inp} /></Field>
+        ) : (
+          <Field label="Original term (months)"><input type="number" step="1" placeholder="e.g. 36" value={d.termMonths} onChange={e => up("termMonths", e.target.value)} style={inp} /></Field>
+        )}
+        {isCard ? (
+          <Field label="Min payment (£/mo, optional)"><input type="number" step="0.01" placeholder="auto-estimated" value={d.minPayment} onChange={e => up("minPayment", e.target.value)} style={inp} /></Field>
+        ) : (
+          <Field label="Months already paid"><input type="number" step="1" placeholder="e.g. 12" value={d.monthsPaid} onChange={e => up("monthsPaid", e.target.value)} style={inp} /></Field>
+        )}
       </div>
-      <Field label="Min payment (£/mo, optional)"><input type="number" step="0.01" placeholder="0.00" value={d.minPayment} onChange={e => up("minPayment", e.target.value)} style={inp} /></Field>
+      {!isCard && <Field label="Min payment (£/mo, optional)"><input type="number" step="0.01" placeholder="0.00" value={d.minPayment} onChange={e => up("minPayment", e.target.value)} style={inp} /></Field>}
+      {isCard && Number(d.limit) > 0 && Number(d.balance) >= 0 && (
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: -4, marginBottom: 4 }}>
+          Utilisation: <b style={{ color: (Number(d.balance) / Number(d.limit)) > 0.3 ? "#E24B4A" : "#1D9E75" }}>{Math.round(Number(d.balance) / Number(d.limit) * 100)}%</b> of limit — credit scores prefer under 30%, ideally under 10%.
+        </div>
+      )}
 
       <Divider />
       <Field label="Extra payments & payment breaks">
@@ -2827,12 +2951,24 @@ function DebtModal({ debt, accentColor, onSave, onClose }) {
           <b style={{ color: "var(--color-text-primary)" }}>{plan.paid}</b> of {plan.term} months paid · <b style={{ color: "var(--color-text-primary)" }}>{plan.monthsToEnd}</b> left{plan.extendMonths ? " (incl. break)" : ""}. Now about <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(plan.monthly)}/mo</b> · still payable <b style={{ color: "#E24B4A" }}>{fmtMoney(plan.remainingPayable)}</b>{plan.extra ? ` · ${fmtMoney(plan.extra, true)} extra applied` : ""}.
         </div>
       ) : (Number(d.balance) > 0 && Number(d.rate) > 0) ? (
-        <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 4 }}>About {fmtMoney((Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12)}/mo in interest. Add a term + months paid to track your progress.</div>
+        isCard ? (() => {
+          const intMo = cardMonthlyInterest(d.balance, d.rate);
+          const estMin = cardMinPayment(d.balance, d.rate);
+          const minOnly = cardPayoff(d.balance, d.rate, null);
+          return (
+            <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 4, lineHeight: 1.7, background: "var(--color-background-secondary)", borderRadius: 8, padding: "10px 12px" }}>
+              About <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(intMo)}/mo</b> in interest (compounded {Number(d.rate)}% APR). Estimated minimum payment <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(estMin)}</b>.<br />
+              ⚠️ Paying only the minimum: <b style={{ color: "var(--color-text-primary)" }}>{fmtMonths(minOnly.months)}</b> to clear{isFinite(minOnly.interest) ? <>, costing <b style={{ color: "#E24B4A" }}>{fmtMoney(minOnly.interest)}</b> in interest</> : ""}.
+            </div>
+          );
+        })() : (
+          <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", marginTop: 4 }}>About {fmtMoney((Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12)}/mo in interest. Add a term + months paid to track your progress.</div>
+        )
       ) : null}
 
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
         <button onClick={onClose} style={{ padding: "9px 16px", fontSize: 13, borderRadius: 9 }}>Cancel</button>
-        <button onClick={() => { if (d.name.trim()) onSave({ ...(debt || {}), id: debt?.id || genId(), kind: d.kind || "loan", name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0, termMonths: parseInt(d.termMonths, 10) || 0, monthsPaid: parseInt(d.monthsPaid, 10) || 0, adjustments: adj }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
+        <button onClick={() => { if (d.name.trim()) onSave({ ...(debt || {}), id: debt?.id || genId(), kind: d.kind || "loan", name: d.name.trim(), balance: parseFloat(d.balance) || 0, rate: parseFloat(d.rate) || 0, minPayment: parseFloat(d.minPayment) || 0, termMonths: parseInt(d.termMonths, 10) || 0, monthsPaid: parseInt(d.monthsPaid, 10) || 0, limit: parseFloat(d.limit) || 0, adjustments: adj }); }} style={{ padding: "9px 20px", fontSize: 13, background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>{debt?.id ? "Save" : "Add"}</button>
       </div>
     </Modal>
   );
@@ -2951,8 +3087,129 @@ function MonthlyReports({ state }) {
   );
 }
 
-function FinanceView({ state, up, accentColor }) {
+// Credit-score dashboard: enter your score from any UK CRA, watch the trend build,
+// and get personalised, data-driven recommendations from your real Tend debts/cards.
+function CreditScorePanel({ state, up, accentColor }) {
+  const ac = accentColor;
+  const credit = state.credit || {};
+  const provider = CREDIT_PROVIDERS[credit.provider] ? credit.provider : "Experian";
+  const prov = CREDIT_PROVIDERS[provider];
+  const history = (credit.history || []).slice().sort((a, b) => (a.month < b.month ? -1 : 1));
+  const current = history.length ? history[history.length - 1].score : null;
+  const previous = history.length > 1 ? history[history.length - 2].score : null;
+  const delta = current != null && previous != null ? current - previous : null;
+  const [input, setInput] = useState(current != null ? String(current) : "");
+  const ins = creditInsights(state);
+  const setProvider = p => up({ credit: { ...credit, provider: p, history: [] } });
+  function logScore() {
+    const v = parseInt(input, 10);
+    if (!v || v < 0 || v > prov.max) { alert(`Enter a score between 0 and ${prov.max} for ${provider}.`); return; }
+    const m = curMonthKey();
+    const rest = (credit.history || []).filter(h => h.month !== m);
+    up({ credit: { ...credit, provider, history: [...rest, { month: m, score: v }] } });
+  }
+  const band = current != null ? creditBand(provider, current) : null;
+  const pct = current != null ? Math.max(0, Math.min(1, current / prov.max)) : 0;
+  const R = 80, CX = 100, CY = 100, circ = Math.PI * R; // semicircle gauge
+  const impactPill = { high: ["#E24B4A", "High impact"], medium: ["#BA7517", "Medium impact"], low: ["#1D9E75", "Maintain"] };
+  return (
+    <div style={{ maxWidth: 660 }}>
+      <SectionHead sub="Log your score from any UK credit reference agency, track it over time, and get tailored steps — built from your real cards and debts — to improve it.">📊 Credit score</SectionHead>
+
+      {/* Provider + scale */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {Object.keys(CREDIT_PROVIDERS).map(p => (
+          <button key={p} onClick={() => setProvider(p)} style={{ fontSize: 12.5, padding: "7px 14px", borderRadius: 20, border: "none", cursor: "pointer", fontWeight: provider === p ? 600 : 400, background: provider === p ? ac : "var(--color-background-secondary)", color: provider === p ? "#fff" : "var(--color-text-secondary)" }}>{p}</button>
+        ))}
+        <span style={{ fontSize: 11.5, color: "var(--color-text-secondary)", alignSelf: "center", marginLeft: 4 }}>scale 0–{prov.max}{credit.provider && credit.provider !== provider ? "" : ""} · switching provider resets history</span>
+      </div>
+
+      {/* Score gauge + log this month */}
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap", justifyContent: "center" }}>
+          <div style={{ position: "relative", width: 200, height: 116 }}>
+            <svg width="200" height="116" viewBox="0 0 200 116">
+              <path d={`M ${CX - R} ${CY} A ${R} ${R} 0 0 1 ${CX + R} ${CY}`} fill="none" stroke="var(--color-background-secondary)" strokeWidth="14" strokeLinecap="round" />
+              {current != null && <path d={`M ${CX - R} ${CY} A ${R} ${R} 0 0 1 ${CX + R} ${CY}`} fill="none" stroke={band[2]} strokeWidth="14" strokeLinecap="round" strokeDasharray={`${pct * circ} ${circ}`} />}
+            </svg>
+            <div style={{ position: "absolute", inset: 0, top: 28, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ fontSize: 30, fontWeight: 700, color: current != null ? band[2] : "var(--color-text-secondary)" }}>{current != null ? current : "—"}</div>
+              <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>of {prov.max}</div>
+            </div>
+          </div>
+          <div style={{ minWidth: 170 }}>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Rating</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: current != null ? band[2] : "var(--color-text-secondary)" }}>{current != null ? band[0] : "Not set"}</div>
+            {delta != null && delta !== 0 && <div style={{ fontSize: 11.5, color: delta > 0 ? "#1D9E75" : "#E24B4A", marginTop: 4, fontWeight: 600 }}>{delta > 0 ? "▲ +" : "▼ "}{delta} since {monthShort(previous != null ? history[history.length - 2].month : curMonthKey())}</div>}
+            {delta === 0 && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 4 }}>No change since last entry</div>}
+            <div style={{ display: "flex", gap: 3, marginTop: 10 }}>
+              {prov.bands.map(b => <div key={b[0]} title={b[0]} style={{ flex: 1, height: 6, borderRadius: 3, background: band && b[0] === band[0] ? b[2] : hex2rgba(b[2], 0.25) }} />)}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16, paddingTop: 14, borderTop: "0.5px solid var(--color-border-tertiary)", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>{current != null ? "Update this month's score:" : "Enter your latest score:"}</span>
+          <input type="number" value={input} onChange={e => setInput(e.target.value)} placeholder={`0–${prov.max}`} style={{ width: 110, fontSize: 13, padding: "7px 10px" }} />
+          <button onClick={logScore} style={{ fontSize: 13, padding: "7px 16px", background: ac, color: "#fff", border: "none", borderRadius: 9, cursor: "pointer", fontWeight: 500 }}>Save</button>
+          <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>Check it free in your {provider} app or ClearScore/Credit Karma.</span>
+        </div>
+      </div>
+
+      {/* Trend */}
+      {history.length >= 2 ? (
+        <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Score over time</div>
+          <BarsChart data={history.slice(-12).map(h => ({ label: monthShort(h.month), value: h.score, color: hex2rgba(ac, 0.55) }))} height={130} />
+        </div>
+      ) : (
+        <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, fontSize: 12.5, color: "var(--color-text-secondary)" }}>
+          📈 Log your score each month and a trend line builds here so you can see your progress.
+        </div>
+      )}
+
+      {/* Utilisation snapshot (real data) */}
+      {ins.cardCount > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+          <StatCard label="Credit utilisation" value={ins.util != null ? `${Math.round(ins.util)}%` : "—"} color={ins.util == null ? undefined : ins.util > 30 ? "#E24B4A" : "#1D9E75"} sub={ins.util != null ? "lenders like under 30%" : "add card limits to track"} />
+          <StatCard label="Card balances" value={fmtMoney(ins.totalBal)} sub={ins.totalLimit > 0 ? `of ${fmtMoney(ins.totalLimit, true)} limit` : null} />
+          <StatCard label="Active credit accounts" value={String(ins.debtCount)} sub={`${ins.cardCount} card${ins.cardCount === 1 ? "" : "s"}`} />
+        </div>
+      )}
+
+      {/* Recommendations — personalised */}
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>How to improve your score</div>
+        <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 12 }}>Tailored to your accounts, then sorted by impact. Most are free and within your control.</div>
+        {ins.recs.slice().sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.impact] - { high: 0, medium: 1, low: 2 }[b.impact])).map((r, i) => {
+          const [pc, pl] = impactPill[r.impact] || impactPill.low;
+          return (
+            <div key={i} style={{ display: "flex", gap: 11, padding: "11px 0", borderTop: i ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+              <span style={{ fontSize: 18, flexShrink: 0 }}>{r.icon}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 600 }}>{r.title}</span>
+                  <span style={{ fontSize: 9.5, fontWeight: 600, color: pc, background: hex2rgba(pc, 0.13), padding: "1px 7px", borderRadius: 10 }}>{pl}</span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 3, lineHeight: 1.55 }}>{r.detail}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Future: automatic soft-search pull */}
+      <div style={{ background: hex2rgba(ac, 0.06), border: `1px solid ${hex2rgba(ac, 0.22)}`, borderRadius: 12, padding: "13px 15px", fontSize: 12, lineHeight: 1.6, color: "var(--color-text-secondary)" }}>
+        🔭 <b style={{ color: "var(--color-text-primary)" }}>Coming next:</b> automatic score updates. A soft-search pull (via a provider like ClearScore, Credit Karma or the CRA APIs) will fill this in for you each month with no impact on your score — until then, logging it by hand keeps your trend and recommendations live.
+      </div>
+    </div>
+  );
+}
+
+function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
   const [tab, setTab] = useState("dashboard");
+  // Honour a deep-link from another view (Settings → bank/connections), then clear it
+  // so a later visit to Finance lands on the dashboard as usual.
+  useEffect(() => { if (initialTab) { setTab(initialTab); clearInitialTab && clearInitialTab(); } }, [initialTab]);
   const [month, setMonth] = useState(curMonthKey());
   const [txnModal, setTxnModal] = useState(null);
   const [catModal, setCatModal] = useState(null);
@@ -3084,10 +3341,11 @@ function FinanceView({ state, up, accentColor }) {
       // Replace the previously-synced T212 holdings with the live ones.
       const kept = (state.investments || []).filter(h => h.source !== "t212");
       const live = (p.holdings || []).map(h => ({
-        id: genId(), name: (h.ticker || "").split("_")[0] || h.ticker, ticker: h.ticker,
+        id: genId(), name: h.name || (h.ticker || "").split("_")[0] || h.ticker, ticker: h.ticker,
         account: "Trading 212", units: h.units, avgCost: h.avgCost, price: h.price,
         value: h.value, // T212's own currency-correct market value (F3)
-        contribution: 0, source: "t212",
+        ppl: h.ppl, // live unrealised profit/loss from T212 (F3)
+        contribution: 0, source: "t212", syncedAt: new Date().toISOString(),
       }));
       up({ investments: [...kept, ...live] });
     } catch (e) { setBankErr(e.message || String(e)); }
@@ -3268,10 +3526,20 @@ function FinanceView({ state, up, accentColor }) {
   const LinkedBadge = () => <span style={{ fontSize: 10, background: hex2rgba(ac, 0.14), color: ac, padding: "1px 7px", borderRadius: 10, fontWeight: 500 }}>🔗 Connected via API</span>;
   // One credit-card / debt card, shared by the Credit-cards and Debts-&-loans groups.
   const renderDebtCard = (d, idx, list, emoji) => {
-    const mi = (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12;
+    const isCard = debtKind(d) === "card";
+    // Cards: compounded monthly rate (UK effective APR). Loans: nominal APR/12, the
+    // amortisation convention loanSchedule already uses.
+    const mi = isCard ? cardMonthlyInterest(d.balance, d.rate) : (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12;
+    const effMin = isCard ? (Number(d.minPayment) || cardMinPayment(d.balance, d.rate)) : (Number(d.minPayment) || 0);
+    const minEstimated = isCard && !(Number(d.minPayment) > 0) && effMin > 0;
     const term = Number(d.termMonths) || 0;
     const plan = debtPlan(d);
     const pctPaid = term > 0 ? Math.min(100, Math.round((plan.paid / term) * 100)) : 0;
+    // The legally-required UK statement warning: pay only the minimum and here's the cost.
+    const minOnly = isCard && (Number(d.balance) || 0) > 0 && (Number(d.rate) || 0) > 0 ? cardPayoff(d.balance, d.rate, null) : null;
+    const limit = Number(d.limit) || 0;
+    const util = isCard && limit > 0 ? Math.round((Number(d.balance) || 0) / limit * 100) : null;
+    const utilColor = util == null ? "" : util > 50 ? "#E24B4A" : util > 30 ? "#BA7517" : "#1D9E75";
     return (
       <div key={d.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -3281,8 +3549,10 @@ function FinanceView({ state, up, accentColor }) {
               <span style={{ fontWeight: 600, fontSize: 15 }}>{d.name}</span>
               {d.linked && <LinkedBadge />}
             </div>
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR{term > 0 ? ` · ${term}-month term` : ""}{d.minPayment ? ` · min ${fmtMoney(d.minPayment, true)}/mo` : ""}{mi > 0 ? ` · ~${fmtMoney(mi, true)}/mo interest` : ""}</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{Number(d.rate) || 0}% APR{term > 0 ? ` · ${term}-month term` : ""}{effMin > 0 ? ` · min ${fmtMoney(effMin, true)}/mo${minEstimated ? " (est.)" : ""}` : ""}{mi > 0 ? ` · ~${fmtMoney(mi, true)}/mo interest` : ""}</div>
             {plan.hasTerm && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>{plan.paid}/{term} months paid · {plan.monthsToEnd} left · ≈ {fmtMoney(plan.monthly, true)}/mo · still payable <b style={{ color: "var(--color-text-primary)" }}>{fmtMoney(plan.remainingPayable, true)}</b></div>}
+            {minOnly && (Number(d.rate) || 0) > 0 && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>⚠️ Minimum-only: <b style={{ color: "var(--color-text-primary)" }}>{fmtMonths(minOnly.months)}</b> to clear{isFinite(minOnly.interest) ? <> · <b style={{ color: "#E24B4A" }}>{fmtMoney(minOnly.interest, true)}</b> interest</> : ""}</div>}
+            {util != null && <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}><span>Utilisation <b style={{ color: utilColor }}>{util}%</b> of {fmtMoney(limit, true)}</span><span style={{ flex: 1, maxWidth: 90, height: 5, background: "var(--color-background-secondary)", borderRadius: 3, overflow: "hidden" }}><span style={{ display: "block", height: "100%", width: `${Math.min(100, util)}%`, background: utilColor, borderRadius: 3 }} /></span></div>}
           </div>
           <div style={{ fontSize: 17, fontWeight: 600, color: "#E24B4A" }}>{fmtMoney(d.balance)}</div>
           <Reorder upDisabled={idx === 0} downDisabled={idx === list.length - 1} onUp={() => moveDebt(d.id, -1)} onDown={() => moveDebt(d.id, 1)} />
@@ -3544,7 +3814,7 @@ function FinanceView({ state, up, accentColor }) {
             const matchActual = kw => { kw = (kw || "").toLowerCase().trim(); if (!kw) return null; const ms = monthTxns.filter(t => (t.description || "").toLowerCase().includes(kw)); return ms.length ? ms.reduce((s, t) => s + (Number(t.amount) || 0), 0) : null; };
             const items = [
               ...savings.filter(a => Number(a.contribution) > 0).map(a => ({ icon: "🐖", label: a.name, projected: Number(a.contribution) || 0, kw: a.name })),
-              ...debts.map(d => { const pl = debtPlan(d); return { icon: "💳", label: d.name, projected: pl.hasTerm ? pl.monthly : (Number(d.minPayment) || 0), kw: d.name }; }).filter(x => x.projected > 0),
+              ...debts.map(d => { const pl = debtPlan(d); return { icon: "💳", label: d.name, projected: pl.hasTerm ? pl.monthly : (Number(d.minPayment) || (d.kind === "card" ? cardMinPayment(d.balance, d.rate) : 0)), kw: d.name }; }).filter(x => x.projected > 0),
               ...insurance.map(p => ({ icon: insIcon(p.type), label: `${p.type}${p.provider ? " · " + p.provider : ""}`, projected: insMonthly(p), kw: p.provider || p.type })).filter(x => x.projected > 0),
               ...subs.filter(s => !subAlreadyTracked(s, state)).map(s => ({ icon: s.kind === "directDebit" ? "🏦" : "🔁", label: s.name, projected: Number(s.amount) || 0, kw: s.name })).filter(x => x.projected > 0),
               // Pension is deducted from pay (already in take-home), so it's not listed here.
@@ -3844,14 +4114,14 @@ function FinanceView({ state, up, accentColor }) {
               {cards.length === 0 && <div style={{ fontSize: 13, color: "var(--color-text-secondary)", padding: "2px 0 6px" }}>No credit cards tracked. Add one (or import it from your linked bank) to see the balance, interest and how it fits your payoff plan.</div>}
               {cards.length > 0 && (() => {
                 const totalOwed = cards.reduce((s, d) => s + (Number(d.balance) || 0), 0);
-                const totalMin = cards.reduce((s, d) => s + (Number(d.minPayment) || 0), 0);
-                const monthlyInterest = cards.reduce((s, d) => s + (Number(d.balance) || 0) * (Number(d.rate) || 0) / 100 / 12, 0);
+                const totalMin = cards.reduce((s, d) => s + (Number(d.minPayment) || cardMinPayment(d.balance, d.rate)), 0);
+                const monthlyInterest = cards.reduce((s, d) => s + cardMonthlyInterest(d.balance, d.rate), 0);
                 return (
                   <>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
                       <StatCard label="Card balances" value={fmtMoney(totalOwed)} color="#E24B4A" />
-                      <StatCard label="Min payments / mo" value={fmtMoney(totalMin)} />
-                      <StatCard label="Interest / mo" value={fmtMoney(monthlyInterest)} color="#E24B4A" sub="at current balances" />
+                      <StatCard label="Min payments / mo" value={fmtMoney(totalMin)} sub="Capital One-style estimate" />
+                      <StatCard label="Interest / mo" value={fmtMoney(monthlyInterest)} color="#E24B4A" sub="compounded APR, at current balances" />
                     </div>
                     {cards.map((d, idx) => renderDebtCard(d, idx, cards, "💳"))}
                   </>
@@ -3958,24 +4228,51 @@ function FinanceView({ state, up, accentColor }) {
                   </div>
                 )}
 
-                {investments.map(h => {
-                  const val = holdingValue(h), cost = (Number(h.units) || 0) * (Number(h.avgCost) || 0), gain = val - cost;
-                  const pct = cost > 0 ? gain / cost * 100 : 0;
-                  return (
-                    <div key={h.id} style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 15 }}>{h.name}{h.ticker ? <span style={{ fontSize: 12, color: "var(--color-text-secondary)", fontWeight: 400 }}> · {h.ticker}</span> : null}</div>
-                        <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{(Number(h.units) || 0)} units{h.account ? ` · ${h.account}` : ""}{h.contribution ? ` · ${fmtMoney(h.contribution, true)}/mo` : ""}</div>
+                {/* Holdings — auto-populated info squares. Trading-212-linked holdings fill
+                    themselves from the API (units, price, avg cost, market value, live P/L);
+                    manual ones use the figures you typed. */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 12 }}>
+                  {investments.map(h => {
+                    const val = holdingValue(h), cost = (Number(h.units) || 0) * (Number(h.avgCost) || 0);
+                    // Prefer T212's own unrealised P/L when present (currency-correct); else compute.
+                    const gain = (h.source === "t212" && h.ppl != null) ? Number(h.ppl) : val - cost;
+                    const pct = cost > 0 ? gain / cost * 100 : 0;
+                    const live = h.source === "t212";
+                    const gainUp = gain >= 0, gc = gainUp ? "#1D9E75" : "#E24B4A";
+                    return (
+                      <div key={h.id} style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 15, border: "0.5px solid var(--color-border-tertiary)", display: "flex", flexDirection: "column", gap: 10, position: "relative" }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{h.name}</div>
+                            <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 1 }}>{h.ticker ? `${(h.ticker || "").split("_")[0]}` : (h.account || "Holding")}{live ? "" : ""}</div>
+                          </div>
+                          {live && <span title="Auto-synced from Trading 212" style={{ fontSize: 9.5, background: hex2rgba(ac, 0.14), color: ac, padding: "2px 7px", borderRadius: 10, fontWeight: 600, flexShrink: 0 }}>● LIVE</span>}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 20, fontWeight: 700, lineHeight: 1.1 }}>{fmtMoney(val)}</div>
+                          <div style={{ fontSize: 12, color: gc, fontWeight: 600, marginTop: 2 }}>{gainUp ? "▲" : "▼"} {gainUp ? "+" : "−"}{fmtMoney(Math.abs(gain), true)}{cost > 0 ? ` · ${gainUp ? "+" : "−"}${Math.abs(pct).toFixed(1)}%` : ""}</div>
+                        </div>
+                        {/* gain/loss bar — quick visual of how far above/below cost */}
+                        {cost > 0 && (
+                          <div style={{ height: 5, background: "var(--color-background-secondary)", borderRadius: 3, overflow: "hidden", display: "flex" }}>
+                            <div style={{ height: "100%", width: `${Math.min(100, Math.abs(pct) * 2)}%`, background: gc, borderRadius: 3 }} />
+                          </div>
+                        )}
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 10px", fontSize: 11.5 }}>
+                          <Mini label="Units" value={(Number(h.units) || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })} />
+                          <Mini label="Price" value={h.price ? fmtMoney(h.price, true) : "—"} />
+                          <Mini label="Avg cost" value={h.avgCost ? fmtMoney(h.avgCost, true) : "—"} />
+                          <Mini label="Invested" value={cost > 0 ? fmtMoney(cost, true) : "—"} />
+                        </div>
+                        {(h.contribution > 0 || h.syncedAt) && <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>{h.contribution > 0 ? `${fmtMoney(h.contribution, true)}/mo` : ""}{h.contribution > 0 && h.syncedAt ? " · " : ""}{h.syncedAt ? `synced ${fmtDate(h.syncedAt.slice(0, 10))}` : ""}</div>}
+                        <div style={{ display: "flex", gap: 4, position: "absolute", top: 10, right: live ? 64 : 8 }}>
+                          <button onClick={() => setInvModal(h)} title="Edit" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12.5, padding: "2px 4px", opacity: 0.7 }}>✏️</button>
+                          <button onClick={() => deleteInvestment(h.id)} title="Remove" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12.5, padding: "2px 4px", opacity: 0.7 }}>🗑</button>
+                        </div>
                       </div>
-                      <div style={{ textAlign: "right" }}>
-                        <div style={{ fontSize: 16, fontWeight: 600 }}>{fmtMoney(val)}</div>
-                        <div style={{ fontSize: 12, color: gain >= 0 ? "#1D9E75" : "#E24B4A", fontWeight: 500 }}>{gain >= 0 ? "+" : "−"}{fmtMoney(Math.abs(gain), true)}{cost > 0 ? ` (${gain >= 0 ? "+" : "−"}${Math.abs(pct).toFixed(1)}%)` : ""}</div>
-                      </div>
-                      <button onClick={() => setInvModal(h)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✏️</button>
-                      <button onClick={() => deleteInvestment(h.id)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>🗑</button>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </>
             )}
 
@@ -3985,7 +4282,7 @@ function FinanceView({ state, up, accentColor }) {
               {bankErr && <div style={{ background: hex2rgba("#d9534f", 0.1), color: "#d9534f", fontSize: 12, padding: "8px 11px", borderRadius: 9, margin: "0 auto 12px", maxWidth: 420 }}>{bankErr}</div>}
               {!bank.enabled ? (
                 <>
-                  <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 14, maxWidth: 460, marginInline: "auto" }}>Pull live balances, holdings and prices straight from Trading 212 via its API (read-only). Needs your personal API key — switch the integrations on in the Connect-bank tab’s setup steps.</div>
+                  <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.6, marginBottom: 14, maxWidth: 460, marginInline: "auto" }}>Pull live balances, holdings and prices straight from Trading 212 via its API (read-only). Needs your personal API key — switch the integrations on in Settings → Bank &amp; connections.</div>
                   <button disabled style={{ fontSize: 13, padding: "9px 20px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect Trading 212 — switch on in setup</button>
                 </>
               ) : connOf("t212") ? (
@@ -4448,81 +4745,49 @@ function FinanceView({ state, up, accentColor }) {
         </div>
       )}
 
-      {/* ── Credit score (Phase B placeholder dashboard) ── */}
-      {tab === "credit" && (() => {
-        // Placeholder layout for the upcoming integration. UK Experian-style 0–999 scale.
-        const SAMPLE = 721, MAX = 999;
-        const bands = [["Very poor", 0, "#E24B4A"], ["Poor", 561, "#D85A30"], ["Fair", 721, "#BA7517"], ["Good", 881, "#639922"], ["Excellent", 961, "#1D9E75"]];
-        const band = bands.slice().reverse().find(b => SAMPLE >= b[1]) || bands[0];
-        const pct = SAMPLE / MAX;
-        const R = 80, CX = 100, CY = 100, circ = Math.PI * R; // semicircle
-        const factors = [
-          ["Payment history", "On-time payments", "💳"],
-          ["Credit utilisation", "How much of your limit you use", "📉"],
-          ["Age of accounts", "Length of credit history", "📅"],
-          ["Recent searches", "Hard searches in last 12 months", "🔍"],
-          ["Total accounts", "Active credit accounts", "🗂"],
-          ["Electoral roll", "Registered at your address", "🗳"],
-        ];
-        return (
-          <div style={{ maxWidth: 640 }}>
-            <SectionHead sub="Coming in Phase B — see your score, what's moving it, and how it trends over time.">📊 Credit score</SectionHead>
-            <div style={{ background: hex2rgba(ac, 0.06), border: `1px solid ${hex2rgba(ac, 0.25)}`, borderRadius: 12, padding: "12px 14px", fontSize: 12.5, marginBottom: 14 }}>
-              🔒 <b>Preview.</b> This is a sample layout. Once live (Phase B) it'll pull a soft-search score from a provider (Experian, Equifax or TransUnion) — read-only, no impact on your score.
-            </div>
-            <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, opacity: 0.96 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap", justifyContent: "center" }}>
-                <div style={{ position: "relative", width: 200, height: 116 }}>
-                  <svg width="200" height="116" viewBox="0 0 200 116">
-                    <path d={`M ${CX - R} ${CY} A ${R} ${R} 0 0 1 ${CX + R} ${CY}`} fill="none" stroke="var(--color-background-secondary)" strokeWidth="14" strokeLinecap="round" />
-                    <path d={`M ${CX - R} ${CY} A ${R} ${R} 0 0 1 ${CX + R} ${CY}`} fill="none" stroke={band[2]} strokeWidth="14" strokeLinecap="round" strokeDasharray={`${pct * circ} ${circ}`} />
-                  </svg>
-                  <div style={{ position: "absolute", inset: 0, top: 28, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-                    <div style={{ fontSize: 30, fontWeight: 700, color: band[2] }}>{SAMPLE}</div>
-                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>of {MAX}</div>
-                  </div>
-                </div>
-                <div style={{ minWidth: 160 }}>
-                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Rating</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: band[2] }}>{band[0]}</div>
-                  <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 4 }}>▲ sample +12 since last month</div>
-                  <div style={{ display: "flex", gap: 3, marginTop: 10 }}>
-                    {bands.map(b => <div key={b[0]} title={b[0]} style={{ flex: 1, height: 6, borderRadius: 3, background: b[0] === band[0] ? b[2] : hex2rgba(b[2], 0.25) }} />)}
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>What affects your score</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
-                {factors.map(([t, d, ic]) => (
-                  <div key={t} style={{ display: "flex", gap: 10, padding: "10px 12px", background: "var(--color-background-secondary)", borderRadius: 10 }}>
-                    <span style={{ fontSize: 16 }}>{ic}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 500 }}>{t}</div>
-                      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 1 }}>{d}</div>
-                    </div>
-                    <span style={{ fontSize: 11, color: "var(--color-text-secondary)", alignSelf: "center" }}>—</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Score over time</div>
-              <BarsChart data={[680, 690, 705, 700, 715, 721].map((v, i) => ({ label: monthShort(shiftMonth(curMonthKey(), -(5 - i))), value: v, color: hex2rgba(ac, 0.55) }))} height={120} />
-              <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 8, textAlign: "center" }}>Sample data — your real history will build here once connected.</div>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <button disabled style={{ fontSize: 14, padding: "10px 22px", background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "none", borderRadius: 10, cursor: "not-allowed", fontWeight: 500 }}>🔒 Connect credit score — coming in Phase B</button>
-            </div>
-          </div>
-        );
-      })()}
+      {/* ── Credit score ── */}
+      {tab === "credit" && <CreditScorePanel state={state} up={up} accentColor={ac} />}
 
-      {/* ── Connect bank ── */}
+      {/* ── Connect bank (reached from Settings → Bank & connections) ── */}
       {tab === "connect" && (
         <div style={{ maxWidth: 560 }}>
+          <SectionHead sub="Linked from Settings → Bank & connections. Everything here is read-only — Tend can never move your money.">🏦 Bank &amp; connections</SectionHead>
           {bankErr && <div style={{ background: hex2rgba("#d9534f", 0.1), color: "#d9534f", fontSize: 12.5, padding: "9px 12px", borderRadius: 10, marginBottom: 12 }}>{bankErr}</div>}
+
+          {/* ── Claude AI overview — what powers Tend's smart features and how it's gated ── */}
+          {(() => {
+            const aiOn = !!(window.TendAI && window.TendAI.enabled);
+            return (
+              <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <div style={{ fontSize: 24 }}>✦</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600 }}>Claude — your AI chief of staff</div>
+                    <div style={{ fontSize: 11.5, marginTop: 2, color: aiOn ? "#2e8b57" : "var(--color-text-secondary)" }}>{aiOn ? "✓ Backend live — set ANTHROPIC_API_KEY in Vercel to switch the AI on" : "Dormant — switches on with the backend"}</div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12.5, color: "var(--color-text-secondary)", lineHeight: 1.65 }}>
+                  Tend runs on Anthropic's <b>Claude</b> models. When the API key is set it powers three features — everything else works offline with built-in helpers:
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8, marginTop: 10 }}>
+                  {[
+                    ["⚡", "Quick Add", "Plain-English tasks parsed into title, date, tags & group", "Haiku"],
+                    ["🎁", "Gift ideas", "Tailored present suggestions for the people you track", "Haiku"],
+                    ["💬", "Ask Tend", "Questions answered with your finance & task context", "Opus"],
+                  ].map(([ic, t, d, m]) => (
+                    <div key={t} style={{ background: "var(--color-background-secondary)", borderRadius: 10, padding: "10px 12px" }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ic} {t}</div>
+                      <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)", marginTop: 3, lineHeight: 1.45 }}>{d}</div>
+                      <div style={{ fontSize: 9.5, color: ac, marginTop: 5, fontWeight: 600 }}>{m}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 10, lineHeight: 1.55, background: "var(--color-background-secondary)", borderRadius: 8, padding: "9px 11px" }}>
+                  🔒 The key lives only in Vercel (server-side). AI calls require a signed-in session <b>and</b> an allow-listed email (<code>AI_ALLOWED_EMAILS</code>, default = your account), so visitors can never spend your credits. No request reaches Claude until you opt in.
+                </div>
+              </div>
+            );
+          })()}
 
           {(() => {
             const lf = connOf("lunchflow");
@@ -6252,6 +6517,10 @@ function DocsView({ state, up, accentColor, goFinance }) {
 function App({ user }) {
   const [state, up, meta] = useAppState(user);
   const [view, setView] = useState("home");
+  // When another view (e.g. Settings) wants to deep-link into a specific Finance
+  // sub-tab — the bank/connections screen now lives under Settings — it sets this.
+  const [financeTab, setFinanceTab] = useState(null);
+  const goFinanceTab = t => { setFinanceTab(t); setView("finance"); };
   const [modal, setModal] = useState(null);
   const [groupModal, setGroupModal] = useState(null);
   const [dateModal, setDateModal] = useState(null);
@@ -6717,13 +6986,13 @@ function App({ user }) {
           {view === "people" && <PeopleView state={state} up={up} accentColor={ac} onAddTask={saveTask} />}
 
           {/* Finance */}
-          {view === "finance" && <FinanceView state={state} up={up} accentColor={ac} />}
+          {view === "finance" && <FinanceView state={state} up={up} accentColor={ac} initialTab={financeTab} clearInitialTab={() => setFinanceTab(null)} />}
 
           {/* Documents & Policies (Insurance, Warranties, Digital Life Audit) */}
           {view === "docs" && <DocsView state={state} up={up} accentColor={ac} goFinance={() => setView("finance")} />}
 
           {/* Settings */}
-          {view === "settings" && <SettingsView state={state} up={up} accentColor={ac} user={user} calendarToken={meta.calendarToken} />}
+          {view === "settings" && <SettingsView state={state} up={up} accentColor={ac} user={user} calendarToken={meta.calendarToken} onGoConnect={() => goFinanceTab("connect")} />}
 
          </div>
         </div>
