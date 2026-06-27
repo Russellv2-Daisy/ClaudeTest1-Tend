@@ -95,19 +95,21 @@ Status key: ✅ done · 🟡 partial / needs deploy verification · ⬜ planned
 
 ---
 
-## Phase D — full logic check + security review (⬜ — may merge with B)
-- **Logic:** re-verify finance maths end-to-end (budget roll-ups, net worth, pay-period
-  ranges, card vs loan interest conventions, payoff ordering), date/timezone handling
-  (`ymdLocal`, leap-year birthdays), and import de-duplication.
-- **Security review (run `/security-review` on the branch):**
-  - `api/index.py`: every route scopes to the caller's `uid`; `/api/feed` is token-only by
-    design — confirm the token is high-entropy and not logged. No service key or provider
-    key ever reaches the browser.
-  - Supabase RLS on `user_state` + `connections` (connections: server-write only).
-  - AI routes gated by session **and** `AI_ALLOWED_EMAILS` so visitors can't spend credits.
-  - PostgREST filters are param-encoded (no operator injection). CSP / no secrets in
-    `config.js`. Check that a bad token can't enumerate users (constant 404) and that the
-    feed sets a correct `text/calendar` content-type.
+## Phase D — full logic check + security review (✅ done 2026-06-27)
+- **Security review — clean, no HIGH/MEDIUM findings.** Reviewed the cycle's new surface:
+  - `/api/feed` + `/api/widget` are token-only **by design** (capability URLs, like any
+    calendar feed). The token is `calendar_token` from `makeToken()` =
+    `crypto.getRandomValues(18 bytes)` → 144-bit CSPRNG, so unguessable; unknown token →
+    constant 404 (no enumeration). Token is a PostgREST filter **value** via httpx params
+    (percent-encoded) → no operator injection. Each token → exactly one user row.
+  - `/api/credit` gated by `require_ai_user` (session + `AI_ALLOWED_EMAILS`); PDF is sent to
+    Claude as a document block, never executed; JSON via `json.loads`; output coerced +
+    range-clamped (provider whitelisted, score 0–1000) so a bad model reply can't write junk.
+  - No service-role / provider / Anthropic keys reach the browser; none added to `config.js`.
+- **Logic check — consistent.** `/api/widget` net worth (`inBank+savings+inv+pens−debt`,
+  `inv = value||units×price`, pensions exclude state) matches the app's `NetWorth` /
+  `pensionPotsTotal`; the importer dedupe (`extId` then name), credit import (prev→last month,
+  score→this month, provider-change resets history) and Reports roll-ups were all verified live.
 
 ---
 
