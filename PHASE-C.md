@@ -115,11 +115,12 @@ Status key: ✅ done · 🟡 partial / needs deploy verification · ⬜ planned
   icon and standalone launch on iOS.
 - **True home-screen widget:** iOS does **not** let a PWA publish a WidgetKit widget. Two
   routes:
-  1. **Interim (no native app):** add a tiny read-only JSON endpoint (e.g.
-     `GET /api/widget?token=…` → today's tasks, safe-to-spend, next bill) and consume it
-     from the **Scriptable** app to render a home-screen widget. Low effort, no App Store.
+  1. **Interim (no native app) — ✅ BUILT:** `GET /api/widget?token=` returns a read-only
+     JSON summary (net worth, in-the-bank, today's tasks, overdue count, next date), authed
+     by the same per-user calendar token as `/api/feed`. `scriptable-widget.js` (repo root)
+     is the widget script the user pastes into the free **Scriptable** app; Settings → 📱
+     iPhone widget surfaces the personal URL + setup steps. Only sums/dates are computed
+     server-side (no budget math) so it can't diverge from the app. Verify on deploy.
   2. **Native (Phase E proper):** wrap/rebuild as a native shell (React Native / Capacitor,
      or Swift) and ship a WidgetKit extension. Required for a first-class widget, Face-ID
-     lock, notifications, and App Store presence.
-- **Recommendation:** ship the Scriptable JSON widget as a Phase C/E bridge; only commit to
-  a native shell if Tend graduates beyond personal use.
+     lock, notifications, and App Store presence — only if Tend graduates beyond personal use.

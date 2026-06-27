@@ -767,3 +767,86 @@ async def calendar_feed(token: str = ""):
     return Response(content=body, media_type="text/calendar; charset=utf-8",
                     headers={"Content-Disposition": "inline; filename=tend.ics",
                              "Cache-Control": "public, max-age=3600"})
+
+
+# ── iPhone home-screen widget feed ────────────────────────────────────────────
+# A read-only JSON summary the Scriptable app fetches to render a Tend widget on
+# the iOS home screen (see scriptable-widget.js). Authed by the same per-user
+# calendar token as /api/feed. Only computes figures that are unambiguous server-
+# side (simple balance sums + task dates) so it can never disagree with the app;
+# the budget-derived "safe to spend" is deliberately left to the app.
+@app.get("/api/widget")
+async def widget(token: str = ""):
+    token = (token or "").strip()
+    if len(token) < 16:
+        raise HTTPException(status_code=400, detail="Missing or invalid token")
+    row = await _state_by_token(token)
+    if not row:
+        raise HTTPException(status_code=404, detail="Unknown token")
+    data = row.get("data") or {}
+    today = dt.date.today().isoformat()
+
+    def num(x):
+        try:
+            return float(x or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    tasks = [t for t in (data.get("tasks") or []) if isinstance(t, dict) and not t.get("done")]
+    todays = [t for t in tasks if t.get("scheduledDate") == today or t.get("deadline") == today]
+    overdue = [t for t in tasks if t.get("deadline") and t.get("deadline") < today]
+
+    in_bank = sum(num(a.get("balance")) for a in (data.get("currentAccounts") or []) if isinstance(a, dict))
+    savings = sum(num(a.get("balance")) for a in (data.get("savingsAccounts") or []) if isinstance(a, dict))
+    debt = sum(num(d.get("balance")) for d in (data.get("debts") or []) if isinstance(d, dict))
+    inv = 0.0
+    for h in (data.get("investments") or []):
+        if not isinstance(h, dict):
+            continue
+        v = h.get("value")
+        inv += num(v) if v not in (None, "") else num(h.get("units")) * num(h.get("price"))
+    pens = 0.0
+    plist = data.get("pensions") or ([data.get("pension")] if data.get("pension") else [])
+    for p in plist:
+        if isinstance(p, dict) and p.get("type") != "state":
+            pens += num(p.get("currentPot"))
+    net_worth = in_bank + savings + inv + pens - debt
+
+    # Soonest important date within 60 days (handles "YYYY-MM-DD" and "MM-DD").
+    next_date = None
+    tdy = dt.date.today()
+    for it in (data.get("importantDates") or []):
+        if not isinstance(it, dict):
+            continue
+        ds = str(it.get("date") or "").strip()
+        mmdd = ds[5:] if len(ds) >= 10 else ds
+        parts = mmdd.split("-")
+        if len(parts) < 2:
+            continue
+        try:
+            mm, dd = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        for yr in (tdy.year, tdy.year + 1):
+            dim = [31, 29 if yr % 4 == 0 and (yr % 100 != 0 or yr % 400 == 0) else 28,
+                   31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mm - 1] if 1 <= mm <= 12 else 31
+            try:
+                occ = dt.date(yr, mm, min(dd, dim))
+            except ValueError:
+                break
+            days = (occ - tdy).days
+            if 0 <= days <= 60:
+                if next_date is None or days < next_date["days"]:
+                    next_date = {"title": it.get("title") or "Important date", "days": days}
+                break
+
+    payload = {
+        "name": (data.get("name") or "").strip(),
+        "today": today,
+        "tasks": {"todayCount": len(todays), "overdueCount": len(overdue),
+                  "today": [t.get("title") or "Task" for t in todays[:4]]},
+        "finance": {"netWorth": round(net_worth), "inBank": round(in_bank),
+                    "savings": round(savings), "debt": round(debt)},
+        "nextDate": next_date,
+    }
+    return JSONResponse(payload, headers={"Cache-Control": "public, max-age=900"})

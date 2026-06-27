@@ -719,11 +719,20 @@ function SettingsView({ state, up, accentColor, user, calendarToken, onGoConnect
   const origin = (typeof window !== "undefined" && window.location.origin) || "";
   const httpsFeed = calendarToken ? `${origin}/api/feed?token=${calendarToken}` : "";
   const webcalFeed = httpsFeed.replace(/^https?:\/\//, "webcal://");
+  // Same private token powers the iPhone home-screen widget (read-only JSON).
+  const widgetUrl = calendarToken ? `${origin}/api/widget?token=${calendarToken}` : "";
+  const [copiedWidget, setCopiedWidget] = useState(false);
 
   function copyFeed() {
     if (!httpsFeed) return;
     navigator.clipboard.writeText(httpsFeed).then(() => {
       setCopied(true); setTimeout(() => setCopied(false), 1800);
+    });
+  }
+  function copyWidget() {
+    if (!widgetUrl) return;
+    navigator.clipboard.writeText(widgetUrl).then(() => {
+      setCopiedWidget(true); setTimeout(() => setCopiedWidget(false), 1800);
     });
   }
 
@@ -894,6 +903,30 @@ function SettingsView({ state, up, accentColor, user, calendarToken, onGoConnect
           </div>
         ) : (
           <p style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Calendar link will appear once your account finishes syncing.</p>
+        )}
+      </div>
+
+      {/* iPhone home-screen widget (via the free Scriptable app) */}
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 14, border: "0.5px solid var(--color-border-tertiary)", padding: 20, marginBottom: 14 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 500 }}>📱 iPhone widget</h3>
+        <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.55 }}>
+          Put Tend on your iPhone home screen — net worth, today’s tasks and your next date, refreshing in the background. Uses the free <strong>Scriptable</strong> app (no App Store build needed).
+        </p>
+        {widgetUrl ? (
+          <div>
+            <button onClick={copyWidget} style={{ padding: "10px 16px", fontSize: 13, borderRadius: 9, cursor: "pointer", background: accentColor, color: "#fff", border: "none", fontWeight: 600 }}>
+              {copiedWidget ? "✓ Copied" : "Copy my widget link"}
+            </button>
+            <ol style={{ fontSize: 11.5, color: "var(--color-text-secondary)", lineHeight: 1.7, margin: "12px 0 0", paddingLeft: 18 }}>
+              <li>Install <strong>Scriptable</strong> from the App Store (free).</li>
+              <li>Open the <strong>scriptable-widget.js</strong> script (in the Tend project) and paste it into a new Scriptable script named “Tend”.</li>
+              <li>Paste your copied link into the <code>WIDGET_URL</code> line.</li>
+              <li>Home screen → long-press → ＋ → Scriptable → choose the “Tend” script.</li>
+            </ol>
+            <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 10, lineHeight: 1.5 }}>🔒 Read-only — the link only reads a summary of your own data and can never change anything. Keep it private.</div>
+          </div>
+        ) : (
+          <p style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Widget link will appear once your account finishes syncing.</p>
         )}
       </div>
 
