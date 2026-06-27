@@ -4914,6 +4914,15 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
         let cumSav = 0;
         const savBars = series.map(s => { cumSav += (savCat ? (s.st.byCat[savCat.id]?.spent || 0) : 0); return { label: monthShort(s.mk), value: cumSav, color: "#1D9E75" }; });
         const hasData = series.some(s => s.st.spend > 0 || s.st.income > 0);
+        // 6-month roll-ups + where the money actually went (for the summary tiles + donut).
+        const totalSpent = series.reduce((s, x) => s + (x.st.spend || 0), 0);
+        const totalEarned = series.reduce((s, x) => s + (x.st.income || 0), 0);
+        const netFlow = totalEarned - totalSpent;
+        const monthsWithData = series.filter(s => s.st.spend > 0 || s.st.income > 0).length || 1;
+        const catSpend = cats.filter(c => c.kind !== "savings").map((c, i) => ({
+          label: `${c.emoji} ${c.name}`, value: series.reduce((s, x) => s + (x.st.byCat[c.id]?.spent || 0), 0),
+          color: c.color || TAG_COLORS[i % TAG_COLORS.length],
+        })).filter(s => s.value > 0).sort((a, b) => b.value - a.value);
         return (
           <div style={{ display: "grid", gap: 14 }}>
             <SectionHead sub="A saved snapshot of every month — kept up to 2 years, even after transactions roll off.">📅 Monthly reports</SectionHead>
@@ -4923,9 +4932,17 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
               <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-secondary)" }}><div style={{ fontSize: 38, marginBottom: 12 }}>📈</div><div style={{ fontSize: 14, marginBottom: 16 }}>No 6-month history yet — add transactions to see the trend charts. The date-range explorer below works with any transactions.</div><button onClick={loadSample} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 9, cursor: "pointer" }}>✨ Load sample data</button></div>
             )}
             {hasData && (<>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
+              <StatCard label="Earned · 6 mo" value={fmtMoney(totalEarned)} color="#1D9E75" sub={`~${fmtMoney(totalEarned / monthsWithData, true)}/mo`} />
+              <StatCard label="Spent · 6 mo" value={fmtMoney(totalSpent)} color="#E24B4A" sub={`~${fmtMoney(totalSpent / monthsWithData, true)}/mo`} />
+              <StatCard label="Net flow · 6 mo" value={`${netFlow >= 0 ? "+" : "−"}${fmtMoney(Math.abs(netFlow))}`} color={netFlow >= 0 ? "#639922" : "#E24B4A"} sub={netFlow >= 0 ? "saved overall" : "spent more than earned"} />
+            </div>
             <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
-              <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 16 }}>Monthly spending (last 6 months)</div>
-              <BarsChart data={spendBars} money />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                <div style={{ fontSize: 14, fontWeight: 500 }}>Monthly spending</div>
+                <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>last 6 months · hover to explore</div>
+              </div>
+              <AreaTrend data={spendBars} color={ac} height={150} />
             </div>
             <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
               <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 16 }}>Income vs spending</div>
@@ -4934,6 +4951,22 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
                 <div style={{ flex: 1 }}><div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8 }}>Spending</div><BarsChart data={spendBars} money height={110} /></div>
               </div>
             </div>
+            {catSpend.length > 0 && (
+              <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", display: "flex", gap: 22, alignItems: "center", flexWrap: "wrap" }}>
+                <Donut segments={catSpend} center={<div><div style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>6-mo spend</div><div style={{ fontSize: 15, fontWeight: 700 }}>{fmtMoney(totalSpent, true)}</div></div>} />
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 8 }}>WHERE IT WENT</div>
+                  {catSpend.slice(0, 7).map(s => (
+                    <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginBottom: 5 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }} />
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
+                      <span style={{ color: "var(--color-text-secondary)" }}>{totalSpent > 0 ? Math.round(s.value / totalSpent * 100) : 0}%</span>
+                      <span style={{ fontWeight: 500, minWidth: 60, textAlign: "right" }}>{fmtMoney(s.value, true)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {savCat && (
               <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)" }}>
                 <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 16 }}>💰 Savings building up (cumulative)</div>
