@@ -2195,6 +2195,88 @@ function BarsChart({ data, height = 150, money }) {
   );
 }
 
+// Premium gradient area/line trend chart (SVG). Smooth Catmull-Rom curve, animated
+// self-drawing line, gradient fill, a pulsing marker on the latest point, and a hover
+// layer that reads out each point. Auto-scales to the data's own min/max (with padding)
+// so real movement is visible. Pure presentation — every value passed in is real.
+function AreaTrend({ data, height = 140, color = "#4f7a52", money = true, fmt }) {
+  const wrapRef = useRef(null);
+  const [w, setW] = useState(0);
+  const [hover, setHover] = useState(null);
+  // Measure the container so the SVG is drawn at exact pixels — circles stay round and
+  // text stays crisp (no preserveAspectRatio stretching), and hover maths line up.
+  useEffect(() => {
+    const el = wrapRef.current; if (!el) return;
+    const update = () => setW(el.clientWidth || 0);
+    update();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    ro && ro.observe(el);
+    window.addEventListener("resize", update);
+    return () => { ro && ro.disconnect(); window.removeEventListener("resize", update); };
+  }, []);
+  const pts = (data || []).filter(d => d && isFinite(d.value));
+  const H = height;
+  if (pts.length < 2) return null;
+  if (!w) return <div ref={wrapRef} style={{ width: "100%", height: H }} />;
+  const W = w, padX = 10, padT = 16, padB = 22;
+  const x0 = padX, x1 = W - padX, y0 = padT, y1 = H - padB;
+  const vals = pts.map(p => p.value);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (lo === hi) { lo -= Math.abs(lo || 1) * 0.1 + 1; hi += Math.abs(hi || 1) * 0.1 + 1; }
+  const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+  const sx = i => x0 + (i / (pts.length - 1)) * (x1 - x0);
+  const sy = v => y1 - ((v - lo) / (hi - lo)) * (y1 - y0);
+  const P = pts.map((p, i) => ({ x: sx(i), y: sy(p.value) }));
+  // Catmull-Rom → cubic bezier for a smooth (non-overshooting-ish) curve.
+  let line = `M ${P[0].x.toFixed(1)} ${P[0].y.toFixed(1)}`;
+  for (let i = 0; i < P.length - 1; i++) {
+    const p0 = P[i - 1] || P[i], p1 = P[i], p2 = P[i + 1], p3 = P[i + 2] || P[i + 1];
+    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+    line += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  const area = `${line} L ${P[P.length - 1].x.toFixed(1)} ${y1} L ${P[0].x.toFixed(1)} ${y1} Z`;
+  const len = Math.round(P.reduce((s, p, i) => i ? s + Math.hypot(p.x - P[i - 1].x, p.y - P[i - 1].y) : 0, 0) * 1.15) || 1000;
+  const last = P[P.length - 1], lastV = pts[pts.length - 1].value;
+  const show = (v) => fmt ? fmt(v) : (money ? fmtMoney(v, true) : Math.round(v));
+  const gid = "tg" + Math.round(W + H) + color.replace("#", "");
+  const hv = hover != null ? P[hover] : null;
+  return (
+    <div ref={wrapRef} style={{ width: "100%", height: H }}>
+    <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} style={{ display: "block", overflow: "visible", touchAction: "none" }}
+      onMouseLeave={() => setHover(null)}
+      onMouseMove={e => { const r = e.currentTarget.getBoundingClientRect(); if (!r.width) return; const rx = (e.clientX - r.left) / r.width * W; let bi = 0, bd = 1e9; P.forEach((p, i) => { const d = Math.abs(p.x - rx); if (d < bd) { bd = d; bi = i; } }); setHover(bi); }}>
+      <defs>
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.38" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      {/* faint baseline */}
+      <line x1={x0} y1={y1} x2={x1} y2={y1} stroke="var(--color-border-tertiary)" strokeWidth="1" />
+      <path className="tend-area" d={area} fill={`url(#${gid})`} />
+      <path className="tend-line" style={{ "--len": len }} d={line} fill="none" stroke={color} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+      {/* hover guide + dot */}
+      {hv && <>
+        <line x1={hv.x} y1={y0 - 4} x2={hv.x} y2={y1} stroke={color} strokeWidth="1" strokeDasharray="3 3" opacity="0.5" />
+        <circle cx={hv.x} cy={hv.y} r="4.5" fill="var(--color-background-primary)" stroke={color} strokeWidth="2.4" />
+        <text x={Math.max(x0 + 22, Math.min(x1 - 22, hv.x))} y={Math.max(11, hv.y - 9)} textAnchor="middle" fontSize="11" fontWeight="700" fill="var(--color-text-primary)">{show(pts[hover].value)}</text>
+      </>}
+      {/* latest-point marker (hidden while hovering) */}
+      {!hv && <>
+        <circle className="tend-dot" cx={last.x} cy={last.y} r="9" fill={color} opacity="0.16" />
+        <circle className="tend-dot" cx={last.x} cy={last.y} r="4" fill={color} stroke="var(--color-background-primary)" strokeWidth="2" />
+        <text x={Math.min(x1, last.x)} y={Math.max(11, last.y - 11)} textAnchor="end" fontSize="11" fontWeight="700" fill={color}>{show(lastV)}</text>
+      </>}
+      {/* x labels: first & last always, plus the hovered one */}
+      <text x={x0} y={H - 6} textAnchor="start" fontSize="9.5" fill="var(--color-text-secondary)">{pts[0].label}</text>
+      <text x={x1} y={H - 6} textAnchor="end" fontSize="9.5" fill="var(--color-text-secondary)">{pts[pts.length - 1].label}</text>
+      {hv && hover !== 0 && hover !== pts.length - 1 && <text x={Math.max(x0 + 18, Math.min(x1 - 18, hv.x))} y={H - 6} textAnchor="middle" fontSize="9.5" fill="var(--color-text-secondary)">{pts[hover].label}</text>}
+    </svg>
+    </div>
+  );
+}
+
 // ── Finance: modals ──────────────────────────────────────────────────────────
 
 function TxnModal({ txn, cats, accentColor, onSave, onClose, recurKind, onRecur }) {
@@ -2802,11 +2884,18 @@ function NetWorth({ state, up, accentColor }) {
     if (hist[mk] !== nw) up({ netWorthHistory: { ...hist, [mk]: nw } });
   }, [nw]);
   const hist = state.netWorthHistory || {};
-  const months = Object.keys(hist).sort().slice(-6);
-  const bars = months.map(m => ({ label: monthShort(m), value: Math.max(0, hist[m]), color: "#7F77DD" }));
+  const months = Object.keys(hist).sort().slice(-12);
+  const trend = months.map(m => ({ label: monthShort(m), value: hist[m] }));
   const prevKey = Object.keys(hist).sort().filter(k => k < mk).pop();
   const change = prevKey != null ? nw - hist[prevKey] : null;
   const col = nw >= 0 ? "#1D9E75" : "#E24B4A";
+  // Asset composition (positive asset classes only) for the stacked allocation bar.
+  const comp = [
+    { label: "Current", value: currentTotal, color: ac },
+    { label: "Savings", value: savingsTotal, color: "#1D9E75" },
+    { label: "Investments", value: investTotal, color: "#356A87" },
+    { label: "Pensions", value: pensionTotal, color: "#b9892f" },
+  ].filter(s => s.value > 0);
   const Line = ({ label, value, neg }) => (Number(value) === 0) ? null : (
     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0" }}>
       <span style={{ color: "var(--color-text-secondary)" }}>{label}</span>
@@ -2834,10 +2923,32 @@ function NetWorth({ state, up, accentColor }) {
         </div>
       </div>
       {assets === 0 && debtTotal === 0 && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 10 }}>Add current/savings accounts, investments, a pension or debts and your net worth builds here.</div>}
-      {bars.length >= 2 && (
-        <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8 }}>Net worth over time</div>
-          <BarsChart data={bars} money height={110} />
+      {/* Asset composition — a single elegant stacked bar of where your wealth sits. */}
+      {comp.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 7 }}>Asset mix</div>
+          <div style={{ display: "flex", height: 12, borderRadius: 6, overflow: "hidden", boxShadow: "inset 0 0 0 0.5px var(--color-border-tertiary)" }}>
+            {comp.map((s, i) => (
+              <div key={i} title={`${s.label}: ${fmtMoney(s.value, true)} (${Math.round(s.value / assets * 100)}%)`}
+                style={{ width: `${s.value / assets * 100}%`, background: vGrad(s.color), transition: "width 0.5s cubic-bezier(.2,.8,.2,1)" }} />
+            ))}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginTop: 8 }}>
+            {comp.map((s, i) => (
+              <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--color-text-secondary)" }}>
+                <span style={{ width: 9, height: 9, borderRadius: 3, background: s.color }} />{s.label} <b style={{ color: "var(--color-text-primary)", fontWeight: 600 }}>{Math.round(s.value / assets * 100)}%</b>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {trend.length >= 2 && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Net worth over time</div>
+            <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>{trend.length} mo · hover to explore</div>
+          </div>
+          <AreaTrend data={trend} color={col} height={150} />
         </div>
       )}
     </div>
@@ -3207,7 +3318,7 @@ function CreditScorePanel({ state, up, accentColor }) {
       {history.length >= 2 ? (
         <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Score over time</div>
-          <BarsChart data={history.slice(-12).map(h => ({ label: monthShort(h.month), value: h.score, color: hex2rgba(ac, 0.55) }))} height={130} />
+          <AreaTrend data={history.slice(-12).map(h => ({ label: monthShort(h.month), value: h.score }))} color={ac} money={false} height={140} />
         </div>
       ) : (
         <div style={{ background: "var(--color-background-primary)", borderRadius: 14, padding: 16, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, fontSize: 12.5, color: "var(--color-text-secondary)" }}>
@@ -5696,6 +5807,21 @@ function HomeView({ state, accentColor, setView, onAddTask, allTasks, overdueTas
                   </div>
                 ))}
               </div>
+            </div>
+          );
+        })()}
+        {(() => {
+          const hist = state.netWorthHistory || {};
+          const ms = Object.keys(hist).sort().slice(-12);
+          if (ms.length < 2) return null;
+          const first = hist[ms[0]], grew = nw >= first;
+          return (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 2 }}>
+                <span style={{ fontSize: 11.5, color: "var(--color-text-secondary)" }}>Net worth trend</span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: grew ? "#1D9E75" : "#E24B4A" }}>{grew ? "▲" : "▼"} {fmtMoney(Math.abs(nw - first), true)} over {ms.length} mo</span>
+              </div>
+              <AreaTrend data={ms.map(m => ({ label: monthShort(m), value: hist[m] }))} color={grew ? "#1D9E75" : "#E24B4A"} height={118} />
             </div>
           );
         })()}

@@ -79,6 +79,18 @@ Status key: ✅ done · 🟡 partial / needs deploy verification · ⬜ planned
 - Verified live: two "Lloyds Current" rows (£171 + £182 = £353) → flagged → Remove → home
   "In the bank" corrects to £171.
 
+### C8 · Visual upgrades — premium, data-accurate charts (✅ done)
+- New reusable `AreaTrend` SVG component: smooth Catmull-Rom curve, gradient fill, a
+  self-drawing line + pulsing latest-point marker (keyframes in index.html), and a hover
+  layer that reads out each point. Measures its container and draws at real pixels (round
+  markers, crisp text, correct hover) — **not** `preserveAspectRatio="none"` which stretches.
+- Used for: **Net worth over time** (Finance dashboard, 12 mo) and **Credit score over time**.
+- Net-worth card also gains an **asset-mix** stacked bar (current/savings/investments/
+  pensions %), and the **Home** money snapshot gains a net-worth **sparkline** with the
+  period change. Every value is real state data; charts only show with ≥2 real data points.
+- Verified live (seeded then cleared 8 months of history): curve, gradient, animation,
+  hover-tracking and auto-scaling all correct; totals reconcile (£10,782 = 1542+6000+3240).
+
 ---
 
 ## Phase D — full logic check + security review (⬜ — may merge with B)

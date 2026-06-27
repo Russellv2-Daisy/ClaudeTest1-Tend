@@ -408,7 +408,14 @@
     .tend-pop { animation: tendPop 0.55s cubic-bezier(.2,.8,.2,1) both; }
     .tend-bar { transform-origin: bottom; animation: tendGrow 0.65s cubic-bezier(.2,.8,.2,1) both; transition: filter 0.18s ease, transform 0.18s ease; }
     .tend-bar:hover { filter: brightness(1.08) saturate(1.08); }
-    @media (prefers-reduced-motion: reduce) { .tend-pop, .tend-bar { animation: none !important; } }
+    /* Area/line trend chart: the line draws itself, the fill fades up, the marker pops. */
+    @keyframes tendStroke { from { stroke-dashoffset: var(--len, 1000); } to { stroke-dashoffset: 0; } }
+    @keyframes tendFillUp { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes tendDot { 0% { opacity: 0; transform: scale(0); } 70% { opacity: 1; transform: scale(1.35); } 100% { opacity: 1; transform: scale(1); } }
+    .tend-line { stroke-dasharray: var(--len, 1000); animation: tendStroke 1.25s cubic-bezier(.4,.8,.3,1) both; }
+    .tend-area { animation: tendFillUp 1.1s ease both 0.25s; }
+    .tend-dot { transform-box: fill-box; transform-origin: center; animation: tendDot 0.5s cubic-bezier(.2,.8,.2,1) both 1s; }
+    @media (prefers-reduced-motion: reduce) { .tend-pop, .tend-bar, .tend-line, .tend-area, .tend-dot { animation: none !important; } }
 
     /* ── Tend Wrapped (month story) + command palette ── */
     @keyframes storyFill { from { width: 0; } to { width: 100%; } }
