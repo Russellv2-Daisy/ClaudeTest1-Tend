@@ -89,7 +89,7 @@ function daysUntil(d) { if (!d) return null; return Math.round((new Date(d + "T0
 function getDaysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function getFirstDayOfMonth(y, m) { return new Date(y, m, 1).getDay(); }
 
-const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, financePlanTemplate: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], job: {}, keyDocuments: [], files: [], trips: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
+const INIT = { tasks: [], groups: [{ id: "g1", name: "Work", emoji: "💼", color: "#378ADD" }, { id: "g2", name: "Personal", emoji: "🏠", color: "#1D9E75" }], importantDates: [], tags: DEFAULT_TAGS.map((t, i) => ({ id: genId(), name: t, color: TAG_COLORS[i % TAG_COLORS.length] })), financeCategories: DEFAULT_FINANCE_CATS, financePlans: {}, financePlanTemplate: {}, transactions: [], savingsAccounts: [], subscriptions: [], debts: [], netWorthHistory: {}, investHistory: {}, safetyBuffer: 0, investments: [], pension: {}, insurance: [], cashFlow: {}, currentAccounts: [], pensions: [], payday: { type: "monthly", day: 1 }, monthlyReports: {}, audit: {}, people: [], warranties: [], job: {}, keyDocuments: [], files: [], trips: [], dismissedSubs: [], name: "", theme: "teal", mode: "system", scene: "almanac", streak: 0 };
 
 // Cloud-backed state. Loads the signed-in user's blob from Supabase, merges over
 // INIT defaults, and saves changes back (debounced). Falls back to a local cache
@@ -2277,6 +2277,45 @@ function AreaTrend({ data, height = 140, color = "#4f7a52", money = true, fmt })
   );
 }
 
+// Per-holding performance as a diverging bar chart: gains grow right (green) from a
+// centre axis, losses grow left (red), sorted best→worst. Reads each holding's real
+// return (T212's own unrealised P/L when present, else value−cost). Pure presentation.
+function HoldingPerfChart({ holdings }) {
+  const rows = (holdings || []).map(h => {
+    const val = holdingValue(h), cost = (Number(h.units) || 0) * (Number(h.avgCost) || 0);
+    const gain = (h.source === "t212" && h.ppl != null) ? Number(h.ppl) : val - cost;
+    const pct = cost > 0 ? gain / cost * 100 : 0;
+    return { id: h.id, label: h.name, ticker: (h.ticker || "").split("_")[0], pct, gain, val, hasCost: cost > 0 };
+  }).filter(r => r.hasCost).sort((a, b) => b.pct - a.pct);
+  if (rows.length < 2) return null;
+  const maxAbs = Math.max(1, ...rows.map(r => Math.abs(r.pct)));
+  return (
+    <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>Performance by holding</div>
+      <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 14 }}>Return vs your average cost — gains right, losses left.</div>
+      {rows.map(r => {
+        const up = r.pct >= 0, c = up ? "#1D9E75" : "#E24B4A";
+        const w = Math.abs(r.pct) / maxAbs * 100;
+        return (
+          <div key={r.id} title={`${r.label}: ${up ? "+" : "−"}${fmtMoney(Math.abs(r.gain), true)} (${up ? "+" : "−"}${Math.abs(r.pct).toFixed(1)}%) · now ${fmtMoney(r.val, true)}`} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9 }}>
+            <div style={{ width: "30%", minWidth: 70, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.label}</div>
+            <div style={{ flex: 1, display: "flex", alignItems: "center", height: 16 }}>
+              <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
+                {!up && <div style={{ width: `${w}%`, height: 16, background: vGrad(c), borderRadius: "5px 0 0 5px", transition: "width 0.6s cubic-bezier(.2,.8,.2,1)" }} />}
+              </div>
+              <div style={{ width: 1, height: 20, background: "var(--color-border-tertiary)" }} />
+              <div style={{ flex: 1 }}>
+                {up && <div style={{ width: `${w}%`, height: 16, background: vGrad(c), borderRadius: "0 5px 5px 0", transition: "width 0.6s cubic-bezier(.2,.8,.2,1)" }} />}
+              </div>
+            </div>
+            <div style={{ width: 52, textAlign: "right", fontSize: 12, fontWeight: 600, color: c }}>{up ? "+" : "−"}{Math.abs(r.pct).toFixed(1)}%</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Finance: modals ──────────────────────────────────────────────────────────
 
 function TxnModal({ txn, cats, accentColor, onSave, onClose, recurKind, onRecur }) {
@@ -3622,6 +3661,14 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
     setInvModal(null);
   }
   function deleteInvestment(id) { if (confirm("Delete this holding?")) up({ investments: investments.filter(h => h.id !== id) }); }
+  // Record this month's portfolio value so the Investments tab can chart a real trend
+  // over time (same pattern as net worth). Snapshots once per month, updates if it moves.
+  const _portfolioValue = investmentTotals(investments).value;
+  useEffect(() => {
+    if (_portfolioValue <= 0) return;
+    const mk = curMonthKey(), h = state.investHistory || {};
+    if (h[mk] !== _portfolioValue) up({ investHistory: { ...h, [mk]: _portfolioValue } });
+  }, [_portfolioValue]);
   // Insurance is managed under Documents & Policies; the list is still read here so
   // premiums show as projected commitments in the breakdown plan.
   const insurance = state.insurance || [];
@@ -4376,6 +4423,17 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
         const monthlyInv = investments.reduce((s, h) => s + (Number(h.contribution) || 0), 0);
         const segs = investments.map((h, i) => ({ value: holdingValue(h), color: TAG_COLORS[i % TAG_COLORS.length], label: h.name }))
           .filter(s => s.value > 0).sort((a, b) => b.value - a.value);
+        // Portfolio value trend (recorded monthly, see the effect above).
+        const invHist = state.investHistory || {};
+        const invTrend = Object.keys(invHist).sort().slice(-12).map(m => ({ label: monthShort(m), value: invHist[m] }));
+        // Best / worst performer by return %, for the highlight callouts.
+        const perf = investments.map(h => {
+          const val = holdingValue(h), cost = (Number(h.units) || 0) * (Number(h.avgCost) || 0);
+          const gain = (h.source === "t212" && h.ppl != null) ? Number(h.ppl) : val - cost;
+          return { name: h.name, ticker: (h.ticker || "").split("_")[0], pct: cost > 0 ? gain / cost * 100 : 0, gain, hasCost: cost > 0 };
+        }).filter(r => r.hasCost).sort((a, b) => b.pct - a.pct);
+        const best = perf[0], worst = perf.length > 1 ? perf[perf.length - 1] : null;
+        const liveCount = investments.filter(h => h.source === "t212").length;
         return (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
@@ -4395,11 +4453,44 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
             {investments.length > 0 && (
               <>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
-                  <StatCard label="Portfolio value" value={fmtMoney(t.value)} color={ac} />
+                  <StatCard label="Portfolio value" value={fmtMoney(t.value)} color={ac} sub={`${investments.length} holding${investments.length === 1 ? "" : "s"}${liveCount ? ` · ${liveCount} live` : ""}`} />
                   <StatCard label="Invested" value={fmtMoney(t.cost)} />
-                  <StatCard label="Gain / loss" value={`${t.gain >= 0 ? "+" : "−"}${fmtMoney(Math.abs(t.gain))}`} color={t.gain >= 0 ? "#1D9E75" : "#E24B4A"} sub={t.cost > 0 ? `${t.gain >= 0 ? "+" : "−"}${Math.abs(t.gainPct).toFixed(1)}%` : null} />
+                  <StatCard label="Gain / loss" value={`${t.gain >= 0 ? "+" : "−"}${fmtMoney(Math.abs(t.gain))}`} color={t.gain >= 0 ? "#1D9E75" : "#E24B4A"} sub={t.cost > 0 ? `${t.gain >= 0 ? "+" : "−"}${Math.abs(t.gainPct).toFixed(1)}% all-time` : null} />
                   {monthlyInv > 0 && <StatCard label="Investing / month" value={fmtMoney(monthlyInv)} />}
                 </div>
+
+                {/* Portfolio value over time — builds a real trend from monthly snapshots. */}
+                {invTrend.length >= 2 ? (
+                  <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>Portfolio value over time</div>
+                      <div style={{ fontSize: 10.5, color: "var(--color-text-secondary)" }}>{invTrend.length} mo · hover to explore</div>
+                    </div>
+                    <AreaTrend data={invTrend} color={t.gain >= 0 ? "#1D9E75" : ac} height={150} />
+                  </div>
+                ) : t.value > 0 && (
+                  <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: "12px 16px", border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, fontSize: 12.5, color: "var(--color-text-secondary)" }}>
+                    📈 Your portfolio value is being recorded each month — a trend chart appears here from next month.
+                  </div>
+                )}
+
+                {/* Best / worst performer callouts */}
+                {best && (best.pct !== 0 || (worst && worst.pct !== 0)) && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 10, marginBottom: 14 }}>
+                    <div style={{ background: hex2rgba(best.pct >= 0 ? "#1D9E75" : "#E24B4A", 0.08), border: `1px solid ${hex2rgba(best.pct >= 0 ? "#1D9E75" : "#E24B4A", 0.28)}`, borderRadius: 12, padding: "12px 14px" }}>
+                      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 3 }}>🏆 Top performer</div>
+                      <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{best.name}</div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: best.pct >= 0 ? "#1D9E75" : "#E24B4A", marginTop: 2 }}>{best.pct >= 0 ? "▲ +" : "▼ −"}{Math.abs(best.pct).toFixed(1)}% · {best.pct >= 0 ? "+" : "−"}{fmtMoney(Math.abs(best.gain), true)}</div>
+                    </div>
+                    {worst && (
+                      <div style={{ background: hex2rgba(worst.pct >= 0 ? "#1D9E75" : "#E24B4A", 0.08), border: `1px solid ${hex2rgba(worst.pct >= 0 ? "#1D9E75" : "#E24B4A", 0.28)}`, borderRadius: 12, padding: "12px 14px" }}>
+                        <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 3 }}>{worst.pct >= 0 ? "🐢 Smallest gain" : "📉 Biggest drag"}</div>
+                        <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{worst.name}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: worst.pct >= 0 ? "#1D9E75" : "#E24B4A", marginTop: 2 }}>{worst.pct >= 0 ? "▲ +" : "▼ −"}{Math.abs(worst.pct).toFixed(1)}% · {worst.pct >= 0 ? "+" : "−"}{fmtMoney(Math.abs(worst.gain), true)}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {segs.length > 0 && (
                   <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 18, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 14, display: "flex", gap: 22, alignItems: "center", flexWrap: "wrap" }}>
@@ -4417,6 +4508,8 @@ function FinanceView({ state, up, accentColor, initialTab, clearInitialTab }) {
                     </div>
                   </div>
                 )}
+
+                <HoldingPerfChart holdings={investments} />
 
                 {/* Holdings — auto-populated info squares. Trading-212-linked holdings fill
                     themselves from the API (units, price, avg cost, market value, live P/L);
